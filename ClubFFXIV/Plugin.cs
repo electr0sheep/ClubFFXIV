@@ -489,8 +489,13 @@ public sealed class Plugin : IDalamudPlugin
 
     private void UpdateLocationState()
     {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
         var newPlot = HousingDetector.ResolveCurrent();
+        var resolveCurrentMs = sw.ElapsedMilliseconds; sw.Restart();
+
         var newWard = HousingDetector.ResolveOutdoor();
+        var resolveOutdoorMs = sw.ElapsedMilliseconds; sw.Restart();
 
         if (!Nullable.Equals(newPlot, CurrentPlotKey))
         {
@@ -511,12 +516,23 @@ public sealed class Plugin : IDalamudPlugin
         CurrentOwnership = newPlot.HasValue
             ? HousingDetector.CheckOwnership()
             : HouseOwnership.Unknown;
+        var ownershipMs = sw.ElapsedMilliseconds; sw.Restart();
 
         // Always make sure we have a fresh listing for the current ward.
         // EnsureWardListingAsync is a no-op when cache is fresh or a fetch is in flight,
         // so calling it every tick is free.
         if (CurrentWard.HasValue && registryClient != null)
             _ = EnsureWardListingAsync(CurrentWard.Value);
+        var wardFetchKickoffMs = sw.ElapsedMilliseconds;
+
+        var totalMs = resolveCurrentMs + resolveOutdoorMs + ownershipMs + wardFetchKickoffMs;
+        if (totalMs > 20)
+        {
+            Log.Warning(
+                $"Slow loc: {totalMs}ms " +
+                $"(resolveIndoor={resolveCurrentMs} resolveOutdoor={resolveOutdoorMs} " +
+                $"ownership={ownershipMs} wardKickoff={wardFetchKickoffMs})");
+        }
     }
 
     private void DriveAudio()
