@@ -65,7 +65,11 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
             response.EnsureSuccessStatusCode();
 
             var mediaType = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() ?? "";
-            networkStream = await response.Content.ReadAsStreamAsync(ct);
+            // NLayer / NVorbis both call Stream.Position to track frame offsets.
+            // HttpBaseStream throws NotSupportedException on Position. Wrap so it
+            // works for forward-only consumption.
+            networkStream = new PositionTrackingStream(
+                await response.Content.ReadAsStreamAsync(ct));
 
             ISampleProvider decoder;
             IDisposable decoderDisposable;
@@ -118,6 +122,54 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
         try { networkStream.Dispose(); } catch { /* ignore */ }
         try { response.Dispose(); } catch { /* ignore */ }
         try { http.Dispose(); } catch { /* ignore */ }
+    }
+
+    /// <summary>
+    /// Wraps a forward-only stream (HTTP response) so that decoders which expect
+    /// a seekable Stream can call Position. Pretends to be seekable; throws on
+    /// any actual Seek call. Decoders that only read sequentially work fine.
+    /// </summary>
+    private sealed class PositionTrackingStream : Stream
+    {
+        private readonly Stream inner;
+        private long position;
+
+        public PositionTrackingStream(Stream inner) { this.inner = inner; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => true;
+        public override bool CanWrite => false;
+        public override long Length => long.MaxValue;
+        public override long Position
+        {
+            get => position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = inner.Read(buffer, offset, count);
+            position += n;
+            return n;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            var n = await inner.ReadAsync(buffer.AsMemory(offset, count), ct);
+            position += n;
+            return n;
+        }
+
+        public override void Flush() { /* no-op */ }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     private sealed class MpegSampleProvider : ISampleProvider
