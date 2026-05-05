@@ -442,7 +442,7 @@ public sealed class Plugin : IDalamudPlugin
     /// kicks in within ~1 frame of crossing the instance boundary instead of
     /// half a second later.
     /// </summary>
-    private void OnTerritoryChanged(ushort territoryType)
+    private void OnTerritoryChanged(uint territoryType)
     {
         lastHousingCheck = DateTime.MinValue;
     }
