@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
+using System.Net.Security;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -18,7 +20,18 @@ public sealed class ClubRegistryClient : IDisposable
     public ClubRegistryClient(string baseUrl)
     {
         this.baseUrl = baseUrl.TrimEnd('/');
-        http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        // Explicit TLS 1.2/1.3 to avoid Dalamud's runtime defaulting to a constrained
+        // protocol set; SocketsHttpHandler also handles AIA cert fetches more reliably
+        // than the default HttpClientHandler in some Windows configurations.
+        var handler = new SocketsHttpHandler
+        {
+            SslOptions = new SslClientAuthenticationOptions
+            {
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+            },
+            ConnectTimeout = TimeSpan.FromSeconds(6),
+        };
+        http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("ClubFFXIV/0.1");
     }
 

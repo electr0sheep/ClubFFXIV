@@ -354,10 +354,13 @@ public sealed class Plugin : IDalamudPlugin
         if (!Nullable.Equals(newWard, CurrentWard))
         {
             CurrentWard = newWard;
-            // Entering a new ward — kick off a registry fetch (cached if recent).
-            if (newWard.HasValue && registryClient != null && Config.AutoQueryRegistry)
-                _ = EnsureWardListingAsync(newWard.Value);
         }
+
+        // Always make sure we have a fresh listing for the current ward.
+        // EnsureWardListingAsync is a no-op when cache is fresh or a fetch is in flight,
+        // so calling it every tick is free.
+        if (CurrentWard.HasValue && registryClient != null && Config.AutoQueryRegistry)
+            _ = EnsureWardListingAsync(CurrentWard.Value);
     }
 
     private void DriveAudio()
@@ -558,13 +561,15 @@ public sealed class Plugin : IDalamudPlugin
         try
         {
             var worldId = PlayerState.CurrentWorld.RowId;
+            Log.Info($"[ClubFFXIV] Fetching ward listing: world={worldId} territory={ward.TerritoryType} ward={ward.Ward}");
             var listing = await registryClient.GetWardAsync(worldId, ward.TerritoryType, ward.Ward);
             wardCache[k] = new CachedWardListing(DateTime.UtcNow, listing);
             Log.Info($"[ClubFFXIV] Ward listing fetched: {listing.Clubs.Count} club(s)");
         }
         catch (Exception ex)
         {
-            Log.Warning($"[ClubFFXIV] Ward listing fetch failed: {ex.Message}");
+            // Use Log.Error so the inner exception chain is fully serialized.
+            Log.Error(ex, "[ClubFFXIV] Ward listing fetch failed");
         }
         finally
         {
