@@ -189,8 +189,8 @@ public sealed class BinaryManager
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(timeout);
 
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token).AsTask();
-        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).AsTask();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
+        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
         await proc.WaitForExitAsync(cts.Token);
         return (await stdoutTask, await stderrTask);
     }

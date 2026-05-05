@@ -153,8 +153,8 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token).AsTask();
-        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).AsTask();
+        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
+        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
         await proc.WaitForExitAsync(cts.Token);
 
         var stdout = (await stdoutTask).Trim();
