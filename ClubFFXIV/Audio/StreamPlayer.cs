@@ -24,6 +24,7 @@ public sealed class StreamPlayer : IDisposable
     private float masterVolume = 0.7f;
     private float spatialVolume = 1f;
     private float spatialCutoff = BypassCutoffHz;
+    private bool muted;
     private string? currentUrl;
 
     public bool IsPlaying => output?.PlaybackState == PlaybackState.Playing;
@@ -74,6 +75,21 @@ public sealed class StreamPlayer : IDisposable
         SpatialCutoffHz = BypassCutoffHz;
     }
 
+    /// <summary>
+    /// Hard mute that overrides master + spatial. Used when FFXIV is unfocused
+    /// (so the stream tracks the game's mute-when-unfocused behavior).
+    /// </summary>
+    public bool Muted
+    {
+        get => muted;
+        set
+        {
+            if (muted == value) return;
+            muted = value;
+            ApplyVolume();
+        }
+    }
+
     public void Play(string url)
     {
         if (string.IsNullOrWhiteSpace(url))
@@ -106,7 +122,7 @@ public sealed class StreamPlayer : IDisposable
 
     public void Dispose() => Stop();
 
-    private float EffectiveVolume() => masterVolume * spatialVolume;
+    private float EffectiveVolume() => muted ? 0f : (masterVolume * spatialVolume);
 
     private void ApplyVolume()
     {

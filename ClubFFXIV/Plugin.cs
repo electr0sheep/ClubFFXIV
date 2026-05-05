@@ -28,6 +28,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static IGameConfig GameConfig { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
@@ -40,6 +41,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly ConfigWindow configWindow;
     private readonly StreamPlayer streamPlayer = new();
+    private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
     private DjIdentity? djIdentity;
     private DateTime lastHousingCheck = DateTime.MinValue;
@@ -84,6 +86,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         configWindow.Dispose();
         streamPlayer.Dispose();
+        bgmMuter.Dispose();
         registryClient?.Dispose();
         djIdentity?.Dispose();
     }
@@ -274,11 +277,28 @@ public sealed class Plugin : IDalamudPlugin
         {
             UpdateLocationState();
             DriveAudio();
+            ApplyAudioPolicy();
         }
         catch (Exception ex)
         {
             Log.Error(ex, "OnFrameworkUpdate failed");
         }
+    }
+
+    /// <summary>
+    /// After audio state is settled for the tick, apply cross-cutting policies:
+    /// game BGM muting (when our stream plays) and focus muting (when game unfocused).
+    /// </summary>
+    private void ApplyAudioPolicy()
+    {
+        // Stream output mute when game is unfocused.
+        streamPlayer.Muted = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
+
+        // Game BGM mute when we're playing and the user wants it.
+        if (Config.MuteGameBgmWhilePlaying && streamPlayer.IsPlaying)
+            bgmMuter.Mute();
+        else
+            bgmMuter.Unmute();
     }
 
     private void UpdateLocationState()

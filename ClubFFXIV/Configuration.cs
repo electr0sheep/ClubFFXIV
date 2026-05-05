@@ -29,6 +29,12 @@ public class Configuration : IPluginConfiguration
     public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled
     public float SpatialMaxCutoffHz { get; set; } = 8000f;       // clearest at door
 
+    /// <summary>Mute the game's own BGM while our stream is playing.</summary>
+    public bool MuteGameBgmWhilePlaying { get; set; } = true;
+
+    /// <summary>Mute our stream when the FFXIV window loses focus.</summary>
+    public bool MuteStreamWhenUnfocused { get; set; } = true;
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 

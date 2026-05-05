@@ -88,6 +88,21 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.Save();
             plugin.SetStreamVolume(volume);
         }
+
+        ImGui.Spacing();
+        var muteBgm = plugin.Config.MuteGameBgmWhilePlaying;
+        if (ImGui.Checkbox("Mute FFXIV BGM while stream plays", ref muteBgm))
+        {
+            plugin.Config.MuteGameBgmWhilePlaying = muteBgm;
+            plugin.Config.Save();
+        }
+
+        var followFocus = plugin.Config.MuteStreamWhenUnfocused;
+        if (ImGui.Checkbox("Mute stream when FFXIV is not focused", ref followFocus))
+        {
+            plugin.Config.MuteStreamWhenUnfocused = followFocus;
+            plugin.Config.Save();
+        }
     }
 
     private void DrawCurrentLocationSection()
