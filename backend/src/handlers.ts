@@ -129,11 +129,9 @@ function nonceError(nonce: number | undefined): string | null {
   if (typeof nonce !== "number" || !Number.isFinite(nonce)) return "missing or invalid nonce";
   const serverNow = Date.now();
   const age = serverNow - nonce;
-  if (age < 0) {
-    return `clock skew: client clock is ahead by ${Math.round(-age / 1000)}s. server=${serverNow} client=${nonce}`;
-  }
-  if (age > NONCE_MAX_AGE_MS) {
-    return `clock skew: client clock is behind by ${Math.round(age / 1000)}s. server=${serverNow} client=${nonce}`;
+  if (Math.abs(age) > NONCE_MAX_AGE_MS) {
+    const dir = age < 0 ? "ahead" : "behind";
+    return `clock skew: client is ${dir} by ${Math.round(Math.abs(age) / 1000)}s. server=${serverNow} client=${nonce}`;
   }
   return null;
 }
