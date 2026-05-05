@@ -1,8 +1,29 @@
 # DJ Broadcasting Guide
 
-How to stand up an internet radio station that ClubFFXIV listeners can tune into.
+How to stand up an audio stream that ClubFFXIV listeners can tune into.
 
-## How it works
+> **TL;DR:** if you already broadcast your DJ sets on **Twitch** or **YouTube Live**, listeners just paste your channel URL into ClubFFXIV. You're done. The Icecast paths below are only if you want full control or lower latency.
+
+## Option 1: You already stream on Twitch / YouTube (zero setup)
+
+ClubFFXIV understands Twitch and YouTube URLs natively. The plugin auto-extracts the audio from the live stream — there's nothing extra you need to run.
+
+- **Twitch:** share `https://twitch.tv/yourchannel` — listeners paste it
+- **YouTube Live:** share `https://www.youtube.com/watch?v=...` — listeners paste it
+- Also supported: SoundCloud, Mixcloud, Twitcasting, Niconico
+
+If you publish your house to the registry with this URL, friends entering your house auto-tune to your stream — same flow as a direct Icecast URL.
+
+**Tradeoffs:**
+- ~5–10 second latency (Twitch HLS) — listeners are roughly synced with each other but a few seconds behind your live decks
+- First-time use on a listener's machine downloads helper binaries (~80MB, one-time)
+- If yt-dlp is out of date and Twitch's API has shifted, listeners may need to "Check / update" yt-dlp in the plugin's binary section
+
+If you don't already stream on Twitch or YouTube and don't want to start, skip to Option 2 (run your own Icecast).
+
+---
+
+## Option 2: Run your own Icecast (full control, lower latency)
 
 ```
   Your PC                                Your stream server                        Listeners
@@ -21,7 +42,7 @@ Three pieces:
 
 You need to run (1) yourself; (2) can be self-hosted on a cheap VPS or rented from a managed provider.
 
-## Pick a path
+### Pick a path
 
 | Path | Cost | Effort | Best for |
 |---|---|---|---|

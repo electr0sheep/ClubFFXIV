@@ -74,11 +74,13 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
 
         SectionHeader("Try it now — known-good streams:");
+        CopyableUrl("Lo-fi Hip Hop (YouTube Live)", "https://www.youtube.com/watch?v=9Tzc3ybp8vA");
         CopyableUrl("SomaFM Groove Salad",   "https://ice1.somafm.com/groovesalad-128-mp3");
         CopyableUrl("SomaFM Drone Zone",     "https://ice1.somafm.com/dronezone-128-mp3");
         CopyableUrl("SomaFM Indie Pop Rocks", "https://ice1.somafm.com/indiepop-128-mp3");
         ImGui.Spacing();
         ImGui.TextDisabled("(Click 'Copy' next to a URL, then paste into the Stream URL field.)");
+        ImGui.TextDisabled("(YouTube Live triggers a one-time ~80MB download of ffmpeg + yt-dlp.)");
     }
 
     private void DrawDj()

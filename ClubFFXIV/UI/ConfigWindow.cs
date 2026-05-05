@@ -167,15 +167,16 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawStreamSection()
     {
-        ImGui.TextWrapped("Paste an Icecast / Shoutcast / MP3 stream URL.");
+        ImGui.TextWrapped("Paste a Twitch / YouTube / Icecast / Shoutcast / MP3 stream URL.");
         ImGui.SameLine();
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Need a URL?\n" +
-                "  • Listener: ask a DJ for theirs\n" +
+                "  • Listener: ask a DJ for their Twitch / YouTube channel or stream URL\n" +
                 "  • DJ: see Help → \"I want to DJ\"\n" +
-                "  • Just testing: try https://ice1.somafm.com/groovesalad-128-mp3");
+                "  • Just testing: try https://www.youtube.com/watch?v=9Tzc3ybp8vA\n" +
+                "    or https://ice1.somafm.com/groovesalad-128-mp3");
         ImGui.Spacing();
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText("##url", ref urlInput, 1024);
