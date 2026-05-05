@@ -520,9 +520,15 @@ public sealed class Plugin : IDalamudPlugin
 
         // Always make sure we have a fresh listing for the current ward.
         // EnsureWardListingAsync is a no-op when cache is fresh or a fetch is in flight,
-        // so calling it every tick is free.
+        // so calling it every tick is free *as long as it doesn't block the framework
+        // thread*. HttpClient.GetAsync inside has a sync prefix (DNS, connection pool
+        // lookup) that can stall under Wine — wrap in Task.Run to push the whole
+        // chain onto the threadpool.
         if (CurrentWard.HasValue && registryClient != null)
-            _ = EnsureWardListingAsync(CurrentWard.Value);
+        {
+            var ward = CurrentWard.Value;
+            _ = Task.Run(() => EnsureWardListingAsync(ward));
+        }
         var wardFetchKickoffMs = sw.ElapsedMilliseconds;
 
         var totalMs = resolveCurrentMs + resolveOutdoorMs + ownershipMs + wardFetchKickoffMs;
