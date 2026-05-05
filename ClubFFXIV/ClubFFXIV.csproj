@@ -9,6 +9,8 @@
 	<ItemGroup>
 		<PackageReference Include="NAudio" Version="2.3.0" />
 		<PackageReference Include="NSec.Cryptography" Version="26.4.0" />
+		<PackageReference Include="NLayer" Version="1.16.0" />
+		<PackageReference Include="NVorbis" Version="0.10.5" />
 	</ItemGroup>
 
 	<ItemGroup>

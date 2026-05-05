@@ -125,17 +125,23 @@ public sealed class Plugin : IDalamudPlugin
         streamStartCts = cts;
         pendingStartUrl = url;
 
+        Log.Info($"[ClubFFXIV] Starting stream ({targetMode}): {url}");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await streamPlayer.PlayAsync(url, cts.Token);
             if (cts.IsCancellationRequested) return;
             CurrentMode = targetMode;
+            Log.Info($"[ClubFFXIV] Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode})");
             ChatGui.Print($"[ClubFFXIV] {(targetMode == PlaybackMode.Outdoor ? "Approaching" : "Playing")}: {displayName}");
         }
-        catch (OperationCanceledException) { /* superseded */ }
+        catch (OperationCanceledException)
+        {
+            Log.Info($"[ClubFFXIV] Stream start cancelled after {sw.ElapsedMilliseconds}ms");
+        }
         catch (Exception ex)
         {
-            Log.Error(ex, "Stream start failed");
+            Log.Error(ex, $"[ClubFFXIV] Stream start failed after {sw.ElapsedMilliseconds}ms");
             ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
             if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
         }

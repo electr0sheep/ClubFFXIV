@@ -8,17 +8,20 @@ namespace ClubFFXIV.Audio;
 
 /// <summary>
 /// Plays an HTTP audio stream through a tunable spatial chain:
-///   Source (MediaFoundationReader) → BiQuadLowpass → VolumeSampleProvider → WaveOutEvent.
+///   HttpAudioReader (NLayer/NVorbis) → BiQuadLowpass → VolumeSampleProvider → WaveOutEvent.
 ///
 /// Spatial parameters (lowpass cutoff, spatial multiplier) are layered on top
 /// of the user's master volume. When inside a house we set them to "transparent"
 /// (cutoff = 20 kHz, spatial = 1.0) and the chain effectively passes audio unchanged.
+///
+/// Cross-platform decoder choice (NLayer/NVorbis) means this works under Wine
+/// (XIVLauncher Mac/Linux), unlike NAudio's MediaFoundationReader.
 /// </summary>
 public sealed class StreamPlayer : IDisposable
 {
     private const float BypassCutoffHz = 20000f;
 
-    private MediaFoundationReader? reader;
+    private HttpAudioReader? reader;
     private BiQuadFilterSampleProvider? lowpass;
     private VolumeSampleProvider? volumeStage;
     private WaveOutEvent? output;
@@ -32,7 +35,6 @@ public sealed class StreamPlayer : IDisposable
     public bool IsPlaying => output?.PlaybackState == PlaybackState.Playing;
     public string? CurrentUrl => currentUrl;
 
-    /// <summary>User volume (config slider). Combines multiplicatively with spatial.</summary>
     public float MasterVolume
     {
         get => masterVolume;
@@ -63,24 +65,18 @@ public sealed class StreamPlayer : IDisposable
         }
     }
 
-    /// <summary>Convenience setter — single update for both spatial knobs.</summary>
     public void SetSpatial(float volume, float cutoffHz)
     {
         SpatialVolume = volume;
         SpatialCutoffHz = cutoffHz;
     }
 
-    /// <summary>Reset spatial chain to transparent (used when entering interior).</summary>
     public void BypassSpatial()
     {
         SpatialVolume = 1f;
         SpatialCutoffHz = BypassCutoffHz;
     }
 
-    /// <summary>
-    /// Hard mute that overrides master + spatial. Used when FFXIV is unfocused
-    /// (so the stream tracks the game's mute-when-unfocused behavior).
-    /// </summary>
     public bool Muted
     {
         get => muted;
@@ -93,31 +89,33 @@ public sealed class StreamPlayer : IDisposable
     }
 
     /// <summary>
-    /// Build the chain off the framework thread (MediaFoundationReader blocks 1–3s
-    /// on initial buffer for HTTP streams). Caller can cancel mid-build.
-    /// On success, the new chain replaces the previous one and starts playing.
+    /// Build the chain off the framework thread. HttpAudioReader.CreateAsync blocks
+    /// for ~1–3s waiting for the first decoded frame, depending on stream's initial
+    /// buffer behaviour. Caller can cancel mid-build.
     /// </summary>
     public async Task PlayAsync(string url, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL is empty", nameof(url));
 
-        // Snapshot spatial state for chain construction. After the chain comes online,
-        // any newer SpatialVolume/SpatialCutoffHz writes will be applied via ApplyVolume()
-        // and the lowpass.CutoffHz setter — so live updates during loading still take effect.
         var initialCutoff = spatialCutoff;
+
+        var newReader = await HttpAudioReader.CreateAsync(url, ct).ConfigureAwait(false);
+
+        if (ct.IsCancellationRequested)
+        {
+            newReader.Dispose();
+            return;
+        }
 
         var built = await Task.Run(() =>
         {
             ct.ThrowIfCancellationRequested();
-            var r = new MediaFoundationReader(url);
-            ct.ThrowIfCancellationRequested();
-            var samples = r.ToSampleProvider();
-            var lp = new BiQuadFilterSampleProvider(samples, initialCutoff);
-            var v = new VolumeSampleProvider(lp) { Volume = 0f }; // start silent, ramped up below
+            var lp = new BiQuadFilterSampleProvider(newReader, initialCutoff);
+            var v = new VolumeSampleProvider(lp) { Volume = 0f };
             var o = new WaveOutEvent();
             o.Init(v.ToWaveProvider());
-            return new BuiltChain(r, lp, v, o);
+            return new BuiltChain(newReader, lp, v, o);
         }, ct).ConfigureAwait(false);
 
         if (ct.IsCancellationRequested)
@@ -134,7 +132,6 @@ public sealed class StreamPlayer : IDisposable
         output = built.Output;
         currentUrl = url;
 
-        // Apply latest live params (in case they changed during the build).
         lowpass.CutoffHz = spatialCutoff;
         volumeStage.Volume = EffectiveVolume();
 
@@ -144,7 +141,7 @@ public sealed class StreamPlayer : IDisposable
     public void Play(string url) => PlayAsync(url).GetAwaiter().GetResult();
 
     private readonly record struct BuiltChain(
-        MediaFoundationReader Reader,
+        HttpAudioReader Reader,
         BiQuadFilterSampleProvider Lowpass,
         VolumeSampleProvider Volume,
         WaveOutEvent Output) : IDisposable
