@@ -29,6 +29,11 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     private readonly Stream stdout;
     private byte[] readBuffer = new byte[8192];
     private bool disposed;
+    // True only when our Dispose actively killed a still-running process.
+    // Stays false when Dispose runs *after* ffmpeg already exited on its own —
+    // so the stderr drain can correctly attribute unexpected exits.
+    private bool killedByUs;
+    private bool eofLogged; // suppress repeated EOF logs from the same dead reader
 
     private SubprocessAudioReader(Process ffmpeg)
     {
@@ -102,7 +107,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
 
             try
             {
-                if (proc.HasExited && !reader.disposed)
+                if (proc.HasExited && !reader.killedByUs)
                     Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
             }
             catch { /* already disposed */ }
@@ -126,7 +131,17 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             while (totalBytes < byteCount)
             {
                 var n = stdout.Read(readBuffer, totalBytes, byteCount - totalBytes);
-                if (n == 0) break;
+                if (n == 0)
+                {
+                    if (totalBytes == 0 && !eofLogged)
+                    {
+                        eofLogged = true;
+                        Plugin.Log.Warning(
+                            $"[ffmpeg] stdout EOF — process exited or closed pipe. " +
+                            $"HasExited={ffmpeg.HasExited} killedByUs={killedByUs}");
+                    }
+                    break;
+                }
                 totalBytes += n;
             }
         }
@@ -150,7 +165,13 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         disposed = true;
         try
         {
-            if (!ffmpeg.HasExited) ffmpeg.Kill(entireProcessTree: true);
+            if (!ffmpeg.HasExited)
+            {
+                killedByUs = true;
+                ffmpeg.Kill(entireProcessTree: true);
+            }
+            // If ffmpeg already exited, leave killedByUs = false so the drain
+            // task logs the unexpected-exit warning with whatever stderr we got.
         }
         catch { /* already gone */ }
         try { ffmpeg.Dispose(); } catch { /* ignore */ }
