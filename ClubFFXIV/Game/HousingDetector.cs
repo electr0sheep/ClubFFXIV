@@ -1,4 +1,4 @@
-using FFXIVClientStructs.FFXIV.Client.Game.Housing;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace ClubFFXIV.Game;
 
@@ -13,7 +13,7 @@ public sealed class HousingDetector
     /// </summary>
     public unsafe PlotKey? ResolveCurrent()
     {
-        var local = Plugin.ClientState.LocalPlayer;
+        var local = Plugin.PlayerState;
         if (local == null) return null;
 
         var hm = HousingManager.Instance();
