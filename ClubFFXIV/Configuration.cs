@@ -8,37 +8,26 @@ namespace ClubFFXIV;
 [Serializable]
 public class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
 
     public string LastStreamUrl { get; set; } = "";
     public float Volume { get; set; } = 0.7f;
 
-    /// <summary>
-    /// Personal auto-play overrides keyed by PlotKey.Canonical.
-    /// Always preferred over the registry — your local settings win.
-    /// </summary>
     public Dictionary<string, ClubEntry> SavedHouses { get; set; } = new();
-
-    /// <summary>
-    /// Houses you've published to the registry. Tracked locally so you can manage
-    /// (re-publish, unpublish) without re-discovering. Keyed by PlotKey.Canonical.
-    /// </summary>
     public Dictionary<string, ClubEntry> PublishedHouses { get; set; } = new();
 
-    /// <summary>
-    /// Base URL of the registry (e.g. "https://clubffxiv-registry.workers.dev").
-    /// Empty disables registry features — plugin still works for local SavedHouses.
-    /// </summary>
     public string RegistryUrl { get; set; } = "";
-
     public bool AutoQueryRegistry { get; set; } = true;
+    public string DjPrivateKeyBase64 { get; set; } = "";
 
     /// <summary>
-    /// Ed25519 private key (raw, base64). Generated lazily on first publish.
-    /// SENSITIVE: anyone with this can impersonate you in the registry.
-    /// Back up your plugin config if you publish clubs you care about.
+    /// Phase 4 spatial knobs. Distances are in FFXIV world units (≈ meters).
+    /// Cutoffs are in Hz.
     /// </summary>
-    public string DjPrivateKeyBase64 { get; set; } = "";
+    public float SpatialFalloffDistance { get; set; } = 40f;     // beyond this: silent
+    public float SpatialFullVolumeDistance { get; set; } = 3f;   // closer than this: full volume
+    public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled
+    public float SpatialMaxCutoffHz { get; set; } = 8000f;       // clearest at door
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
@@ -53,4 +42,32 @@ public class ClubEntry
 {
     public string DisplayName { get; set; } = "";
     public string StreamUrl { get; set; } = "";
+
+    /// <summary>
+    /// World-space coordinates of the front door for proximity audio.
+    /// Set by the calibration flow ("stand at the door, hit Calibrate").
+    /// Null = no spatial audio for this house — falls back to inside-only auto-play.
+    /// </summary>
+    public Position3? DoorPosition { get; set; }
+
+    /// <summary>
+    /// Outdoor ward identifier the door is in. Used to filter candidate houses
+    /// when the player is roaming a ward (avoid scanning every saved house every tick).
+    /// </summary>
+    public uint? DoorTerritoryType { get; set; }
+    public int? DoorWard { get; set; }
+}
+
+[Serializable]
+public class Position3
+{
+    public float X { get; set; }
+    public float Y { get; set; }
+    public float Z { get; set; }
+
+    public Position3() { }
+    public Position3(float x, float y, float z) { X = x; Y = y; Z = z; }
+    public Position3(System.Numerics.Vector3 v) { X = v.X; Y = v.Y; Z = v.Z; }
+
+    public System.Numerics.Vector3 ToVec() => new(X, Y, Z);
 }

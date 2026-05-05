@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Threading.Tasks;
+using ClubFFXIV.Game;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 
@@ -17,7 +18,7 @@ public sealed class ConfigWindow : Window, IDisposable
         : base("ClubFFXIV##ClubFFXIVConfig", ImGuiWindowFlags.NoCollapse)
     {
         this.plugin = plugin;
-        Size = new Vector2(560, 620);
+        Size = new Vector2(600, 720);
         SizeCondition = ImGuiCond.FirstUseEver;
         urlInput = plugin.Config.LastStreamUrl;
         registryUrlInput = plugin.Config.RegistryUrl;
@@ -33,6 +34,9 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawCurrentLocationSection();
         ImGui.Spacing();
         ImGui.Separator();
+        DrawProximityStatusSection();
+        ImGui.Spacing();
+        ImGui.Separator();
         DrawRegistrySection();
         ImGui.Spacing();
         ImGui.Separator();
@@ -40,6 +44,9 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         DrawPublishedHousesSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawSpatialTuningSection();
         DrawStatusFooter();
     }
 
@@ -47,11 +54,10 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         ImGui.TextWrapped("Paste an Icecast / Shoutcast / MP3 stream URL.");
         ImGui.Spacing();
-
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText("##url", ref urlInput, 1024);
-
         ImGui.Spacing();
+
         if (ImGui.Button("Play", new Vector2(80, 0)))
         {
             try
@@ -67,7 +73,6 @@ public sealed class ConfigWindow : Window, IDisposable
                 Plugin.Log.Error(ex, "Play failed from ConfigWindow");
             }
         }
-
         ImGui.SameLine();
         if (ImGui.Button("Stop", new Vector2(80, 0)))
         {
@@ -91,61 +96,77 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
 
         var key = plugin.CurrentPlotKey;
-        if (!key.HasValue)
+        var ward = plugin.CurrentWard;
+
+        if (key.HasValue)
+        {
+            var name = plugin.HousingDetector.GetDisplayName(key.Value);
+            ImGui.TextWrapped($"Inside: {name}");
+
+            ImGui.Spacing();
+            var noUrl = string.IsNullOrWhiteSpace(urlInput);
+            if (noUrl) ImGui.BeginDisabled();
+            if (ImGui.Button("Save URL for this house (local)"))
+            {
+                plugin.SaveCurrentHouse(name, urlInput);
+                statusLine = $"Saved locally: {name}";
+            }
+            ImGui.SameLine();
+            if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+            if (ImGui.Button("Publish to registry"))
+            {
+                var dn = name;
+                var url = urlInput;
+                statusLine = "Publishing...";
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await plugin.PublishCurrentHouseAsync(dn, url);
+                        statusLine = $"Published: {dn}";
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.Error(ex, "Publish failed");
+                        statusLine = $"Publish failed: {ex.Message}";
+                    }
+                });
+            }
+            if (!plugin.RegistryEnabled) ImGui.EndDisabled();
+            if (noUrl) ImGui.EndDisabled();
+        }
+        else if (ward.HasValue)
+        {
+            ImGui.TextWrapped($"Roaming ward (territory {ward.Value.TerritoryType}, ward {ward.Value.Ward + 1})");
+            ImGui.TextDisabled("Walk to a house's door and use the Calibrate button on a saved/published entry below.");
+        }
+        else
         {
             ImGui.TextDisabled("Not in housing.");
-            return;
         }
+    }
 
-        var name = plugin.HousingDetector.GetDisplayName(key.Value);
-        ImGui.TextWrapped(name);
-        ImGui.Spacing();
+    private void DrawProximityStatusSection()
+    {
+        ImGui.TextUnformatted($"Playback: {plugin.CurrentMode}");
 
-        var noUrl = string.IsNullOrWhiteSpace(urlInput);
-        if (noUrl) ImGui.BeginDisabled();
-        if (ImGui.Button("Save URL for this house (local)"))
+        var prox = plugin.CurrentProximity;
+        if (prox.HasValue)
         {
-            plugin.SaveCurrentHouse(name, urlInput);
-            statusLine = $"Saved locally: {name}";
+            var p = prox.Value;
+            ImGui.Text($"Approaching: {p.Candidate.DisplayName}");
+            ImGui.Text($"Distance: {p.Distance:F1} m   Nearness: {p.NormalizedNearness * 100:F0}%");
         }
-        ImGui.SameLine();
-        var canPublish = plugin.RegistryEnabled && !noUrl;
-        if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-        if (ImGui.Button("Publish to registry"))
-        {
-            var keyCanonical = key.Value.Canonical;
-            var dn = name;
-            var url = urlInput;
-            statusLine = "Publishing...";
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await plugin.PublishCurrentHouseAsync(dn, url);
-                    statusLine = $"Published: {dn}";
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.Error(ex, "Publish failed");
-                    statusLine = $"Publish failed: {ex.Message}";
-                }
-            });
-        }
-        if (!plugin.RegistryEnabled) ImGui.EndDisabled();
-        if (noUrl) ImGui.EndDisabled();
     }
 
     private void DrawRegistrySection()
     {
         ImGui.TextUnformatted("Registry");
         ImGui.Spacing();
-
         ImGui.TextWrapped("Backend URL (e.g. https://clubffxiv-registry.workers.dev):");
         ImGui.SetNextItemWidth(-1);
-        if (ImGui.InputText("##registryUrl", ref registryUrlInput, 512))
-        {
-            // edited but not yet applied
-        }
+        ImGui.InputText("##registryUrl", ref registryUrlInput, 512);
+
         if (ImGui.Button("Apply"))
         {
             plugin.Config.RegistryUrl = registryUrlInput.Trim();
@@ -190,85 +211,133 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         ImGui.TextUnformatted($"Saved Houses (local) — {plugin.Config.SavedHouses.Count}");
         ImGui.Spacing();
-
-        string? toDelete = null;
-        foreach (var (k, entry) in plugin.Config.SavedHouses)
-        {
-            ImGui.PushID("saved-" + k);
-            ImGui.TextUnformatted(entry.DisplayName);
-            ImGui.SameLine();
-            RightAlignButtons(out var loadX, out var deleteX);
-            ImGui.SetCursorPosX(loadX);
-            if (ImGui.SmallButton("Load"))
-            {
-                urlInput = entry.StreamUrl;
-                statusLine = $"Loaded URL from {entry.DisplayName}";
-            }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Delete"))
-            {
-                toDelete = k;
-            }
-            ImGui.TextDisabled("  " + entry.StreamUrl);
-            ImGui.PopID();
-        }
-        if (toDelete != null)
-        {
-            plugin.DeleteSavedHouse(toDelete);
-            statusLine = "Removed saved house.";
-        }
+        DrawHouseList(plugin.Config.SavedHouses, "saved", allowUnpublish: false);
     }
 
     private void DrawPublishedHousesSection()
     {
         ImGui.TextUnformatted($"Published Houses (registry) — {plugin.Config.PublishedHouses.Count}");
         ImGui.Spacing();
-
         if (!plugin.RegistryEnabled)
         {
             ImGui.TextDisabled("Set a registry URL above to manage published clubs.");
             return;
         }
+        DrawHouseList(plugin.Config.PublishedHouses, "pub", allowUnpublish: true);
+    }
 
-        string? toUnpublish = null;
-        foreach (var (k, entry) in plugin.Config.PublishedHouses)
+    private void DrawHouseList(System.Collections.Generic.Dictionary<string, ClubEntry> dict, string idPrefix, bool allowUnpublish)
+    {
+        var canCalibrate = plugin.CurrentWard.HasValue;
+        string? toRemove = null;
+
+        foreach (var (k, entry) in dict)
         {
-            ImGui.PushID("pub-" + k);
-            ImGui.TextUnformatted(entry.DisplayName);
-            ImGui.SameLine();
-            RightAlignButtons(out var loadX, out var deleteX, "Load", "Unpublish");
-            ImGui.SetCursorPosX(loadX);
+            ImGui.PushID(idPrefix + "-" + k);
+
+            var calibrated = entry.DoorPosition != null;
+            var badge = calibrated ? "[+]" : "[ ]";
+            ImGui.TextUnformatted($"{badge} {entry.DisplayName}");
+
             if (ImGui.SmallButton("Load"))
             {
                 urlInput = entry.StreamUrl;
                 statusLine = $"Loaded URL from {entry.DisplayName}";
             }
             ImGui.SameLine();
-            if (ImGui.SmallButton("Unpublish"))
+
+            if (!canCalibrate) ImGui.BeginDisabled();
+            if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate door"))
             {
-                toUnpublish = k;
+                if (plugin.CalibrateDoor(k))
+                    statusLine = $"Calibrated: {entry.DisplayName}";
             }
+            if (!canCalibrate) ImGui.EndDisabled();
+            ImGui.SameLine();
+
+            if (allowUnpublish)
+            {
+                if (ImGui.SmallButton("Unpublish"))
+                {
+                    var key = k;
+                    statusLine = "Unpublishing...";
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await plugin.UnpublishHouseAsync(key);
+                            statusLine = "Unpublished.";
+                        }
+                        catch (Exception ex)
+                        {
+                            Plugin.Log.Error(ex, "Unpublish failed");
+                            statusLine = $"Unpublish failed: {ex.Message}";
+                        }
+                    });
+                }
+            }
+            else
+            {
+                if (ImGui.SmallButton("Delete")) toRemove = k;
+            }
+
             ImGui.TextDisabled("  " + entry.StreamUrl);
+            if (calibrated)
+            {
+                var p = entry.DoorPosition!;
+                ImGui.TextDisabled(
+                    $"  door: ({p.X:F1}, {p.Y:F1}, {p.Z:F1})  ward {entry.DoorWard + 1}  territory {entry.DoorTerritoryType}");
+            }
             ImGui.PopID();
         }
-        if (toUnpublish != null)
+
+        if (toRemove != null)
         {
-            var k = toUnpublish;
-            statusLine = "Unpublishing...";
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await plugin.UnpublishHouseAsync(k);
-                    statusLine = "Unpublished.";
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.Error(ex, "Unpublish failed");
-                    statusLine = $"Unpublish failed: {ex.Message}";
-                }
-            });
+            plugin.DeleteSavedHouse(toRemove);
+            statusLine = "Removed saved house.";
         }
+    }
+
+    private void DrawSpatialTuningSection()
+    {
+        if (!ImGui.CollapsingHeader("Spatial audio tuning"))
+            return;
+
+        var changed = false;
+
+        var falloff = plugin.Config.SpatialFalloffDistance;
+        if (ImGui.SliderFloat("Falloff distance (m)", ref falloff, 5f, 100f, "%.0f"))
+        {
+            plugin.Config.SpatialFalloffDistance = falloff;
+            changed = true;
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Beyond this distance, the stream is silent and disconnected.");
+
+        var full = plugin.Config.SpatialFullVolumeDistance;
+        if (ImGui.SliderFloat("Full-volume distance (m)", ref full, 0.5f, 20f, "%.1f"))
+        {
+            plugin.Config.SpatialFullVolumeDistance = full;
+            changed = true;
+        }
+
+        var minHz = plugin.Config.SpatialMinCutoffHz;
+        if (ImGui.SliderFloat("Min cutoff Hz (most muffled)", ref minHz, 100f, 2000f, "%.0f"))
+        {
+            plugin.Config.SpatialMinCutoffHz = minHz;
+            changed = true;
+        }
+
+        var maxHz = plugin.Config.SpatialMaxCutoffHz;
+        if (ImGui.SliderFloat("Max cutoff Hz (clearest)", ref maxHz, 2000f, 18000f, "%.0f"))
+        {
+            plugin.Config.SpatialMaxCutoffHz = maxHz;
+            changed = true;
+        }
+
+        if (changed) plugin.Config.Save();
     }
 
     private void DrawStatusFooter()
@@ -277,16 +346,5 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.TextWrapped(statusLine);
-    }
-
-    private static void RightAlignButtons(out float firstX, out float secondX, string first = "Load", string second = "Delete")
-    {
-        var avail = ImGui.GetContentRegionAvail().X;
-        var pad = ImGui.GetStyle().FramePadding.X * 2;
-        var firstW = ImGui.CalcTextSize(first).X + pad;
-        var secondW = ImGui.CalcTextSize(second).X + pad;
-        var startX = ImGui.GetCursorPosX() + avail - firstW - secondW - 6;
-        firstX = startX;
-        secondX = startX + firstW + 6;
     }
 }

@@ -1,16 +1,14 @@
+using System.Numerics;
 using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace ClubFFXIV.Game;
 
 /// <summary>
-/// Wraps FFXIVClientStructs HousingManager to detect the current house instance.
-/// Phase 2 only resolves indoor (inside-the-house) state; outdoor ward proximity is Phase 4.
+/// Wraps FFXIVClientStructs HousingManager. Resolves both indoor (which house
+/// instance you're in) and outdoor (which ward you're roaming) state.
 /// </summary>
 public sealed class HousingDetector
 {
-    /// <summary>
-    /// Returns the player's current house, or null if not currently inside one.
-    /// </summary>
     public unsafe PlotKey? ResolveCurrent()
     {
         var local = Plugin.PlayerState;
@@ -19,7 +17,6 @@ public sealed class HousingDetector
         var hm = HousingManager.Instance();
         if (hm == null) return null;
 
-        // IndoorTerritory is non-null only when the player is physically inside a house instance.
         if (hm->IndoorTerritory == null) return null;
 
         var worldId = local.CurrentWorld.RowId;
@@ -33,9 +30,40 @@ public sealed class HousingDetector
     }
 
     /// <summary>
-    /// Friendly display name for a saved house. Phase 5 will replace the territory→district
-    /// table with a proper Lumina lookup; for now the well-known interior IDs are inlined.
+    /// True when the player is roaming an outdoor housing ward (not inside a house).
     /// </summary>
+    public unsafe bool IsInOutdoorWard()
+    {
+        var hm = HousingManager.Instance();
+        if (hm == null) return false;
+        return hm->OutdoorTerritory != null && hm->IndoorTerritory == null;
+    }
+
+    /// <summary>
+    /// Outdoor ward context if the player is roaming a ward, else null.
+    /// </summary>
+    public unsafe WardLocation? ResolveOutdoor()
+    {
+        if (!IsInOutdoorWard()) return null;
+
+        var hm = HousingManager.Instance();
+        if (hm == null) return null;
+
+        return new WardLocation(
+            TerritoryType: Plugin.ClientState.TerritoryType,
+            Ward: hm->GetCurrentWard(),
+            Division: hm->GetCurrentDivision());
+    }
+
+    /// <summary>
+    /// Player's current world-space position, or null if no character loaded.
+    /// </summary>
+    public Vector3? PlayerPosition()
+    {
+        var pc = Plugin.ClientState.LocalPlayer;
+        return pc?.Position;
+    }
+
     public string GetDisplayName(PlotKey key)
     {
         var district = key.TerritoryType switch
@@ -55,3 +83,5 @@ public sealed class HousingDetector
         return $"{district} Ward {key.Ward + 1}, Plot {key.Plot + 1}{sub}";
     }
 }
+
+public readonly record struct WardLocation(uint TerritoryType, int Ward, int Division);
