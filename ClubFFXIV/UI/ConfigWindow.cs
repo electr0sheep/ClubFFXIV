@@ -53,8 +53,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawHelpBar()
     {
-        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl)
-                       && string.IsNullOrEmpty(plugin.Config.RegistryUrl);
+        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl);
 
         if (firstRun)
         {

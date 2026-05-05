@@ -16,7 +16,10 @@ public class Configuration : IPluginConfiguration
     public Dictionary<string, ClubEntry> SavedHouses { get; set; } = new();
     public Dictionary<string, ClubEntry> PublishedHouses { get; set; } = new();
 
-    public string RegistryUrl { get; set; } = "";
+    // Defaults to the public ClubFFXIV registry so the plugin works out of the box.
+    // Users can point at their own backend by changing this in /club config; clearing
+    // it disables registry features (local SavedHouses still work).
+    public string RegistryUrl { get; set; } = "https://clubffxiv-registry.clubffxiv-registry.workers.dev";
     public bool AutoQueryRegistry { get; set; } = true;
     public string DjPrivateKeyBase64 { get; set; } = "";
 
@@ -26,8 +29,11 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public float SpatialFalloffDistance { get; set; } = 40f;     // beyond this: silent
     public float SpatialFullVolumeDistance { get; set; } = 3f;   // closer than this: full volume
-    public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled
-    public float SpatialMaxCutoffHz { get; set; } = 8000f;       // clearest at door
+    public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled (far)
+    // Outdoor cap stays well below indoor's bypass (20 kHz), so even right at the
+    // door you hear a muffled "wall in the way" sound. Crossing the threshold into
+    // the house is what removes the lowpass entirely.
+    public float SpatialMaxCutoffHz { get; set; } = 2500f;       // muffled even at door
 
     /// <summary>Mute the game's own BGM while our stream is playing.</summary>
     public bool MuteGameBgmWhilePlaying { get; set; } = true;
