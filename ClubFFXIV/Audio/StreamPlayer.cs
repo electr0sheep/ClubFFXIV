@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
@@ -90,22 +92,68 @@ public sealed class StreamPlayer : IDisposable
         }
     }
 
-    public void Play(string url)
+    /// <summary>
+    /// Build the chain off the framework thread (MediaFoundationReader blocks 1–3s
+    /// on initial buffer for HTTP streams). Caller can cancel mid-build.
+    /// On success, the new chain replaces the previous one and starts playing.
+    /// </summary>
+    public async Task PlayAsync(string url, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(url))
             throw new ArgumentException("URL is empty", nameof(url));
 
+        // Snapshot spatial state for chain construction. After the chain comes online,
+        // any newer SpatialVolume/SpatialCutoffHz writes will be applied via ApplyVolume()
+        // and the lowpass.CutoffHz setter — so live updates during loading still take effect.
+        var initialCutoff = spatialCutoff;
+
+        var built = await Task.Run(() =>
+        {
+            ct.ThrowIfCancellationRequested();
+            var r = new MediaFoundationReader(url);
+            ct.ThrowIfCancellationRequested();
+            var samples = r.ToSampleProvider();
+            var lp = new BiQuadFilterSampleProvider(samples, initialCutoff);
+            var v = new VolumeSampleProvider(lp) { Volume = 0f }; // start silent, ramped up below
+            var o = new WaveOutEvent();
+            o.Init(v.ToWaveProvider());
+            return new BuiltChain(r, lp, v, o);
+        }, ct).ConfigureAwait(false);
+
+        if (ct.IsCancellationRequested)
+        {
+            built.Dispose();
+            return;
+        }
+
         Stop();
 
-        reader = new MediaFoundationReader(url);
-        var samples = reader.ToSampleProvider();
-        lowpass = new BiQuadFilterSampleProvider(samples, spatialCutoff);
-        volumeStage = new VolumeSampleProvider(lowpass) { Volume = EffectiveVolume() };
-
-        output = new WaveOutEvent();
-        output.Init(volumeStage.ToWaveProvider());
-        output.Play();
+        reader = built.Reader;
+        lowpass = built.Lowpass;
+        volumeStage = built.Volume;
+        output = built.Output;
         currentUrl = url;
+
+        // Apply latest live params (in case they changed during the build).
+        lowpass.CutoffHz = spatialCutoff;
+        volumeStage.Volume = EffectiveVolume();
+
+        output.Play();
+    }
+
+    public void Play(string url) => PlayAsync(url).GetAwaiter().GetResult();
+
+    private readonly record struct BuiltChain(
+        MediaFoundationReader Reader,
+        BiQuadFilterSampleProvider Lowpass,
+        VolumeSampleProvider Volume,
+        WaveOutEvent Output) : IDisposable
+    {
+        public void Dispose()
+        {
+            try { Output.Dispose(); } catch { /* ignore */ }
+            try { Reader.Dispose(); } catch { /* ignore */ }
+        }
     }
 
     public void Stop()

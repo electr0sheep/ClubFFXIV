@@ -47,6 +47,12 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
 
+    // Cancels any in-flight stream construction when a newer one starts.
+    private System.Threading.CancellationTokenSource? streamStartCts;
+    // URL that's currently being started (chain construction in flight).
+    // Prevents the next framework tick from spawning a duplicate start.
+    private string? pendingStartUrl;
+
     // Ward listing cache: keyed by (worldId, territoryType, ward), TTL 60s.
     private readonly Dictionary<string, CachedWardListing> wardCache = new();
     private static readonly TimeSpan WardCacheTtl = TimeSpan.FromSeconds(60);
@@ -94,15 +100,49 @@ public sealed class Plugin : IDalamudPlugin
     public void PlayStream(string url)
     {
         streamPlayer.BypassSpatial();
-        streamPlayer.Play(url);
+        // Optimistic: set mode now so UI reflects intent. The async chain build
+        // happens in the background — if it fails we revert.
         CurrentMode = PlaybackMode.Manual;
+        _ = StartStreamAsync(url, PlaybackMode.Manual, $"Stream: {url}");
     }
 
     public void StopStream()
     {
+        streamStartCts?.Cancel();
         streamPlayer.Stop();
         CurrentMode = PlaybackMode.Off;
         CurrentProximity = null;
+    }
+
+    /// <summary>
+    /// Starts a stream off the framework thread. Cancels any prior in-flight start.
+    /// On completion, sets CurrentMode and prints a chat notification.
+    /// </summary>
+    private async Task StartStreamAsync(string url, PlaybackMode targetMode, string displayName)
+    {
+        streamStartCts?.Cancel();
+        var cts = new System.Threading.CancellationTokenSource();
+        streamStartCts = cts;
+        pendingStartUrl = url;
+
+        try
+        {
+            await streamPlayer.PlayAsync(url, cts.Token);
+            if (cts.IsCancellationRequested) return;
+            CurrentMode = targetMode;
+            ChatGui.Print($"[ClubFFXIV] {(targetMode == PlaybackMode.Outdoor ? "Approaching" : "Playing")}: {displayName}");
+        }
+        catch (OperationCanceledException) { /* superseded */ }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Stream start failed");
+            ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
+            if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
+        }
+        finally
+        {
+            if (pendingStartUrl == url) pendingStartUrl = null;
+        }
     }
 
     public void SetStreamVolume(float volume) => streamPlayer.MasterVolume = volume;
@@ -350,29 +390,27 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (streamPlayer.IsPlaying) streamPlayer.Stop();
-
         if (Config.SavedHouses.TryGetValue(key.Canonical, out var saved)
             && !string.IsNullOrWhiteSpace(saved.StreamUrl))
         {
-            StartIndoor(saved.StreamUrl, saved.DisplayName);
+            EnterIndoor(saved.StreamUrl, saved.DisplayName);
             return;
         }
 
         if (Config.AutoQueryRegistry && registryClient != null)
         {
-            _ = QueryRegistryAndStartIndoor(key);
+            _ = QueryRegistryAndEnterIndoor(key);
         }
     }
 
-    private async Task QueryRegistryAndStartIndoor(PlotKey key)
+    private async Task QueryRegistryAndEnterIndoor(PlotKey key)
     {
         try
         {
             var record = await registryClient!.GetAsync(key.Canonical);
             if (record == null) return;
             if (!Nullable.Equals(CurrentPlotKey, key)) return;
-            StartIndoor(record.StreamUrl, record.DisplayName);
+            EnterIndoor(record.StreamUrl, record.DisplayName);
         }
         catch (Exception ex)
         {
@@ -380,20 +418,27 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void StartIndoor(string url, string displayName)
+    /// <summary>
+    /// Enter indoor playback for the given URL. If we were already playing this exact
+    /// URL outdoors (player walked from the door into the house), drop the spatial
+    /// chain in place — no restart, no rebuffering.
+    /// </summary>
+    private void EnterIndoor(string url, string displayName)
     {
-        try
+        // Seamless: same URL was already streaming outdoors.
+        if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl == url)
         {
             streamPlayer.BypassSpatial();
-            streamPlayer.Play(url);
             CurrentMode = PlaybackMode.Indoor;
-            ChatGui.Print($"[ClubFFXIV] Auto-playing: {displayName}");
+            CurrentProximity = null;
+            return;
         }
-        catch (Exception ex)
-        {
-            Log.Error(ex, "Indoor auto-play failed");
-            ChatGui.PrintError($"[ClubFFXIV] Auto-play failed: {ex.Message}");
-        }
+
+        // Already trying to start this exact URL — let it finish.
+        if (pendingStartUrl == url) return;
+
+        streamPlayer.BypassSpatial();
+        _ = StartStreamAsync(url, PlaybackMode.Indoor, displayName);
     }
 
     private void HandleOutdoorMode(WardLocation ward)
@@ -425,28 +470,22 @@ public sealed class Plugin : IDalamudPlugin
             Config.SpatialMinCutoffHz,
             Config.SpatialMaxCutoffHz);
 
-        if (CurrentMode != PlaybackMode.Outdoor
-            || streamPlayer.CurrentUrl != r.Candidate.StreamUrl)
+        // Always keep spatial knobs current so they're applied as soon as the chain
+        // comes online (which may be 1–3s away if a fresh start is in flight).
+        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff);
+
+        var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
+            || (CurrentMode != PlaybackMode.Outdoor && !streamPlayer.IsPlaying);
+
+        if (needNewStream && pendingStartUrl != r.Candidate.StreamUrl)
         {
-            try
-            {
-                streamPlayer.Stop();
-                streamPlayer.SetSpatial(r.NormalizedNearness, cutoff);
-                streamPlayer.Play(r.Candidate.StreamUrl);
-                CurrentMode = PlaybackMode.Outdoor;
-                ChatGui.Print($"[ClubFFXIV] Approaching: {r.Candidate.DisplayName}");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Spatial stream start failed");
-                CurrentMode = PlaybackMode.Off;
-                CurrentProximity = null;
-                return;
-            }
+            _ = StartStreamAsync(r.Candidate.StreamUrl, PlaybackMode.Outdoor, r.Candidate.DisplayName);
         }
-        else
+        else if (CurrentMode != PlaybackMode.Outdoor && streamPlayer.IsPlaying)
         {
-            streamPlayer.SetSpatial(r.NormalizedNearness, cutoff);
+            // Already streaming the right URL (e.g. transitioning from Indoor of same DJ
+            // back outdoors — unusual but possible). Just re-tag the mode.
+            CurrentMode = PlaybackMode.Outdoor;
         }
 
         CurrentProximity = r;
