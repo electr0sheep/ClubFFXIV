@@ -153,8 +153,11 @@ public sealed class Plugin : IDalamudPlugin
             await streamPlayer.PlayAsync(url, cts.Token);
             if (cts.IsCancellationRequested) return;
             CurrentMode = targetMode;
-            Log.Info($"[ClubFFXIV] Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode})");
-            ChatGui.Print($"[ClubFFXIV] {(targetMode == PlaybackMode.Outdoor ? "Approaching" : "Playing")}: {displayName}");
+            Log.Info($"[ClubFFXIV] Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
+            // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
+            // would spam chat every time you walk past a club.
+            if (targetMode == PlaybackMode.Manual)
+                ChatGui.Print($"[ClubFFXIV] Playing: {displayName}");
         }
         catch (OperationCanceledException)
         {
@@ -163,7 +166,9 @@ public sealed class Plugin : IDalamudPlugin
         catch (Exception ex)
         {
             Log.Error(ex, $"[ClubFFXIV] Stream start failed after {sw.ElapsedMilliseconds}ms");
-            ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
+            // Same rule for errors — only surface in chat if the user just hit Play.
+            if (targetMode == PlaybackMode.Manual)
+                ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
             if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
         }
         finally
@@ -406,7 +411,7 @@ public sealed class Plugin : IDalamudPlugin
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         var streamIsPrimary = streamPlayer.IsPlaying
             && CurrentMode is PlaybackMode.Indoor or PlaybackMode.Manual;
-        if (Config.MuteGameBgmWhilePlaying && streamIsPrimary)
+        if (streamIsPrimary)
             bgmMuter.Mute();
         else
             bgmMuter.Unmute();
@@ -433,7 +438,7 @@ public sealed class Plugin : IDalamudPlugin
         // Always make sure we have a fresh listing for the current ward.
         // EnsureWardListingAsync is a no-op when cache is fresh or a fetch is in flight,
         // so calling it every tick is free.
-        if (CurrentWard.HasValue && registryClient != null && Config.AutoQueryRegistry)
+        if (CurrentWard.HasValue && registryClient != null)
             _ = EnsureWardListingAsync(CurrentWard.Value);
     }
 
@@ -474,7 +479,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        if (Config.AutoQueryRegistry && registryClient != null)
+        if (registryClient != null)
         {
             _ = QueryRegistryAndEnterIndoor(key);
         }

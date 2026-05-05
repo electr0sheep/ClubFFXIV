@@ -20,7 +20,6 @@ public class Configuration : IPluginConfiguration
     // Users can point at their own backend by changing this in /club config; clearing
     // it disables registry features (local SavedHouses still work).
     public string RegistryUrl { get; set; } = "https://clubffxiv-registry.clubffxiv-registry.workers.dev";
-    public bool AutoQueryRegistry { get; set; } = true;
     public string DjPrivateKeyBase64 { get; set; } = "";
 
     /// <summary>
@@ -40,9 +39,6 @@ public class Configuration : IPluginConfiguration
     // door you hear a muffled "wall in the way" sound. Crossing the threshold into
     // the house is what removes the lowpass entirely.
     public float SpatialMaxCutoffHz { get; set; } = 2500f;       // muffled even at door
-
-    /// <summary>Mute the game's own BGM while our stream is playing.</summary>
-    public bool MuteGameBgmWhilePlaying { get; set; } = true;
 
     /// <summary>Mute our stream when the FFXIV window loses focus.</summary>
     public bool MuteStreamWhenUnfocused { get; set; } = true;

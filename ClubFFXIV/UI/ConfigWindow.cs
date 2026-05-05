@@ -213,13 +213,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        var muteBgm = plugin.Config.MuteGameBgmWhilePlaying;
-        if (ImGui.Checkbox("Mute FFXIV BGM while stream plays", ref muteBgm))
-        {
-            plugin.Config.MuteGameBgmWhilePlaying = muteBgm;
-            plugin.Config.Save();
-        }
-
         var followFocus = plugin.Config.MuteStreamWhenUnfocused;
         if (ImGui.Checkbox("Mute stream when FFXIV is not focused", ref followFocus))
         {
@@ -363,14 +356,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.RegistryEnabled ? "● enabled" : "○ disabled");
-
-        ImGui.Spacing();
-        var autoQuery = plugin.Config.AutoQueryRegistry;
-        if (ImGui.Checkbox("Auto-discover clubs on house entry", ref autoQuery))
-        {
-            plugin.Config.AutoQueryRegistry = autoQuery;
-            plugin.Config.Save();
-        }
 
         ImGui.Spacing();
         var djId = plugin.DjId;
