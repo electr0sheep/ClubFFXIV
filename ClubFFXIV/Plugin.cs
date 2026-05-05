@@ -294,8 +294,11 @@ public sealed class Plugin : IDalamudPlugin
         // Stream output mute when game is unfocused.
         streamPlayer.Muted = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
 
-        // Game BGM mute when we're playing and the user wants it.
-        if (Config.MuteGameBgmWhilePlaying && streamPlayer.IsPlaying)
+        // Game BGM mute only when stream is the primary audio source (indoor / manual).
+        // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
+        var streamIsPrimary = streamPlayer.IsPlaying
+            && CurrentMode is PlaybackMode.Indoor or PlaybackMode.Manual;
+        if (Config.MuteGameBgmWhilePlaying && streamIsPrimary)
             bgmMuter.Mute();
         else
             bgmMuter.Unmute();
