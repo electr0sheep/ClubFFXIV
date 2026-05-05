@@ -25,12 +25,85 @@ You need to run (1) yourself; (2) can be self-hosted on a cheap VPS or rented fr
 
 | Path | Cost | Effort | Best for |
 |---|---|---|---|
-| **Self-hosted Icecast on a $5 VPS** | $5/mo | medium (one-time setup) | technical users; you already run a Cloudflare worker |
-| **Azuracast self-hosted** | $5/mo | medium (more features) | want a web UI to manage your station |
+| **Local PC + Cloudflare Tunnel** | **$0** | low–medium | run on your gaming PC, no cloud signup |
+| **Oracle Cloud Free Tier + Icecast** | **$0** | medium | always-on, dedicated, real free hosting |
+| **Self-hosted Icecast on a $5 VPS** | $5/mo | medium | reliable, no risk of free-tier termination |
+| **Azuracast self-hosted on a VPS** | $5/mo | medium (more features) | want a web UI to manage your station |
 | **Managed: Azuracast Cloud / Radio.co / Centova** | $15–25/mo | low | non-technical, set-and-forget |
-| **Free tiers (ZenoLive, MyRadioStream)** | $0 | low | testing only — bitrate caps, ads, instability |
+| **Free tiers (Caster.fm, ZenoLive)** | $0 | low | testing only — bitrate caps, ads, instability |
 
-The rest of this guide walks through the **self-hosted Icecast** path. It's the cheapest and most flexible. Skip to the [Mixxx section](#3-mixxx-the-dj-deck) if you're using a managed service.
+The rest of this guide walks through the **self-hosted Icecast** path on a paid $5 VPS. The two free paths use the same Icecast + Mixxx setup; only the hosting differs (see [Free options](#free-options) below).
+
+## Free options
+
+### Local PC + Cloudflare Tunnel (recommended free path)
+
+Run Icecast on your own PC, expose it publicly via Cloudflare Tunnel. Your PC needs to be on while broadcasting (probably already is, you're playing FFXIV).
+
+**Bandwidth ceiling:** at 128 kbps per listener, ~50 listeners need 6.4 Mbps upload — fits within most home internet plans. Check your upload speed before assuming it scales.
+
+**Setup:**
+
+```bash
+# Install Docker Desktop (Windows/Mac) — https://www.docker.com/products/docker-desktop/
+# Run Icecast locally:
+
+docker run -d --name icecast -p 8000:8000 \
+  -e ICECAST_SOURCE_PASSWORD=changeme_source \
+  -e ICECAST_ADMIN_PASSWORD=changeme_admin \
+  -e ICECAST_HOSTNAME=localhost \
+  libretime/icecast:2.4.4
+
+# Verify locally:
+curl http://localhost:8000/status.xsl    # should return HTML
+```
+
+**Expose via Cloudflare Tunnel:**
+
+```bash
+# Install cloudflared:
+#   Mac:     brew install cloudflared
+#   Windows: winget install --id Cloudflare.cloudflared
+#   Linux:   see https://pkg.cloudflare.com
+
+cloudflared tunnel login
+cloudflared tunnel create clubffxiv
+cloudflared tunnel route dns clubffxiv stream.yourdomain.com
+cloudflared tunnel run --url http://localhost:8000 clubffxiv
+```
+
+(Need your own domain on Cloudflare DNS — you already have one for the registry, reuse it with a subdomain.)
+
+Your stream URL is now `https://stream.yourdomain.com/clubffxiv.mp3` once Mixxx connects to mountpoint `/clubffxiv.mp3`. Free, encrypted, public.
+
+**Caveats:**
+- PC sleep / shutdown = stream offline
+- Home upload bandwidth = listener cap
+- Cloudflare may rate-limit very long-running tunnels (rare in practice)
+
+### Oracle Cloud Free Tier
+
+Oracle's "Always Free" tier gives 4 ARM cores + 24 GB RAM **with no time limit**. Identical setup to the $5 VPS guide below — just provision an Ampere A1 instance instead of paying for one.
+
+**Pros:** dedicated, always on, real server. **Cons:** signup requires a credit card (not charged), and Oracle has a reputation for terminating free accounts that sit idle. Set up monitoring or accept the risk.
+
+Sign up: https://www.oracle.com/cloud/free/
+
+### Hosted free tiers (last resort)
+
+These exist but compromise audio quality, inject ads, or limit listener counts:
+
+- **Caster.fm free tier** — 64 kbps cap, audio ads
+- **ZenoLive free** — bitrate cap, ads, periodic disconnects
+- **Render / Fly.io free tiers** — services spin down on inactivity, breaks streaming
+
+Fine for "test for an hour", not fine for a real club.
+
+### What doesn't work
+
+YouTube Live, Twitch, and Discord aren't compatible with ClubFFXIV — they use HLS/RTMP/WebRTC, not Icecast/MP3. The plugin's audio reader expects an Icecast-style MP3 or OGG stream. HLS support could be added in a future version but isn't today.
+
+---
 
 ---
 
