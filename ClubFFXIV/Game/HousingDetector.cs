@@ -60,7 +60,7 @@ public sealed class HousingDetector
     /// </summary>
     public Vector3? PlayerPosition()
     {
-        var pc = Plugin.ClientState.LocalPlayer;
+        var pc = Plugin.ObjectTable.LocalPlayer;
         return pc?.Position;
     }
 
