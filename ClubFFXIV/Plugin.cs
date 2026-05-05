@@ -1,5 +1,6 @@
 using System;
 using ClubFFXIV.Audio;
+using ClubFFXIV.Game;
 using ClubFFXIV.UI;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -20,13 +21,17 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
     [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
+    public HousingDetector HousingDetector { get; } = new();
+    public PlotKey? CurrentPlotKey { get; private set; }
 
     private readonly ConfigWindow configWindow;
     private readonly StreamPlayer streamPlayer = new();
-    private readonly BgmMuter bgmMuter = new();
+    private DateTime lastHousingCheck = DateTime.MinValue;
+    private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(1000);
 
     public Plugin()
     {
@@ -45,10 +50,12 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw += DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         PluginInterface.UiBuilder.OpenMainUi += OpenConfig;
+        Framework.Update += OnFrameworkUpdate;
     }
 
     public void Dispose()
     {
+        Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
         PluginInterface.UiBuilder.OpenMainUi -= OpenConfig;
@@ -57,29 +64,85 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         configWindow.Dispose();
         streamPlayer.Dispose();
-        bgmMuter.Dispose();
     }
 
-    public void PlayStream(string url)
-    {
-        streamPlayer.Play(url);
-        ApplyMutePreference();
-    }
+    public void PlayStream(string url) => streamPlayer.Play(url);
 
-    public void StopStream()
-    {
-        streamPlayer.Stop();
-        bgmMuter.Unmute();
-    }
+    public void StopStream() => streamPlayer.Stop();
 
     public void SetStreamVolume(float volume) => streamPlayer.Volume = volume;
 
-    public void ApplyMutePreference()
+    public bool IsStreamPlaying => streamPlayer.IsPlaying;
+
+    /// <summary>
+    /// Save the given URL as the auto-play stream for the player's current house.
+    /// No-op if not currently in a house.
+    /// </summary>
+    public void SaveCurrentHouse(string displayName, string url)
     {
-        if (Config.MuteGameBgm && streamPlayer.IsPlaying)
-            bgmMuter.Mute();
-        else
-            bgmMuter.Unmute();
+        if (!CurrentPlotKey.HasValue) return;
+        Config.SavedHouses[CurrentPlotKey.Value.Canonical] = new ClubEntry
+        {
+            DisplayName = displayName,
+            StreamUrl = url
+        };
+        Config.Save();
+    }
+
+    public void DeleteSavedHouse(string canonicalKey)
+    {
+        if (Config.SavedHouses.Remove(canonicalKey))
+            Config.Save();
+    }
+
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        // Polling instead of TerritoryChanged because HousingManager isn't fully populated
+        // by the time TerritoryChanged fires — by polling we naturally pick up the state
+        // a frame or two later without scheduling tick callbacks.
+        if (DateTime.UtcNow - lastHousingCheck < HousingCheckInterval) return;
+        lastHousingCheck = DateTime.UtcNow;
+
+        PlotKey? newKey;
+        try
+        {
+            newKey = HousingDetector.ResolveCurrent();
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "HousingDetector.ResolveCurrent threw");
+            return;
+        }
+
+        if (Nullable.Equals(newKey, CurrentPlotKey)) return;
+
+        var previous = CurrentPlotKey;
+        CurrentPlotKey = newKey;
+
+        if (previous.HasValue)
+        {
+            // Left a known house — stop only if we were the ones who started playback.
+            if (streamPlayer.IsPlaying)
+            {
+                StopStream();
+                Log.Info($"[ClubFFXIV] Left {previous.Value.Canonical}, stopped stream");
+            }
+        }
+
+        if (newKey.HasValue && Config.SavedHouses.TryGetValue(newKey.Value.Canonical, out var entry))
+        {
+            if (string.IsNullOrWhiteSpace(entry.StreamUrl)) return;
+            try
+            {
+                PlayStream(entry.StreamUrl);
+                ChatGui.Print($"[ClubFFXIV] Auto-playing: {entry.DisplayName}");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Auto-play on house entry failed");
+                ChatGui.PrintError($"[ClubFFXIV] Auto-play failed: {ex.Message}");
+            }
+        }
     }
 
     private void OnCommand(string command, string args)

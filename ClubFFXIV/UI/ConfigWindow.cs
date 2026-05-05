@@ -15,7 +15,7 @@ public sealed class ConfigWindow : Window, IDisposable
         : base("ClubFFXIV##ClubFFXIVConfig", ImGuiWindowFlags.NoCollapse)
     {
         this.plugin = plugin;
-        Size = new Vector2(480, 240);
+        Size = new Vector2(520, 420);
         SizeCondition = ImGuiCond.FirstUseEver;
         urlInput = plugin.Config.LastStreamUrl;
     }
@@ -67,20 +67,68 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.SetStreamVolume(volume);
         }
 
-        var muteBgm = plugin.Config.MuteGameBgm;
-        if (ImGui.Checkbox("Mute FFXIV audio while stream plays", ref muteBgm))
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted("Current Location");
+        ImGui.Spacing();
+
+        var key = plugin.CurrentPlotKey;
+        if (key.HasValue)
         {
-            plugin.Config.MuteGameBgm = muteBgm;
-            plugin.Config.Save();
-            plugin.ApplyMutePreference();
+            var name = plugin.HousingDetector.GetDisplayName(key.Value);
+            ImGui.TextWrapped(name);
+
+            var disabled = string.IsNullOrWhiteSpace(urlInput);
+            if (disabled) ImGui.BeginDisabled();
+            if (ImGui.Button("Save current URL for this house"))
+            {
+                plugin.SaveCurrentHouse(name, urlInput);
+                statusLine = $"Saved {name} → {urlInput}";
+            }
+            if (disabled) ImGui.EndDisabled();
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
+        else
         {
-            ImGui.BeginTooltip();
-            ImGui.TextUnformatted("Phase 1 mutes the entire FFXIV audio session\n(BGM + SFX + voices). A future version will\nmute only BGM.");
-            ImGui.EndTooltip();
+            ImGui.TextDisabled("Not in housing.");
+        }
+
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextUnformatted($"Saved Houses ({plugin.Config.SavedHouses.Count})");
+        ImGui.Spacing();
+
+        string? toDelete = null;
+        foreach (var (k, entry) in plugin.Config.SavedHouses)
+        {
+            ImGui.PushID(k);
+
+            ImGui.TextUnformatted(entry.DisplayName);
+            ImGui.SameLine();
+
+            // Right-align action buttons
+            var avail = ImGui.GetContentRegionAvail().X;
+            var loadW = ImGui.CalcTextSize("Load").X + ImGui.GetStyle().FramePadding.X * 2 + 4;
+            var deleteW = ImGui.CalcTextSize("Delete").X + ImGui.GetStyle().FramePadding.X * 2;
+            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + avail - loadW - deleteW - 6);
+
+            if (ImGui.SmallButton("Load"))
+            {
+                urlInput = entry.StreamUrl;
+                statusLine = $"Loaded URL from {entry.DisplayName}";
+            }
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Delete"))
+            {
+                toDelete = k;
+            }
+
+            ImGui.TextDisabled("  " + entry.StreamUrl);
+            ImGui.PopID();
+        }
+        if (toDelete != null)
+        {
+            plugin.DeleteSavedHouse(toDelete);
+            statusLine = "Removed saved house.";
         }
 
         if (!string.IsNullOrEmpty(statusLine))
