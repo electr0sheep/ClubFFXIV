@@ -8,6 +8,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="NAudio" Version="2.3.0" />
+		<PackageReference Include="NSec.Cryptography" Version="24.4.0" />
 	</ItemGroup>
 
 </Project>

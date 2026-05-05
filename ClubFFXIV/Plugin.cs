@@ -1,6 +1,9 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using ClubFFXIV.Audio;
 using ClubFFXIV.Game;
+using ClubFFXIV.Network;
 using ClubFFXIV.UI;
 using Dalamud.Game.Command;
 using Dalamud.Interface.Windowing;
@@ -31,6 +34,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly ConfigWindow configWindow;
     private readonly StreamPlayer streamPlayer = new();
+    private ClubRegistryClient? registryClient;
+    private DjIdentity? djIdentity;
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(1000);
 
@@ -40,12 +45,15 @@ public sealed class Plugin : IDalamudPlugin
         Config.Initialize(PluginInterface);
         streamPlayer.Volume = Config.Volume;
 
+        RebuildRegistryClient();
+        TryLoadDjIdentity();
+
         configWindow = new ConfigWindow(this);
         WindowSystem.AddWindow(configWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/club play <url> | /club stop | /club config"
+            HelpMessage = "/club play <url> | /club stop | /club config",
         });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
@@ -65,27 +73,25 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         configWindow.Dispose();
         streamPlayer.Dispose();
+        registryClient?.Dispose();
+        djIdentity?.Dispose();
     }
 
     public void PlayStream(string url) => streamPlayer.Play(url);
-
     public void StopStream() => streamPlayer.Stop();
-
     public void SetStreamVolume(float volume) => streamPlayer.Volume = volume;
-
     public bool IsStreamPlaying => streamPlayer.IsPlaying;
 
-    /// <summary>
-    /// Save the given URL as the auto-play stream for the player's current house.
-    /// No-op if not currently in a house.
-    /// </summary>
+    public string? DjId => djIdentity?.DjId;
+    public bool RegistryEnabled => registryClient != null;
+
     public void SaveCurrentHouse(string displayName, string url)
     {
         if (!CurrentPlotKey.HasValue) return;
         Config.SavedHouses[CurrentPlotKey.Value.Canonical] = new ClubEntry
         {
             DisplayName = displayName,
-            StreamUrl = url
+            StreamUrl = url,
         };
         Config.Save();
     }
@@ -96,11 +102,78 @@ public sealed class Plugin : IDalamudPlugin
             Config.Save();
     }
 
+    /// <summary>
+    /// Called by the UI when the registry URL changes. Recreates the HTTP client
+    /// against the new base URL (or disables it if blank).
+    /// </summary>
+    public void RebuildRegistryClient()
+    {
+        registryClient?.Dispose();
+        registryClient = string.IsNullOrWhiteSpace(Config.RegistryUrl)
+            ? null
+            : new ClubRegistryClient(Config.RegistryUrl);
+    }
+
+    /// <summary>
+    /// Generates the DJ keypair on first use. Subsequent calls are no-ops.
+    /// </summary>
+    public DjIdentity EnsureDjIdentity()
+    {
+        if (djIdentity != null) return djIdentity;
+        djIdentity = DjIdentity.Generate();
+        Config.DjPrivateKeyBase64 = djIdentity.ExportPrivateKeyBase64();
+        Config.Save();
+        return djIdentity;
+    }
+
+    /// <summary>
+    /// Publish (or update) the current house's stream URL to the registry.
+    /// Creates a DJ keypair on demand if one doesn't exist.
+    /// </summary>
+    public async Task PublishCurrentHouseAsync(string displayName, string streamUrl)
+    {
+        if (registryClient == null)
+            throw new InvalidOperationException("Registry URL not set");
+        if (!CurrentPlotKey.HasValue)
+            throw new InvalidOperationException("Not currently in a house");
+
+        var dj = EnsureDjIdentity();
+        var key = CurrentPlotKey.Value.Canonical;
+        await registryClient.PublishAsync(key, streamUrl, displayName, dj);
+
+        Config.PublishedHouses[key] = new ClubEntry { DisplayName = displayName, StreamUrl = streamUrl };
+        Config.Save();
+    }
+
+    public async Task UnpublishHouseAsync(string canonicalKey)
+    {
+        if (registryClient == null)
+            throw new InvalidOperationException("Registry URL not set");
+        if (djIdentity == null)
+            throw new InvalidOperationException("No DJ identity — nothing to unpublish");
+
+        await registryClient.DeleteAsync(canonicalKey, djIdentity);
+        if (Config.PublishedHouses.Remove(canonicalKey))
+            Config.Save();
+    }
+
+    private void TryLoadDjIdentity()
+    {
+        if (string.IsNullOrWhiteSpace(Config.DjPrivateKeyBase64)) return;
+        try
+        {
+            djIdentity = DjIdentity.FromPrivateKeyBase64(Config.DjPrivateKeyBase64);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Failed to load DJ identity from config — clearing");
+            Config.DjPrivateKeyBase64 = "";
+            Config.Save();
+        }
+    }
+
     private void OnFrameworkUpdate(IFramework framework)
     {
-        // Polling instead of TerritoryChanged because HousingManager isn't fully populated
-        // by the time TerritoryChanged fires — by polling we naturally pick up the state
-        // a frame or two later without scheduling tick callbacks.
         if (DateTime.UtcNow - lastHousingCheck < HousingCheckInterval) return;
         lastHousingCheck = DateTime.UtcNow;
 
@@ -120,29 +193,57 @@ public sealed class Plugin : IDalamudPlugin
         var previous = CurrentPlotKey;
         CurrentPlotKey = newKey;
 
-        if (previous.HasValue)
+        if (previous.HasValue && streamPlayer.IsPlaying)
         {
-            // Left a known house — stop only if we were the ones who started playback.
-            if (streamPlayer.IsPlaying)
-            {
-                StopStream();
-                Log.Info($"[ClubFFXIV] Left {previous.Value.Canonical}, stopped stream");
-            }
+            StopStream();
+            Log.Info($"[ClubFFXIV] Left {previous.Value.Canonical}, stopped stream");
         }
 
-        if (newKey.HasValue && Config.SavedHouses.TryGetValue(newKey.Value.Canonical, out var entry))
+        if (!newKey.HasValue) return;
+
+        // Local saved entry always wins — it's the user's explicit override.
+        if (Config.SavedHouses.TryGetValue(newKey.Value.Canonical, out var saved)
+            && !string.IsNullOrWhiteSpace(saved.StreamUrl))
         {
-            if (string.IsNullOrWhiteSpace(entry.StreamUrl)) return;
-            try
-            {
-                PlayStream(entry.StreamUrl);
-                ChatGui.Print($"[ClubFFXIV] Auto-playing: {entry.DisplayName}");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Auto-play on house entry failed");
-                ChatGui.PrintError($"[ClubFFXIV] Auto-play failed: {ex.Message}");
-            }
+            TryAutoPlay(saved.StreamUrl, saved.DisplayName);
+            return;
+        }
+
+        // Otherwise fall back to the registry, fire-and-forget.
+        if (Config.AutoQueryRegistry && registryClient != null)
+        {
+            _ = QueryRegistryAndAutoPlay(newKey.Value);
+        }
+    }
+
+    private async Task QueryRegistryAndAutoPlay(PlotKey key)
+    {
+        try
+        {
+            var record = await registryClient!.GetAsync(key.Canonical);
+            if (record == null) return;
+            // The player may have left the house in the time the request took.
+            if (!Nullable.Equals(CurrentPlotKey, key)) return;
+            TryAutoPlay(record.StreamUrl, record.DisplayName);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ClubFFXIV] Registry lookup failed: {ex.Message}");
+        }
+    }
+
+    private void TryAutoPlay(string url, string displayName)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        try
+        {
+            PlayStream(url);
+            ChatGui.Print($"[ClubFFXIV] Auto-playing: {displayName}");
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Auto-play failed");
+            ChatGui.PrintError($"[ClubFFXIV] Auto-play failed: {ex.Message}");
         }
     }
 
