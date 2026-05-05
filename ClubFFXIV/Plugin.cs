@@ -65,6 +65,10 @@ public sealed class Plugin : IDalamudPlugin
     // URL that's currently being started (chain construction in flight).
     // Prevents the next framework tick from spawning a duplicate start.
     private string? pendingStartUrl;
+    // True when the user explicitly hit Stop — suppresses auto-play (Indoor / Outdoor)
+    // until they Play again or change territory. Without this, Stop in a registered
+    // house would immediately resume Indoor auto-play on the next tick.
+    private bool userInhibitsAutoPlay;
 
     // Ward listing cache: keyed by (worldId, territoryType, ward), TTL 60s.
     private readonly Dictionary<string, CachedWardListing> wardCache = new();
@@ -124,6 +128,7 @@ public sealed class Plugin : IDalamudPlugin
         // Optimistic: set mode now so UI reflects intent. The async chain build
         // happens in the background — if it fails we revert.
         CurrentMode = PlaybackMode.Manual;
+        userInhibitsAutoPlay = false;
         _ = StartStreamAsync(url, PlaybackMode.Manual, $"Stream: {url}");
     }
 
@@ -133,6 +138,7 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.Stop();
         CurrentMode = PlaybackMode.Off;
         CurrentProximity = null;
+        userInhibitsAutoPlay = true;
     }
 
     /// <summary>
@@ -194,6 +200,14 @@ public sealed class Plugin : IDalamudPlugin
         existing.StreamUrl = url;
         Config.SavedHouses[key] = existing;
         Config.Save();
+
+        // If the active Indoor stream for this house is now stale, switch to the new URL.
+        if (CurrentMode == PlaybackMode.Indoor
+            && CurrentPlotKey.Value.Canonical == key
+            && streamPlayer.CurrentUrl != url)
+        {
+            EnterIndoor(url, displayName);
+        }
     }
 
     public void DeleteSavedHouse(string canonicalKey)
@@ -260,6 +274,16 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
 
         InvalidateWardCacheForDoor(door);
+
+        // If the DJ is themselves listening in Indoor mode for this plot, the
+        // active stream is stale — switch to the new URL.
+        if (CurrentMode == PlaybackMode.Indoor
+            && CurrentPlotKey.HasValue
+            && CurrentPlotKey.Value.Canonical == key
+            && streamPlayer.CurrentUrl != streamUrl)
+        {
+            EnterIndoor(streamUrl, displayName);
+        }
     }
 
     public async Task UnpublishHouseAsync(string canonicalKey)
@@ -422,11 +446,18 @@ public sealed class Plugin : IDalamudPlugin
         var newPlot = HousingDetector.ResolveCurrent();
         var newWard = HousingDetector.ResolveOutdoor();
 
-        if (!Nullable.Equals(newPlot, CurrentPlotKey)) CurrentPlotKey = newPlot;
+        if (!Nullable.Equals(newPlot, CurrentPlotKey))
+        {
+            CurrentPlotKey = newPlot;
+            // Territory change resets the user-stop suppression — auto-play is fair
+            // game again in the new location.
+            userInhibitsAutoPlay = false;
+        }
 
         if (!Nullable.Equals(newWard, CurrentWard))
         {
             CurrentWard = newWard;
+            userInhibitsAutoPlay = false;
         }
 
         // Cache ownership while we're on the framework thread — publish flow
@@ -444,6 +475,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DriveAudio()
     {
+        // Manual playback is sticky — never override with auto-play.
+        if (CurrentMode == PlaybackMode.Manual && (streamPlayer.IsPlaying || pendingStartUrl != null))
+            return;
+
+        // User explicitly stopped — don't auto-resume until they Play again or
+        // change territory.
+        if (userInhibitsAutoPlay) return;
+
         if (CurrentPlotKey.HasValue)
         {
             HandleIndoorMode(CurrentPlotKey.Value);
