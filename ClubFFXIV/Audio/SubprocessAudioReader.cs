@@ -62,13 +62,16 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("warning");
         psi.ArgumentList.Add("-nostdin");
 
-        // Reconnect on transient HTTP failures and at end-of-input. Critical for
-        // Twitch HLS where segment fetches can blip and the playlist URL may
-        // briefly 5xx during refresh. Without these, ffmpeg exits after the first
-        // hiccup and our Read returns 0 (NAudio interprets as end-of-stream).
+        // Reconnect on transient HTTP failures. Critical for Twitch HLS where
+        // segment fetches can blip and the playlist URL may briefly 5xx during
+        // refresh. Without these, ffmpeg exits after the first hiccup and our
+        // Read returns 0 (NAudio interprets as end-of-stream).
+        //
+        // We deliberately do NOT use -reconnect_at_eof — it breaks YouTube live
+        // by trying to re-open the input on idle gaps, which fails because the
+        // URL has already advanced past the live edge.
         psi.ArgumentList.Add("-reconnect"); psi.ArgumentList.Add("1");
         psi.ArgumentList.Add("-reconnect_streamed"); psi.ArgumentList.Add("1");
-        psi.ArgumentList.Add("-reconnect_at_eof"); psi.ArgumentList.Add("1");
         psi.ArgumentList.Add("-reconnect_delay_max"); psi.ArgumentList.Add("5");
 
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(resolvedUrl);
@@ -82,18 +85,18 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Log as Info so the user sees ffmpeg's warnings/errors in /xllog without
-        // having to switch log levels.
+        // Logged at Debug to keep /xllog clean during normal operation; switch
+        // Dalamud's log filter to Debug if you need to see ffmpeg's chatter.
         _ = Task.Run(async () =>
         {
             try
             {
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
-                    Plugin.Log.Info($"[ffmpeg] {line}");
+                    Plugin.Log.Debug($"[ffmpeg] {line}");
             }
             catch { /* process exited */ }
 
-            // Surface unexpected exits so the failure mode is obvious in logs.
+            // Unexpected exits stay at Warning since they correspond to actual playback failure.
             try
             {
                 if (proc.HasExited)
