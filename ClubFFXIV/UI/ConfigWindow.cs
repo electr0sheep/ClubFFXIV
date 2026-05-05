@@ -156,7 +156,8 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.TextWrapped($"Inside: {name}");
 
             // Ownership badge (local check, not server-verified).
-            var ownership = plugin.HousingDetector.CheckOwnership();
+            // Read the cached value — populated each framework tick by Plugin.UpdateLocationState.
+            var ownership = plugin.CurrentOwnership;
             switch (ownership)
             {
                 case Game.HouseOwnership.Owner:
