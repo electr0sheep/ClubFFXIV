@@ -39,6 +39,14 @@ public sealed class Plugin : IDalamudPlugin
     public WardLocation? CurrentWard { get; private set; }
     public PlaybackMode CurrentMode { get; private set; } = PlaybackMode.Off;
     public WardProximity.Result? CurrentProximity { get; private set; }
+    /// <summary>
+    /// House ownership status for the player's current location, refreshed each
+    /// framework tick. Cached so off-thread callers (publish flow, etc.) can
+    /// safely read it — calling HousingDetector.CheckOwnership directly from
+    /// a Task.Run continuation would access ObjectTable.LocalPlayer off the
+    /// framework thread and crash.
+    /// </summary>
+    public HouseOwnership CurrentOwnership { get; private set; } = HouseOwnership.Unknown;
 
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
@@ -214,11 +222,11 @@ public sealed class Plugin : IDalamudPlugin
         if (!CurrentPlotKey.HasValue)
             throw new InvalidOperationException("Not currently in a house");
 
-        // Local ownership gate. Unknown is allowed (don't lock out users on API
-        // mismatch); only confirmed NotOwner is blocked, and even that can be
-        // overridden via config for legitimate edge cases.
-        var ownership = HousingDetector.CheckOwnership();
-        if (ownership == HouseOwnership.NotOwner && !Config.AllowPublishWithoutOwnership)
+        // Local ownership gate — read from the framework-tick-cached value since
+        // we're running off the framework thread (Task.Run from the UI button).
+        // Unknown is allowed (don't lock out users on API mismatch); only confirmed
+        // NotOwner is blocked, and even that can be overridden via config.
+        if (CurrentOwnership == HouseOwnership.NotOwner && !Config.AllowPublishWithoutOwnership)
         {
             throw new InvalidOperationException(
                 "You don't appear to own this house. " +
@@ -415,6 +423,12 @@ public sealed class Plugin : IDalamudPlugin
         {
             CurrentWard = newWard;
         }
+
+        // Cache ownership while we're on the framework thread — publish flow
+        // runs in a Task.Run continuation and can't safely call CheckOwnership.
+        CurrentOwnership = newPlot.HasValue
+            ? HousingDetector.CheckOwnership()
+            : HouseOwnership.Unknown;
 
         // Always make sure we have a fresh listing for the current ward.
         // EnsureWardListingAsync is a no-op when cache is fresh or a fetch is in flight,

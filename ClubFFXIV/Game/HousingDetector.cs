@@ -1,7 +1,9 @@
 using System.Collections.Generic;
 using System.Numerics;
 using FFXIVClientStructs.FFXIV.Client.Game;
+using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using Lumina.Excel.Sheets;
+using static FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentInspect;
 
 namespace ClubFFXIV.Game;
 
@@ -83,14 +85,14 @@ public sealed class HousingDetector
     {
         var hm = HousingManager.Instance();
         if (hm == null || hm->IndoorTerritory == null) return HouseOwnership.Unknown;
-        if (Plugin.ClientState.LocalPlayer == null) return HouseOwnership.Unknown;
+        if (Plugin.ObjectTable.LocalPlayer == null) return HouseOwnership.Unknown;
 
         try
         {
             // Personal house owner check: player has an "owned house id"; if it matches
             // the current house id, you're the owner.
-            var currentHouseId = (long)hm->IndoorTerritory->HouseId;
-            var ownedHouseId = (long)hm->GetOwnedHouseId();
+            var currentHouseId = hm->IndoorTerritory->HouseId.Id;
+            var ownedHouseId = HousingManager.GetOwnedHouseId(EstateType.PersonalEstate).Id;
             if (ownedHouseId != 0 && ownedHouseId == currentHouseId)
                 return HouseOwnership.Owner;
 
@@ -98,9 +100,8 @@ public sealed class HousingDetector
             // FFXIVClientStructs exposes FC info on the local player; the indoor
             // territory has an OwnerId we can compare.
             // (If the API has shifted in your version, the catch below covers it.)
-            var indoorOwnerId = hm->IndoorTerritory->OwnerId;
-            var localFcId = Plugin.PlayerState.FreeCompanyInfo.Id;
-            if (localFcId != 0 && indoorOwnerId == localFcId)
+            var localFcId = HousingManager.GetOwnedHouseId(EstateType.FreeCompanyEstate).Id;
+            if (localFcId != 0 && currentHouseId == localFcId)
                 return HouseOwnership.Owner;
 
             return HouseOwnership.NotOwner;

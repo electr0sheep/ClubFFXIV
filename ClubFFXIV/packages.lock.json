@@ -28,6 +28,12 @@
           "NAudio.WinMM": "2.3.0"
         }
       },
+      "NLayer": {
+        "type": "Direct",
+        "requested": "[1.16.0, )",
+        "resolved": "1.16.0",
+        "contentHash": "G/AexTjdl6cm0wYlkCkQgtpPLBc5vOWyOTIQpeC6p8V8fb7kbCYA+fEHFPJiU+KeRHH4Q1RGqTFyf9uqVALnkQ=="
+      },
       "NSec.Cryptography": {
         "type": "Direct",
         "requested": "[26.4.0, )",
@@ -36,6 +42,12 @@
         "dependencies": {
           "libsodium": "[1.0.22, 1.0.23)"
         }
+      },
+      "NVorbis": {
+        "type": "Direct",
+        "requested": "[0.10.5, )",
+        "resolved": "0.10.5",
+        "contentHash": "o+IptCG4Avze39HrGeztC+xIp6fOOwGVAwkoa1J++4Ji1WmZ+KIKlFl5wsgxsXqBkmdpfs/vFSUproiLKYa2bw=="
       },
       "libsodium": {
         "type": "Transitive",
