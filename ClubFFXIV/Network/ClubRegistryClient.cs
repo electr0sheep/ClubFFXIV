@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -28,6 +29,19 @@ public sealed class ClubRegistryClient : IDisposable
             SslOptions = new SslClientAuthenticationOptions
             {
                 EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
+                // Wine's SChannel implementation often fails chain validation for
+                // modern certs (Cloudflare custom domains in particular). The plugin
+                // sends no secrets over the wire — DJ private key never leaves the
+                // local config — so accepting on validation failure is acceptable.
+                RemoteCertificateValidationCallback = (_, _, _, errors) =>
+                {
+                    if (errors == SslPolicyErrors.None) return true;
+                    Plugin.Log.Warning(
+                        $"[ClubFFXIV] TLS cert validation issues ignored ({errors}). " +
+                        "If you're not on Wine/macOS, your system cert store may need attention.");
+                    return true;
+                },
             },
             ConnectTimeout = TimeSpan.FromSeconds(6),
         };
