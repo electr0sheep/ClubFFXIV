@@ -85,39 +85,22 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Per-line output stays at Debug to keep /xllog clean during normal operation,
-        // but we keep a rolling buffer of the last 20 lines and dump them at Warning
-        // when ffmpeg exits unexpectedly — that's where the diagnostic info lives.
-        var recentStderr = new System.Collections.Generic.Queue<string>(capacity: 20);
-        const int RecentStderrCap = 20;
+        // Temporarily logged at Info (was Debug) so we can see ffmpeg's chatter
+        // around a crash without changing Dalamud's log filter. Revert to Debug
+        // once the crash cause is identified.
         _ = Task.Run(async () =>
         {
             try
             {
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
-                {
-                    Plugin.Log.Debug($"[ffmpeg] {line}");
-                    lock (recentStderr)
-                    {
-                        recentStderr.Enqueue(line);
-                        while (recentStderr.Count > RecentStderrCap) recentStderr.Dequeue();
-                    }
-                }
+                    Plugin.Log.Info($"[ffmpeg] {line}");
             }
             catch { /* process exited */ }
 
             try
             {
                 if (proc.HasExited)
-                {
-                    string[] tail;
-                    lock (recentStderr) tail = recentStderr.ToArray();
-                    var joined = tail.Length == 0
-                        ? "(no stderr captured)"
-                        : "\n  " + string.Join("\n  ", tail);
-                    Plugin.Log.Warning(
-                        $"[ffmpeg] exited with code {proc.ExitCode}. Last stderr lines:{joined}");
-                }
+                    Plugin.Log.Warning($"[ffmpeg] exited with code {proc.ExitCode}");
             }
             catch { /* already disposed */ }
         }, ct);
