@@ -48,7 +48,93 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         DrawSpatialTuningSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawBinariesSection();
         DrawStatusFooter();
+    }
+
+    private string ytDlpVersion = "(checking...)";
+    private string ffmpegVersion = "(checking...)";
+    private bool versionsRequested;
+
+    private void DrawBinariesSection()
+    {
+        if (!ImGui.CollapsingHeader("External binaries (yt-dlp, ffmpeg)"))
+            return;
+
+        // Lazy-resolve versions on first display so we don't spawn processes
+        // on every plugin start.
+        if (!versionsRequested)
+        {
+            versionsRequested = true;
+            _ = Task.Run(async () =>
+            {
+                ytDlpVersion = await plugin.Binaries.GetYtDlpVersionAsync();
+                ffmpegVersion = await plugin.Binaries.GetFfmpegVersionAsync();
+            });
+        }
+
+        ImGui.TextWrapped(
+            "Required for Twitch / YouTube / SoundCloud playback. " +
+            "Direct MP3/Icecast streams don't need these.");
+        ImGui.Spacing();
+
+        DrawBinaryRow("yt-dlp", plugin.Binaries.YtDlpInstalled, ytDlpVersion, async () =>
+        {
+            ytDlpVersion = "(updating...)";
+            try { ytDlpVersion = await plugin.Binaries.UpdateYtDlpAsync(); statusLine = "yt-dlp updated."; }
+            catch (Exception ex) { ytDlpVersion = $"(error: {ex.Message})"; statusLine = $"yt-dlp update failed: {ex.Message}"; }
+        });
+
+        DrawBinaryRow("ffmpeg", plugin.Binaries.FfmpegInstalled, ffmpegVersion, async () =>
+        {
+            ffmpegVersion = "(updating, ~80 MB...)";
+            try { ffmpegVersion = await plugin.Binaries.UpdateFfmpegAsync(); statusLine = "ffmpeg updated."; }
+            catch (Exception ex) { ffmpegVersion = $"(error: {ex.Message})"; statusLine = $"ffmpeg update failed: {ex.Message}"; }
+        });
+
+        ImGui.Spacing();
+        var auto = plugin.Config.AutoUpdateBinaries;
+        if (ImGui.Checkbox("Auto-check for yt-dlp updates every 2 days", ref auto))
+        {
+            plugin.Config.AutoUpdateBinaries = auto;
+            plugin.Config.Save();
+        }
+
+        if (plugin.Config.BinariesLastChecked != DateTime.MinValue)
+        {
+            var ago = DateTime.UtcNow - plugin.Config.BinariesLastChecked;
+            ImGui.TextDisabled($"Last update check: {FormatAgo(ago)}");
+        }
+
+        if (!plugin.Binaries.Ready)
+        {
+            ImGui.Spacing();
+            ImGui.TextDisabled("Binaries are downloaded automatically the first time you play a Twitch / YouTube URL.");
+        }
+    }
+
+    private void DrawBinaryRow(string name, bool installed, string version, Func<Task> onUpdate)
+    {
+        ImGui.PushID("bin-" + name);
+        var icon = installed ? "✓" : "—";
+        ImGui.TextUnformatted($"{icon} {name}:");
+        ImGui.SameLine();
+        ImGui.TextDisabled(version);
+        ImGui.SameLine();
+        var btnLabel = installed ? "Check / update" : "Install";
+        if (ImGui.SmallButton(btnLabel))
+            _ = Task.Run(onUpdate);
+        ImGui.PopID();
+    }
+
+    private static string FormatAgo(TimeSpan ago)
+    {
+        if (ago < TimeSpan.FromMinutes(1)) return "just now";
+        if (ago < TimeSpan.FromHours(1)) return $"{(int)ago.TotalMinutes} min ago";
+        if (ago < TimeSpan.FromDays(1)) return $"{(int)ago.TotalHours} h ago";
+        return $"{(int)ago.TotalDays} d ago";
     }
 
     private void DrawHelpBar()

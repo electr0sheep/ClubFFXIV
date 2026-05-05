@@ -7,21 +7,21 @@ using NAudio.Wave.SampleProviders;
 namespace ClubFFXIV.Audio;
 
 /// <summary>
-/// Plays an HTTP audio stream through a tunable spatial chain:
-///   HttpAudioReader (NLayer/NVorbis) → BiQuadLowpass → VolumeSampleProvider → WaveOutEvent.
+/// Plays an audio stream through a tunable spatial chain:
+///   source → BiQuadLowpass → VolumeSampleProvider → WaveOutEvent.
 ///
-/// Spatial parameters (lowpass cutoff, spatial multiplier) are layered on top
-/// of the user's master volume. When inside a house we set them to "transparent"
-/// (cutoff = 20 kHz, spatial = 1.0) and the chain effectively passes audio unchanged.
-///
-/// Cross-platform decoder choice (NLayer/NVorbis) means this works under Wine
-/// (XIVLauncher Mac/Linux), unlike NAudio's MediaFoundationReader.
+/// The source is dispatched by URL: direct HTTP MP3/OGG goes through
+/// HttpAudioReader (in-process NLayer/NVorbis), Twitch/YouTube/etc. go
+/// through SubprocessAudioReader (yt-dlp + ffmpeg).
 /// </summary>
 public sealed class StreamPlayer : IDisposable
 {
     private const float BypassCutoffHz = 20000f;
 
-    private HttpAudioReader? reader;
+    private readonly BinaryManager binaryManager;
+
+    private ISampleProvider? source;
+    private IDisposable? sourceDisposable;
     private BiQuadFilterSampleProvider? lowpass;
     private VolumeSampleProvider? volumeStage;
     private WaveOutEvent? output;
@@ -31,6 +31,11 @@ public sealed class StreamPlayer : IDisposable
     private float spatialCutoff = BypassCutoffHz;
     private bool muted;
     private string? currentUrl;
+
+    public StreamPlayer(BinaryManager binaryManager)
+    {
+        this.binaryManager = binaryManager;
+    }
 
     public bool IsPlaying => output?.PlaybackState == PlaybackState.Playing;
     public string? CurrentUrl => currentUrl;
@@ -89,9 +94,9 @@ public sealed class StreamPlayer : IDisposable
     }
 
     /// <summary>
-    /// Build the chain off the framework thread. HttpAudioReader.CreateAsync blocks
-    /// for ~1–3s waiting for the first decoded frame, depending on stream's initial
-    /// buffer behaviour. Caller can cancel mid-build.
+    /// Build the chain off the framework thread. Source construction blocks
+    /// while the network buffer fills (1–3s for direct HTTP, ~5s for subprocess
+    /// pipeline cold-start).
     /// </summary>
     public async Task PlayAsync(string url, CancellationToken ct = default)
     {
@@ -99,23 +104,43 @@ public sealed class StreamPlayer : IDisposable
             throw new ArgumentException("URL is empty", nameof(url));
 
         var initialCutoff = spatialCutoff;
+        var kind = UrlClassifier.ClassifyUrl(url);
 
-        var newReader = await HttpAudioReader.CreateAsync(url, ct).ConfigureAwait(false);
+        // Build the source. Different code paths for direct HTTP vs subprocess.
+        ISampleProvider newSource;
+        IDisposable newDisposable;
+
+        if (kind == AudioSourceKind.YtDlp)
+        {
+            // Need ffmpeg + yt-dlp on disk first. EnsureInstalledAsync is a
+            // no-op once binaries are cached; first call may take ~30s as it
+            // downloads ~80MB.
+            await binaryManager.EnsureInstalledAsync(ct: ct).ConfigureAwait(false);
+            var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, ct).ConfigureAwait(false);
+            newSource = sub;
+            newDisposable = sub;
+        }
+        else
+        {
+            var http = await HttpAudioReader.CreateAsync(url, ct).ConfigureAwait(false);
+            newSource = http;
+            newDisposable = http;
+        }
 
         if (ct.IsCancellationRequested)
         {
-            newReader.Dispose();
+            newDisposable.Dispose();
             return;
         }
 
         var built = await Task.Run(() =>
         {
             ct.ThrowIfCancellationRequested();
-            var lp = new BiQuadFilterSampleProvider(newReader, initialCutoff);
+            var lp = new BiQuadFilterSampleProvider(newSource, initialCutoff);
             var v = new VolumeSampleProvider(lp) { Volume = 0f };
             var o = new WaveOutEvent();
             o.Init(v.ToWaveProvider());
-            return new BuiltChain(newReader, lp, v, o);
+            return new BuiltChain(newSource, newDisposable, lp, v, o);
         }, ct).ConfigureAwait(false);
 
         if (ct.IsCancellationRequested)
@@ -126,7 +151,8 @@ public sealed class StreamPlayer : IDisposable
 
         Stop();
 
-        reader = built.Reader;
+        source = built.Source;
+        sourceDisposable = built.SourceDisposable;
         lowpass = built.Lowpass;
         volumeStage = built.Volume;
         output = built.Output;
@@ -141,7 +167,8 @@ public sealed class StreamPlayer : IDisposable
     public void Play(string url) => PlayAsync(url).GetAwaiter().GetResult();
 
     private readonly record struct BuiltChain(
-        HttpAudioReader Reader,
+        ISampleProvider Source,
+        IDisposable SourceDisposable,
         BiQuadFilterSampleProvider Lowpass,
         VolumeSampleProvider Volume,
         WaveOutEvent Output) : IDisposable
@@ -149,7 +176,7 @@ public sealed class StreamPlayer : IDisposable
         public void Dispose()
         {
             try { Output.Dispose(); } catch { /* ignore */ }
-            try { Reader.Dispose(); } catch { /* ignore */ }
+            try { SourceDisposable.Dispose(); } catch { /* ignore */ }
         }
     }
 
@@ -157,9 +184,10 @@ public sealed class StreamPlayer : IDisposable
     {
         try { output?.Stop(); } catch { /* swallow during teardown */ }
         output?.Dispose();
-        reader?.Dispose();
+        sourceDisposable?.Dispose();
         output = null;
-        reader = null;
+        source = null;
+        sourceDisposable = null;
         lowpass = null;
         volumeStage = null;
         currentUrl = null;

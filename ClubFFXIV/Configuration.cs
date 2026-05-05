@@ -49,6 +49,17 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool AllowPublishWithoutOwnership { get; set; } = false;
 
+    /// <summary>
+    /// Auto-update yt-dlp / ffmpeg every few days in the background.
+    /// yt-dlp updates frequently because Twitch and YouTube change their
+    /// scraping defenses; without this the plugin will eventually fail on
+    /// those URLs until the user manually updates.
+    /// </summary>
+    public bool AutoUpdateBinaries { get; set; } = true;
+
+    /// <summary>Last time we checked for binary updates (UTC).</summary>
+    public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 
