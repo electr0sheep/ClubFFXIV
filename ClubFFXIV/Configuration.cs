@@ -41,6 +41,14 @@ public class Configuration : IPluginConfiguration
     /// <summary>Mute our stream when the FFXIV window loses focus.</summary>
     public bool MuteStreamWhenUnfocused { get; set; } = true;
 
+    /// <summary>
+    /// Bypass the local "are you the owner of this house?" check at publish time.
+    /// Off by default — turning it on lets you publish to plots you don't own per
+    /// the game's records. Use only if the ownership detection is wrong (FC
+    /// edge cases, FFXIVClientStructs API drift, etc.).
+    /// </summary>
+    public bool AllowPublishWithoutOwnership { get; set; } = false;
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 
