@@ -71,6 +71,8 @@ Friends within ~40m of your door will hear muffled music as they approach.
 
 ## Development
 
+### Plugin
+
 Requirements: Windows, .NET 8 SDK, XIVLauncher with Dalamud installed.
 
 ```bash
@@ -79,22 +81,73 @@ cd ClubFFXIV
 dotnet build -c Debug
 ```
 
-The backend is in `backend/` (Cloudflare Worker + TypeScript). Deploy with `wrangler deploy` after configuring `wrangler.toml` with your KV namespace IDs.
+Then point Dalamud at `bin/x64/Debug/ClubFFXIV.json` as a dev plugin (see [Install](#install)).
+
+### Backend
+
+The backend is a single Cloudflare Worker in `backend/` (TypeScript) backed by Workers KV. The default registry URL in the plugin points at the public instance; you only need to deploy your own if you want to run a private registry.
+
+**Stack**
+- Cloudflare Workers — serverless edge runtime
+- Workers KV — eventually-consistent key-value store
+- Ed25519 verification via Web Crypto (built into Workers runtime)
+
+**Endpoints**
+- `GET  /health` — liveness check
+- `GET  /time` — server time (for clock-skew debugging)
+- `GET  /clubs/:plotKey` — fetch a single club record by plot key
+- `POST /clubs/:plotKey` — publish/update (Ed25519-signed; first writer claims the plot)
+- `DELETE /clubs/:plotKey` — unpublish (signed by the original DJ key)
+- `GET  /wards/:worldId/:territoryType/:ward` — list all calibrated clubs in a ward (used for outdoor proximity discovery)
+
+**Local dev**
+
+```bash
+cd backend
+npm install
+npx wrangler dev   # local server on http://127.0.0.1:8787
+```
+
+Hit it from a separate terminal (`curl http://127.0.0.1:8787/health` etc.) to verify routes.
+
+**Deploy**
+
+```bash
+# 1. Provision KV namespaces (one-time)
+npx wrangler kv:namespace create CLUBS_KV
+npx wrangler kv:namespace create CLUBS_KV --preview
+
+# 2. Paste the two returned IDs into wrangler.toml under [[kv_namespaces]]
+
+# 3. Deploy
+npx wrangler deploy
+```
+
+Wrangler prints the public URL (e.g. `https://clubffxiv-registry.<account>.workers.dev`). Set this as the Registry URL in `/club config` to point the plugin at your instance instead of the default.
+
+**Cost**
+- Workers free tier: 100k requests/day
+- KV free tier: 1 GB storage, 100k reads/day, 1k writes/day
+- Plenty for a small community; comfortable headroom for a few thousand active listeners
+
+**Schema**
+- `club:{plotKey}` → JSON `ClubRecord` (streamUrl, displayName, djId, pubkey, updatedAt, optional door coords)
+- `ward:{worldId}:{territoryType}:{ward}` → JSON map of `{plotKey: WardIndexEntry}` for one-shot ward listing
+
+The ward index is maintained alongside the per-club record on every publish/delete. KV doesn't have transactions, so concurrent writes to the same ward could race; for a low-traffic registry this is acceptable.
 
 ## Caveats
 
-- **Dalamud plugins technically violate FFXIV's ToS.** Square Enix's stated stance is no third-party tools; the practical stance is "don't be visible about it." Use is at your own risk.
 - **Twitch / YouTube playback** has ~5–10s latency (HLS) — listeners are roughly synced with each other but a few seconds behind the live source.
 - **Music licensing** is the DJ's responsibility — streaming copyrighted music to listeners is technically a broadcast and requires licensing. Royalty-free or your own original mixes sidestep this. The plugin author isn't responsible for what DJs choose to stream.
 - **House ownership check is best-effort** — runs against the game's local state, can be bypassed by a forked client. Acceptable for a small social plugin; not a defense against determined abuse.
 
 ## License
 
-MIT
+[Unlicense](LICENSE) — public domain. Do whatever you want with it.
 
 ## Acknowledgements
 
 - [Dalamud](https://github.com/goatcorp/Dalamud) and [XIVLauncher](https://github.com/goatcorp/FFXIVQuickLauncher) — plugin framework and launcher
 - [NAudio](https://github.com/naudio/NAudio), [NLayer](https://github.com/naudio/NLayer), [NVorbis](https://github.com/NVorbis/NVorbis) — audio I/O and managed decoders
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org/) — Twitch / YouTube extraction and decoding
-- The FFXIV venue community for being creative enough to make this worth building
