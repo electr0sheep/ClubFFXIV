@@ -84,10 +84,13 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
+        var reader = new SubprocessAudioReader(proc);
+
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Temporarily logged at Info (was Debug) so we can see ffmpeg's chatter
-        // around a crash without changing Dalamud's log filter. Revert to Debug
-        // once the crash cause is identified.
+        // Per-line at Info so we see ffmpeg's chatter without changing log filters.
+        // Exit warning only fires when WE didn't kill the process — distinguishes
+        // "ffmpeg crashed on its own" (real bug) from "we killed it via Dispose"
+        // (normal stream switch / shutdown).
         _ = Task.Run(async () =>
         {
             try
@@ -95,17 +98,17 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
                     Plugin.Log.Info($"[ffmpeg] {line}");
             }
-            catch { /* process exited */ }
+            catch { /* process exited or token cancelled */ }
 
             try
             {
-                if (proc.HasExited)
-                    Plugin.Log.Warning($"[ffmpeg] exited with code {proc.ExitCode}");
+                if (proc.HasExited && !reader.disposed)
+                    Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
             }
             catch { /* already disposed */ }
         }, ct);
 
-        return new SubprocessAudioReader(proc);
+        return reader;
     }
 
     public int Read(float[] buffer, int offset, int count)
