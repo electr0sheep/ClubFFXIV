@@ -59,8 +59,18 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
+        psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("warning");
         psi.ArgumentList.Add("-nostdin");
+
+        // Reconnect on transient HTTP failures and at end-of-input. Critical for
+        // Twitch HLS where segment fetches can blip and the playlist URL may
+        // briefly 5xx during refresh. Without these, ffmpeg exits after the first
+        // hiccup and our Read returns 0 (NAudio interprets as end-of-stream).
+        psi.ArgumentList.Add("-reconnect"); psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_streamed"); psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_at_eof"); psi.ArgumentList.Add("1");
+        psi.ArgumentList.Add("-reconnect_delay_max"); psi.ArgumentList.Add("5");
+
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(resolvedUrl);
         psi.ArgumentList.Add("-vn");                 // drop video
         psi.ArgumentList.Add("-ar"); psi.ArgumentList.Add("44100");
@@ -72,14 +82,24 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
+        // Log as Info so the user sees ffmpeg's warnings/errors in /xllog without
+        // having to switch log levels.
         _ = Task.Run(async () =>
         {
             try
             {
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
-                    Plugin.Log.Debug($"[ffmpeg] {line}");
+                    Plugin.Log.Info($"[ffmpeg] {line}");
             }
             catch { /* process exited */ }
+
+            // Surface unexpected exits so the failure mode is obvious in logs.
+            try
+            {
+                if (proc.HasExited)
+                    Plugin.Log.Warning($"[ffmpeg] exited with code {proc.ExitCode}");
+            }
+            catch { /* already disposed */ }
         }, ct);
 
         return new SubprocessAudioReader(proc);
