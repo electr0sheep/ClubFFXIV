@@ -332,7 +332,9 @@ public sealed class ConfigWindow : Window, IDisposable
         if (prox.HasValue)
         {
             var p = prox.Value;
-            var label = p.InRange ? "Approaching" : "Closest (out of range)";
+            var label = p.Streaming
+                ? (p.Audible ? "Approaching" : "Pre-buffering")
+                : "Closest (out of range)";
             ImGui.Text($"{label}: {p.Candidate.DisplayName}");
             ImGui.Text($"Distance: {p.Distance:F1} m   Nearness: {p.NormalizedNearness * 100:F0}%");
         }
@@ -488,6 +490,20 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var changed = false;
 
+        var streamDist = plugin.Config.SpatialStreamDistance;
+        if (ImGui.SliderFloat("Pre-buffer distance (m)", ref streamDist, 5f, 200f, "%.0f"))
+        {
+            plugin.Config.SpatialStreamDistance = streamDist;
+            changed = true;
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Within this distance the stream connects and pre-buffers (silently).\n" +
+                "Hides the 1-3s connect delay so audio is ready when you cross the\n" +
+                "audible threshold. Should be larger than Falloff distance.");
+
         var falloff = plugin.Config.SpatialFalloffDistance;
         if (ImGui.SliderFloat("Falloff distance (m)", ref falloff, 5f, 100f, "%.0f"))
         {
@@ -497,7 +513,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Beyond this distance, the stream is silent and disconnected.");
+            ImGui.SetTooltip("Audible threshold — at this distance, volume = 0 but stream may still be pre-buffering.");
 
         var full = plugin.Config.SpatialFullVolumeDistance;
         if (ImGui.SliderFloat("Full-volume distance (m)", ref full, 0.5f, 20f, "%.1f"))

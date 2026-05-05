@@ -527,6 +527,7 @@ public sealed class Plugin : IDalamudPlugin
         var result = WardProximity.FindClosest(
             pos.Value,
             candidates,
+            Config.SpatialStreamDistance,
             Config.SpatialFalloffDistance,
             Config.SpatialFullVolumeDistance);
 
@@ -534,7 +535,9 @@ public sealed class Plugin : IDalamudPlugin
         // show how far the closest club is — useful for calibration & debugging.
         CurrentProximity = result;
 
-        if (result == null || !result.Value.InRange)
+        // Streaming is the broader range — keep the stream alive even outside
+        // the audible band so the buffer is primed when the player crosses it.
+        if (result == null || !result.Value.Streaming)
         {
             if (CurrentMode == PlaybackMode.Outdoor)
             {
