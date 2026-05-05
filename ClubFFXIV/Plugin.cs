@@ -40,6 +40,7 @@ public sealed class Plugin : IDalamudPlugin
     public WardProximity.Result? CurrentProximity { get; private set; }
 
     private readonly ConfigWindow configWindow;
+    private readonly HelpWindow helpWindow = new();
     private readonly StreamPlayer streamPlayer = new();
     private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
@@ -69,6 +70,7 @@ public sealed class Plugin : IDalamudPlugin
 
         configWindow = new ConfigWindow(this);
         WindowSystem.AddWindow(configWindow);
+        WindowSystem.AddWindow(helpWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -91,11 +93,14 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
         WindowSystem.RemoveAllWindows();
         configWindow.Dispose();
+        helpWindow.Dispose();
         streamPlayer.Dispose();
         bgmMuter.Dispose();
         registryClient?.Dispose();
         djIdentity?.Dispose();
     }
+
+    public void ToggleHelp() => helpWindow.Toggle();
 
     public void PlayStream(string url)
     {

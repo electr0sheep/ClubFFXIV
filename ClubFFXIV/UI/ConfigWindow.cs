@@ -28,6 +28,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     public override void Draw()
     {
+        DrawHelpBar();
         DrawStreamSection();
         ImGui.Spacing();
         ImGui.Separator();
@@ -50,9 +51,46 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawStatusFooter();
     }
 
+    private void DrawHelpBar()
+    {
+        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl)
+                       && string.IsNullOrEmpty(plugin.Config.RegistryUrl);
+
+        if (firstRun)
+        {
+            ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.25f, 0.35f, 0.6f));
+            ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), ImGuiChildFlags.Borders);
+            ImGui.Spacing();
+            ImGui.TextWrapped("First time? Click \"Getting Started\" for a 30-second walkthrough.");
+            ImGui.Spacing();
+            if (ImGui.Button("Getting Started"))
+                plugin.ToggleHelp();
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            ImGui.Spacing();
+        }
+        else
+        {
+            // Subtle help button on the right; doesn't take a full row.
+            var label = "? Help";
+            var btnW = ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 4;
+            ImGui.SetCursorPosX(ImGui.GetContentRegionAvail().X - btnW + ImGui.GetCursorPosX());
+            if (ImGui.SmallButton(label))
+                plugin.ToggleHelp();
+        }
+    }
+
     private void DrawStreamSection()
     {
         ImGui.TextWrapped("Paste an Icecast / Shoutcast / MP3 stream URL.");
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Need a URL?\n" +
+                "  • Listener: ask a DJ for theirs\n" +
+                "  • DJ: see Help → \"I want to DJ\"\n" +
+                "  • Just testing: try https://ice1.somafm.com/groovesalad-128-mp3");
         ImGui.Spacing();
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText("##url", ref urlInput, 1024);
