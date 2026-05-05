@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
 using System.Threading.Tasks;
 using ClubFFXIV.Audio;
 using ClubFFXIV.Game;
@@ -44,6 +45,11 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
 
+    // Ward listing cache: keyed by (worldId, territoryType, ward), TTL 60s.
+    private readonly Dictionary<string, CachedWardListing> wardCache = new();
+    private static readonly TimeSpan WardCacheTtl = TimeSpan.FromSeconds(60);
+    private string? wardFetchInFlight;
+
     public Plugin()
     {
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
@@ -58,7 +64,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/club play <url> | /club stop | /club calibrate | /club config",
+            HelpMessage = "/club play <url> | /club stop | /club calibrate <key> | /club config",
         });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
@@ -127,6 +133,7 @@ public sealed class Plugin : IDalamudPlugin
         registryClient = string.IsNullOrWhiteSpace(Config.RegistryUrl)
             ? null
             : new ClubRegistryClient(Config.RegistryUrl);
+        wardCache.Clear();
     }
 
     public DjIdentity EnsureDjIdentity()
@@ -147,14 +154,26 @@ public sealed class Plugin : IDalamudPlugin
 
         var dj = EnsureDjIdentity();
         var key = CurrentPlotKey.Value.Canonical;
-        await registryClient.PublishAsync(key, streamUrl, displayName, dj);
 
-        if (!Config.PublishedHouses.TryGetValue(key, out var entry))
-            entry = new ClubEntry();
-        entry.DisplayName = displayName;
-        entry.StreamUrl = streamUrl;
-        Config.PublishedHouses[key] = entry;
+        // Pull door coords from local entry if calibrated.
+        DoorPayload? door = null;
+        if (Config.PublishedHouses.TryGetValue(key, out var existing) && HasDoor(existing))
+            door = ToDoorPayload(existing);
+        else if (Config.SavedHouses.TryGetValue(key, out var saved) && HasDoor(saved))
+            door = ToDoorPayload(saved);
+
+        await registryClient.PublishAsync(key, streamUrl, displayName, dj, door);
+
+        if (existing == null)
+        {
+            existing = new ClubEntry();
+            Config.PublishedHouses[key] = existing;
+        }
+        existing.DisplayName = displayName;
+        existing.StreamUrl = streamUrl;
         Config.Save();
+
+        InvalidateWardCacheForDoor(door);
     }
 
     public async Task UnpublishHouseAsync(string canonicalKey)
@@ -165,15 +184,15 @@ public sealed class Plugin : IDalamudPlugin
             throw new InvalidOperationException("No DJ identity — nothing to unpublish");
 
         await registryClient.DeleteAsync(canonicalKey, djIdentity);
-        if (Config.PublishedHouses.Remove(canonicalKey))
+
+        if (Config.PublishedHouses.TryGetValue(canonicalKey, out var entry))
+        {
+            InvalidateWardCacheForDoor(ToDoorPayload(entry));
+            Config.PublishedHouses.Remove(canonicalKey);
             Config.Save();
+        }
     }
 
-    /// <summary>
-    /// Records the player's current world position as the door coordinates for the
-    /// given canonical key (must already exist in SavedHouses or PublishedHouses).
-    /// Player must be standing in an outdoor ward.
-    /// </summary>
     public bool CalibrateDoor(string canonicalKey)
     {
         var ward = HousingDetector.ResolveOutdoor();
@@ -198,6 +217,26 @@ public sealed class Plugin : IDalamudPlugin
             pub.DoorTerritoryType = ward.Value.TerritoryType;
             pub.DoorWard = ward.Value.Ward;
             wrote = true;
+
+            // Re-publish with new door coords so other listeners auto-discover.
+            if (registryClient != null && djIdentity != null)
+            {
+                var doorPayload = ToDoorPayload(pub);
+                var dn = pub.DisplayName;
+                var url = pub.StreamUrl;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await registryClient.PublishAsync(canonicalKey, url, dn, djIdentity, doorPayload);
+                        InvalidateWardCacheForDoor(doorPayload);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning($"[ClubFFXIV] Auto-republish after calibrate failed: {ex.Message}");
+                    }
+                });
+            }
         }
 
         if (!wrote)
@@ -247,34 +286,31 @@ public sealed class Plugin : IDalamudPlugin
         var newPlot = HousingDetector.ResolveCurrent();
         var newWard = HousingDetector.ResolveOutdoor();
 
-        if (!Nullable.Equals(newPlot, CurrentPlotKey))
-        {
-            CurrentPlotKey = newPlot;
-        }
+        if (!Nullable.Equals(newPlot, CurrentPlotKey)) CurrentPlotKey = newPlot;
 
         if (!Nullable.Equals(newWard, CurrentWard))
         {
             CurrentWard = newWard;
+            // Entering a new ward — kick off a registry fetch (cached if recent).
+            if (newWard.HasValue && registryClient != null && Config.AutoQueryRegistry)
+                _ = EnsureWardListingAsync(newWard.Value);
         }
     }
 
     private void DriveAudio()
     {
-        // Indoor takes priority — full quality auto-play if there's a saved/registry stream.
         if (CurrentPlotKey.HasValue)
         {
             HandleIndoorMode(CurrentPlotKey.Value);
             return;
         }
 
-        // Outdoor ward — spatial proximity scan.
         if (CurrentWard.HasValue)
         {
             HandleOutdoorMode(CurrentWard.Value);
             return;
         }
 
-        // Neither indoor nor outdoor housing — stop any auto-play.
         if (CurrentMode is PlaybackMode.Indoor or PlaybackMode.Outdoor)
         {
             streamPlayer.Stop();
@@ -285,17 +321,14 @@ public sealed class Plugin : IDalamudPlugin
 
     private void HandleIndoorMode(PlotKey key)
     {
-        // If we're already in indoor mode for this house, nothing to do.
         if (CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying)
         {
             CurrentProximity = null;
             return;
         }
 
-        // Stop any previous (outdoor) playback before switching modes.
         if (streamPlayer.IsPlaying) streamPlayer.Stop();
 
-        // Local saved entry wins.
         if (Config.SavedHouses.TryGetValue(key.Canonical, out var saved)
             && !string.IsNullOrWhiteSpace(saved.StreamUrl))
         {
@@ -303,7 +336,6 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // Otherwise registry, fire-and-forget.
         if (Config.AutoQueryRegistry && registryClient != null)
         {
             _ = QueryRegistryAndStartIndoor(key);
@@ -316,7 +348,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             var record = await registryClient!.GetAsync(key.Canonical);
             if (record == null) return;
-            if (!Nullable.Equals(CurrentPlotKey, key)) return; // moved
+            if (!Nullable.Equals(CurrentPlotKey, key)) return;
             StartIndoor(record.StreamUrl, record.DisplayName);
         }
         catch (Exception ex)
@@ -346,7 +378,7 @@ public sealed class Plugin : IDalamudPlugin
         var pos = HousingDetector.PlayerPosition();
         if (pos == null) return;
 
-        var candidates = EnumerateLocalCandidates(ward);
+        var candidates = EnumerateCandidates(ward);
         var result = WardProximity.FindClosest(
             pos.Value,
             candidates,
@@ -355,7 +387,6 @@ public sealed class Plugin : IDalamudPlugin
 
         if (result == null)
         {
-            // Out of range of any calibrated club — stop spatial playback if running.
             if (CurrentMode == PlaybackMode.Outdoor)
             {
                 streamPlayer.Stop();
@@ -371,7 +402,6 @@ public sealed class Plugin : IDalamudPlugin
             Config.SpatialMinCutoffHz,
             Config.SpatialMaxCutoffHz);
 
-        // Different club is now closest — switch streams.
         if (CurrentMode != PlaybackMode.Outdoor
             || streamPlayer.CurrentUrl != r.Candidate.StreamUrl)
         {
@@ -399,15 +429,34 @@ public sealed class Plugin : IDalamudPlugin
         CurrentProximity = r;
     }
 
-    private IEnumerable<WardProximity.Candidate> EnumerateLocalCandidates(WardLocation ward)
+    private IEnumerable<WardProximity.Candidate> EnumerateCandidates(WardLocation ward)
     {
+        // Local entries first — DJ's own calibrations win over registry.
         foreach (var (key, entry) in Config.SavedHouses)
-            if (TryToCandidate(key, entry, ward, out var c)) yield return c;
+            if (TryLocalToCandidate(key, entry, ward, out var c)) yield return c;
         foreach (var (key, entry) in Config.PublishedHouses)
-            if (TryToCandidate(key, entry, ward, out var c)) yield return c;
+            if (TryLocalToCandidate(key, entry, ward, out var c)) yield return c;
+
+        // Registry-discovered, deduplicated against local keys.
+        var seen = new HashSet<string>();
+        foreach (var (key, _) in Config.SavedHouses) seen.Add(key);
+        foreach (var (key, _) in Config.PublishedHouses) seen.Add(key);
+
+        if (TryGetCachedWard(ward, out var cached))
+        {
+            foreach (var entry in cached.Clubs)
+            {
+                if (seen.Contains(entry.PlotKey)) continue;
+                yield return new WardProximity.Candidate(
+                    entry.PlotKey,
+                    entry.DisplayName,
+                    entry.StreamUrl,
+                    new Vector3(entry.Door.X, entry.Door.Y, entry.Door.Z));
+            }
+        }
     }
 
-    private static bool TryToCandidate(
+    private static bool TryLocalToCandidate(
         string key, ClubEntry entry, WardLocation ward, out WardProximity.Candidate candidate)
     {
         candidate = default;
@@ -419,6 +468,72 @@ public sealed class Plugin : IDalamudPlugin
             key, entry.DisplayName, entry.StreamUrl, entry.DoorPosition.ToVec());
         return true;
     }
+
+    // ---- Ward listing cache ----
+
+    private bool TryGetCachedWard(WardLocation ward, out WardListing listing)
+    {
+        var k = WardCacheKey(ward);
+        if (wardCache.TryGetValue(k, out var entry)
+            && DateTime.UtcNow - entry.FetchedAt < WardCacheTtl)
+        {
+            listing = entry.Listing;
+            return true;
+        }
+        listing = new WardListing();
+        return false;
+    }
+
+    private async Task EnsureWardListingAsync(WardLocation ward)
+    {
+        if (registryClient == null) return;
+        var k = WardCacheKey(ward);
+        if (wardFetchInFlight == k) return;
+        if (wardCache.TryGetValue(k, out var existing)
+            && DateTime.UtcNow - existing.FetchedAt < WardCacheTtl) return;
+
+        wardFetchInFlight = k;
+        try
+        {
+            var worldId = PlayerState.CurrentWorld.RowId;
+            var listing = await registryClient.GetWardAsync(worldId, ward.TerritoryType, ward.Ward);
+            wardCache[k] = new CachedWardListing(DateTime.UtcNow, listing);
+            Log.Info($"[ClubFFXIV] Ward listing fetched: {listing.Clubs.Count} club(s)");
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"[ClubFFXIV] Ward listing fetch failed: {ex.Message}");
+        }
+        finally
+        {
+            wardFetchInFlight = null;
+        }
+    }
+
+    private string WardCacheKey(WardLocation ward)
+    {
+        var worldId = PlayerState.CurrentWorld.RowId;
+        return $"{worldId}:{ward.TerritoryType}:{ward.Ward}";
+    }
+
+    private void InvalidateWardCacheForDoor(DoorPayload? door)
+    {
+        if (door == null) return;
+        var worldId = PlayerState.CurrentWorld.RowId;
+        wardCache.Remove($"{worldId}:{door.TerritoryType}:{door.Ward}");
+    }
+
+    private static bool HasDoor(ClubEntry e) =>
+        e.DoorPosition != null && e.DoorTerritoryType.HasValue && e.DoorWard.HasValue;
+
+    private static DoorPayload ToDoorPayload(ClubEntry e) => new()
+    {
+        X = e.DoorPosition!.X,
+        Y = e.DoorPosition.Y,
+        Z = e.DoorPosition.Z,
+        TerritoryType = e.DoorTerritoryType ?? 0,
+        Ward = e.DoorWard ?? 0,
+    };
 
     private void OnCommand(string command, string args)
     {
@@ -474,7 +589,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                ChatGui.Print("[ClubFFXIV] Usage: /club play <url> | /club stop | /club calibrate | /club config");
+                ChatGui.Print("[ClubFFXIV] Usage: /club play <url> | /club stop | /club calibrate <key> | /club config");
                 break;
         }
     }
@@ -482,6 +597,8 @@ public sealed class Plugin : IDalamudPlugin
     private void DrawUI() => WindowSystem.Draw();
 
     private void OpenConfig() => configWindow.Toggle();
+
+    private readonly record struct CachedWardListing(DateTime FetchedAt, WardListing Listing);
 }
 
 public enum PlaybackMode

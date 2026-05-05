@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -31,11 +32,22 @@ public sealed class ClubRegistryClient : IDisposable
         return JsonSerializer.Deserialize<ClubRecord>(json);
     }
 
+    public async Task<WardListing> GetWardAsync(
+        uint worldId, uint territoryType, int ward, CancellationToken ct = default)
+    {
+        var url = $"{baseUrl}/wards/{worldId}/{territoryType}/{ward}";
+        using var resp = await http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<WardListing>(json) ?? new WardListing();
+    }
+
     public async Task PublishAsync(
         string plotKey,
         string streamUrl,
         string displayName,
         DjIdentity dj,
+        DoorPayload? door = null,
         CancellationToken ct = default)
     {
         var body = JsonSerializer.Serialize(new PublishRequest
@@ -43,6 +55,7 @@ public sealed class ClubRegistryClient : IDisposable
             StreamUrl = streamUrl,
             DisplayName = displayName,
             Nonce = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            Door = door,
         });
         var signature = dj.Sign($"POST:{plotKey}:{body}");
 
@@ -95,7 +108,35 @@ public sealed class ClubRecord
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("djId")] public string DjId { get; set; } = "";
+    [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
+}
+
+public sealed class WardListing
+{
+    [JsonPropertyName("worldId")] public uint WorldId { get; set; }
+    [JsonPropertyName("territoryType")] public uint TerritoryType { get; set; }
+    [JsonPropertyName("ward")] public int Ward { get; set; }
+    [JsonPropertyName("clubs")] public List<WardListingEntry> Clubs { get; set; } = new();
+}
+
+public sealed class WardListingEntry
+{
+    [JsonPropertyName("plotKey")] public string PlotKey { get; set; } = "";
+    [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
+    [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
+    [JsonPropertyName("djId")] public string DjId { get; set; } = "";
+    [JsonPropertyName("door")] public DoorPayload Door { get; set; } = new();
+    [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
+}
+
+public sealed class DoorPayload
+{
+    [JsonPropertyName("x")] public float X { get; set; }
+    [JsonPropertyName("y")] public float Y { get; set; }
+    [JsonPropertyName("z")] public float Z { get; set; }
+    [JsonPropertyName("territoryType")] public uint TerritoryType { get; set; }
+    [JsonPropertyName("ward")] public int Ward { get; set; }
 }
 
 internal sealed class PublishRequest
@@ -103,6 +144,8 @@ internal sealed class PublishRequest
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("nonce")] public long Nonce { get; set; }
+    [JsonPropertyName("door"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DoorPayload? Door { get; set; }
 }
 
 internal sealed class DeleteRequest

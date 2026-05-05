@@ -2,9 +2,12 @@ import { djIdFromPubkey, verifySignature } from "./auth";
 import {
   ClubRecord,
   DeleteBody,
+  Door,
   Env,
   NONCE_MAX_AGE_MS,
   PublishBody,
+  WardIndex,
+  WardIndexEntry,
 } from "./types";
 
 export async function handleGet(
@@ -18,6 +21,7 @@ export async function handleGet(
     streamUrl: record.streamUrl,
     displayName: record.displayName,
     djId: record.djId,
+    door: record.door,
     updatedAt: record.updatedAt,
   });
 }
@@ -56,15 +60,19 @@ export async function handlePost(
   }
   const nonceErr = nonceError(parsed.nonce);
   if (nonceErr) return jsonResponse({ error: nonceErr }, 400);
+  const doorErr = parsed.door ? doorError(parsed.door) : null;
+  if (doorErr) return jsonResponse({ error: doorErr }, 400);
 
   const djId = await djIdFromPubkey(auth.pubkey);
 
   const existingRaw = await env.CLUBS_KV.get(`club:${plotKey}`);
+  let previousDoor: Door | undefined;
   if (existingRaw) {
     const existing = JSON.parse(existingRaw) as ClubRecord;
     if (existing.djId !== djId) {
       return jsonResponse({ error: "plot owned by another DJ" }, 403);
     }
+    previousDoor = existing.door;
   }
 
   const record: ClubRecord = {
@@ -73,8 +81,27 @@ export async function handlePost(
     djId,
     pubkey: auth.pubkey,
     updatedAt: Date.now(),
+    door: parsed.door,
   };
   await env.CLUBS_KV.put(`club:${plotKey}`, JSON.stringify(record));
+
+  // Maintain ward index. If the door moved between wards, remove from the old.
+  const worldId = extractWorldId(plotKey);
+  if (worldId !== null) {
+    if (previousDoor && doorMovedWard(previousDoor, parsed.door)) {
+      await removeFromWardIndex(env, worldId, previousDoor, plotKey);
+    }
+    if (parsed.door) {
+      await addToWardIndex(env, worldId, parsed.door, plotKey, {
+        streamUrl: parsed.streamUrl,
+        displayName: parsed.displayName,
+        djId,
+        door: parsed.door,
+        updatedAt: record.updatedAt,
+      });
+    }
+  }
+
   return jsonResponse({ ok: true, djId });
 }
 
@@ -113,7 +140,81 @@ export async function handleDelete(
   }
 
   await env.CLUBS_KV.delete(`club:${plotKey}`);
+
+  if (existing.door) {
+    const worldId = extractWorldId(plotKey);
+    if (worldId !== null) {
+      await removeFromWardIndex(env, worldId, existing.door, plotKey);
+    }
+  }
+
   return jsonResponse({ ok: true });
+}
+
+export async function handleWardListing(
+  env: Env,
+  worldId: number,
+  territoryType: number,
+  ward: number,
+): Promise<Response> {
+  const raw = await env.CLUBS_KV.get(wardKey(worldId, territoryType, ward));
+  const index = (raw ? (JSON.parse(raw) as WardIndex) : {}) as WardIndex;
+  return jsonResponse({
+    worldId,
+    territoryType,
+    ward,
+    clubs: Object.entries(index).map(([plotKey, e]) => ({ plotKey, ...e })),
+  });
+}
+
+async function addToWardIndex(
+  env: Env,
+  worldId: number,
+  door: Door,
+  plotKey: string,
+  entry: WardIndexEntry,
+): Promise<void> {
+  const k = wardKey(worldId, door.territoryType, door.ward);
+  const raw = await env.CLUBS_KV.get(k);
+  const index: WardIndex = raw ? (JSON.parse(raw) as WardIndex) : {};
+  index[plotKey] = entry;
+  await env.CLUBS_KV.put(k, JSON.stringify(index));
+}
+
+async function removeFromWardIndex(
+  env: Env,
+  worldId: number,
+  door: Door,
+  plotKey: string,
+): Promise<void> {
+  const k = wardKey(worldId, door.territoryType, door.ward);
+  const raw = await env.CLUBS_KV.get(k);
+  if (!raw) return;
+  const index = JSON.parse(raw) as WardIndex;
+  if (!(plotKey in index)) return;
+  delete index[plotKey];
+  if (Object.keys(index).length === 0) {
+    await env.CLUBS_KV.delete(k);
+  } else {
+    await env.CLUBS_KV.put(k, JSON.stringify(index));
+  }
+}
+
+function wardKey(worldId: number, territoryType: number, ward: number): string {
+  return `ward:${worldId}:${territoryType}:${ward}`;
+}
+
+function doorMovedWard(prev: Door | undefined, next: Door | undefined): boolean {
+  if (!prev || !next) return true;
+  return prev.territoryType !== next.territoryType || prev.ward !== next.ward;
+}
+
+function extractWorldId(plotKey: string): number | null {
+  // plotKey format: worldId:territoryType:ward:plot:room:division
+  const first = plotKey.split(":")[0];
+  if (!first) return null;
+  const n = Number(first);
+  return Number.isFinite(n) ? n : null;
 }
 
 function readAuthHeaders(
@@ -132,6 +233,14 @@ function nonceError(nonce: number | undefined): string | null {
   if (Math.abs(age) > NONCE_MAX_AGE_MS) {
     const dir = age < 0 ? "ahead" : "behind";
     return `clock skew: client is ${dir} by ${Math.round(Math.abs(age) / 1000)}s. server=${serverNow} client=${nonce}`;
+  }
+  return null;
+}
+
+function doorError(d: Door): string | null {
+  for (const k of ["x", "y", "z", "territoryType", "ward"] as const) {
+    const v = (d as unknown as Record<string, unknown>)[k];
+    if (typeof v !== "number" || !Number.isFinite(v)) return `door.${k} must be a finite number`;
   }
   return null;
 }
