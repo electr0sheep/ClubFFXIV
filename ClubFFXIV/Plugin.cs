@@ -390,16 +390,38 @@ public sealed class Plugin : IDalamudPlugin
         if (DateTime.UtcNow - lastHousingCheck < HousingCheckInterval) return;
         lastHousingCheck = DateTime.UtcNow;
 
+        // Per-step timing so we can pinpoint hitches (Dalamud warns at >50ms).
+        // Logs only on slow ticks to keep /xllog quiet during normal operation.
+        var totalSw = System.Diagnostics.Stopwatch.StartNew();
+        long locMs = 0, driveMs = 0, policyMs = 0, binMs = 0;
         try
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             UpdateLocationState();
+            locMs = sw.ElapsedMilliseconds; sw.Restart();
+
             DriveAudio();
+            driveMs = sw.ElapsedMilliseconds; sw.Restart();
+
             ApplyAudioPolicy();
+            policyMs = sw.ElapsedMilliseconds; sw.Restart();
+
             MaybeCheckBinaryUpdates();
+            binMs = sw.ElapsedMilliseconds;
         }
         catch (Exception ex)
         {
             Log.Error(ex, "OnFrameworkUpdate failed");
+        }
+        finally
+        {
+            var totalMs = totalSw.ElapsedMilliseconds;
+            if (totalMs > 30)
+            {
+                Log.Warning(
+                    $"Slow tick: {totalMs}ms total " +
+                    $"(loc={locMs} drive={driveMs} policy={policyMs} bin={binMs})");
+            }
         }
     }
 
