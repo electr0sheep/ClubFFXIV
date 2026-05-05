@@ -33,6 +33,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     // Stays false when Dispose runs *after* ffmpeg already exited on its own —
     // so the stderr drain can correctly attribute unexpected exits.
     private bool killedByUs;
+    private bool eofLogged; // suppress repeated EOF logs from the same dead reader
 
     private SubprocessAudioReader(Process ffmpeg)
     {
@@ -130,7 +131,17 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             while (totalBytes < byteCount)
             {
                 var n = stdout.Read(readBuffer, totalBytes, byteCount - totalBytes);
-                if (n == 0) break;
+                if (n == 0)
+                {
+                    if (totalBytes == 0 && !eofLogged)
+                    {
+                        eofLogged = true;
+                        Plugin.Log.Warning(
+                            $"[ffmpeg] stdout EOF — process exited or closed pipe. " +
+                            $"HasExited={ffmpeg.HasExited} killedByUs={killedByUs}");
+                    }
+                    break;
+                }
                 totalBytes += n;
             }
         }

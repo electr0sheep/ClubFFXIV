@@ -676,6 +676,12 @@ public sealed class Plugin : IDalamudPlugin
 
         if (needNewStream && pendingStartUrl != r.Candidate.StreamUrl)
         {
+            // Diagnostic: log why we decided to (re)start so we can see if it's
+            // a real EOF/URL change or a spurious trigger.
+            Log.Info(
+                $"Outdoor restart trigger: " +
+                $"currentUrlMatches={streamPlayer.CurrentUrl == r.Candidate.StreamUrl} " +
+                $"mode={CurrentMode} isPlaying={streamPlayer.IsPlaying}");
             _ = StartStreamAsync(r.Candidate.StreamUrl, PlaybackMode.Outdoor, r.Candidate.DisplayName);
         }
         else if (CurrentMode != PlaybackMode.Outdoor && streamPlayer.IsPlaying)
@@ -728,9 +734,13 @@ public sealed class Plugin : IDalamudPlugin
 
     private bool TryGetCachedWard(WardLocation ward, out WardListing listing)
     {
+        // Serve cached data regardless of TTL age. The TTL only governs whether
+        // EnsureWardListingAsync kicks off a refetch — never whether we serve.
+        // Otherwise we'd briefly drop all registry candidates on TTL expiry,
+        // causing HandleOutdoorMode to Stop() the stream and trigger a spurious
+        // restart once the refetch completed.
         var k = WardCacheKey(ward);
-        if (wardCache.TryGetValue(k, out var entry)
-            && DateTime.UtcNow - entry.FetchedAt < WardCacheTtl)
+        if (wardCache.TryGetValue(k, out var entry))
         {
             listing = entry.Listing;
             return true;
