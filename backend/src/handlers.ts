@@ -54,9 +54,8 @@ export async function handlePost(
   if (parsed.displayName.length > 80) {
     return jsonResponse({ error: "displayName too long" }, 400);
   }
-  if (!isFreshNonce(parsed.nonce)) {
-    return jsonResponse({ error: "stale or future nonce" }, 400);
-  }
+  const nonceErr = nonceError(parsed.nonce);
+  if (nonceErr) return jsonResponse({ error: nonceErr }, 400);
 
   const djId = await djIdFromPubkey(auth.pubkey);
 
@@ -101,9 +100,8 @@ export async function handleDelete(
   } catch {
     return jsonResponse({ error: "invalid json" }, 400);
   }
-  if (!isFreshNonce(parsed.nonce)) {
-    return jsonResponse({ error: "stale or future nonce" }, 400);
-  }
+  const nonceErr = nonceError(parsed.nonce);
+  if (nonceErr) return jsonResponse({ error: nonceErr }, 400);
 
   const existingRaw = await env.CLUBS_KV.get(`club:${plotKey}`);
   if (!existingRaw) return jsonResponse({ error: "not found" }, 404);
@@ -127,10 +125,17 @@ function readAuthHeaders(
   return { pubkey, signature };
 }
 
-function isFreshNonce(nonce: number | undefined): boolean {
-  if (typeof nonce !== "number" || !Number.isFinite(nonce)) return false;
-  const age = Date.now() - nonce;
-  return age >= 0 && age <= NONCE_MAX_AGE_MS;
+function nonceError(nonce: number | undefined): string | null {
+  if (typeof nonce !== "number" || !Number.isFinite(nonce)) return "missing or invalid nonce";
+  const serverNow = Date.now();
+  const age = serverNow - nonce;
+  if (age < 0) {
+    return `clock skew: client clock is ahead by ${Math.round(-age / 1000)}s. server=${serverNow} client=${nonce}`;
+  }
+  if (age > NONCE_MAX_AGE_MS) {
+    return `clock skew: client clock is behind by ${Math.round(age / 1000)}s. server=${serverNow} client=${nonce}`;
+  }
+  return null;
 }
 
 function validateUrl(s: string): boolean {

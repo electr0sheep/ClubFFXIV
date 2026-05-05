@@ -6,5 +6,5 @@ compatibility_date = "2024-09-01"
 # and `wrangler kv:namespace create CLUBS_KV --preview`
 [[kv_namespaces]]
 binding = "CLUBS_KV"
-id = "REPLACE_WITH_KV_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+id = "1d83f396874649f99e5ad338fbd44581"
+preview_id = "b693f02a48714b798d8f43deb7b96b59"

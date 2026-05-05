@@ -13,6 +13,10 @@ export default {
       return new Response("ok", { status: 200, headers: corsHeaders() });
     }
 
+    if (url.pathname === "/time") {
+      return jsonResponse({ now: Date.now() });
+    }
+
     const match = url.pathname.match(/^\/clubs\/([^/]+)\/?$/);
     if (!match) {
       return jsonResponse({ error: "not found" }, 404);
