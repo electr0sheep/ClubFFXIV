@@ -59,7 +59,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (firstRun)
         {
             ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.25f, 0.35f, 0.6f));
-            ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), ImGuiChildFlags.Borders);
+            ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), true);
             ImGui.Spacing();
             ImGui.TextWrapped("First time? Click \"Getting Started\" for a 30-second walkthrough.");
             ImGui.Spacing();
