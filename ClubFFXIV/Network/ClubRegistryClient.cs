@@ -28,7 +28,10 @@ public sealed class ClubRegistryClient : IDisposable
         {
             SslOptions = new SslClientAuthenticationOptions
             {
-                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                // TLS 1.2 only: Wine's SChannel TLS 1.3 implementation is incomplete
+                // and fails handshakes (SEC_E_TARGET_UNKNOWN / 0x80090304) against
+                // Cloudflare. TLS 1.2 is broadly supported and works under Wine.
+                EnabledSslProtocols = SslProtocols.Tls12,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
                 // Wine's SChannel implementation often fails chain validation for
                 // modern certs (Cloudflare custom domains in particular). The plugin
