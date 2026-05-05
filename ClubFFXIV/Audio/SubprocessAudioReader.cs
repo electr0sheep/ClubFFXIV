@@ -85,22 +85,39 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Logged at Debug to keep /xllog clean during normal operation; switch
-        // Dalamud's log filter to Debug if you need to see ffmpeg's chatter.
+        // Per-line output stays at Debug to keep /xllog clean during normal operation,
+        // but we keep a rolling buffer of the last 20 lines and dump them at Warning
+        // when ffmpeg exits unexpectedly — that's where the diagnostic info lives.
+        var recentStderr = new System.Collections.Generic.Queue<string>(capacity: 20);
+        const int RecentStderrCap = 20;
         _ = Task.Run(async () =>
         {
             try
             {
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
+                {
                     Plugin.Log.Debug($"[ffmpeg] {line}");
+                    lock (recentStderr)
+                    {
+                        recentStderr.Enqueue(line);
+                        while (recentStderr.Count > RecentStderrCap) recentStderr.Dequeue();
+                    }
+                }
             }
             catch { /* process exited */ }
 
-            // Unexpected exits stay at Warning since they correspond to actual playback failure.
             try
             {
                 if (proc.HasExited)
-                    Plugin.Log.Warning($"[ffmpeg] exited with code {proc.ExitCode}");
+                {
+                    string[] tail;
+                    lock (recentStderr) tail = recentStderr.ToArray();
+                    var joined = tail.Length == 0
+                        ? "(no stderr captured)"
+                        : "\n  " + string.Join("\n  ", tail);
+                    Plugin.Log.Warning(
+                        $"[ffmpeg] exited with code {proc.ExitCode}. Last stderr lines:{joined}");
+                }
             }
             catch { /* already disposed */ }
         }, ct);
