@@ -129,7 +129,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"[ClubFFXIV] Subprocess audio read error: {ex.Message}");
+            Plugin.Log.Warning($"Subprocess audio read error: {ex.Message}");
             return 0;
         }
 

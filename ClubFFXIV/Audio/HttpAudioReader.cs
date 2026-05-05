@@ -109,7 +109,7 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
         catch (Exception ex)
         {
             // Network or decoder error — signal end-of-stream so playback stops cleanly.
-            Plugin.Log.Warning($"[ClubFFXIV] Audio decode error: {ex.Message}");
+            Plugin.Log.Warning($"Audio decode error: {ex.Message}");
             return 0;
         }
     }

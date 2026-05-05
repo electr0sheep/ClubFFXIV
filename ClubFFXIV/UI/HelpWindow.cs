@@ -238,7 +238,7 @@ public sealed class HelpWindow : Window, IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"[ClubFFXIV] Could not open URL: {ex.Message}");
+            Plugin.Log.Warning($"Could not open URL: {ex.Message}");
             ImGui.SetClipboardText(url);
         }
     }

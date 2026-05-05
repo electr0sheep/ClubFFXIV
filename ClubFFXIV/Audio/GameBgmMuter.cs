@@ -27,7 +27,7 @@ public sealed class GameBgmMuter : IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"[ClubFFXIV] BGM mute failed: {ex.Message}");
+            Plugin.Log.Warning($"BGM mute failed: {ex.Message}");
         }
     }
 
@@ -41,7 +41,7 @@ public sealed class GameBgmMuter : IDisposable
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"[ClubFFXIV] BGM unmute failed: {ex.Message}");
+            Plugin.Log.Warning($"BGM unmute failed: {ex.Message}");
         }
         finally
         {

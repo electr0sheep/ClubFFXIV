@@ -101,10 +101,12 @@ public sealed class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         PluginInterface.UiBuilder.OpenMainUi += OpenConfig;
         Framework.Update += OnFrameworkUpdate;
+        ClientState.TerritoryChanged += OnTerritoryChanged;
     }
 
     public void Dispose()
     {
+        ClientState.TerritoryChanged -= OnTerritoryChanged;
         Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
@@ -147,34 +149,42 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private async Task StartStreamAsync(string url, PlaybackMode targetMode, string displayName)
     {
+        // Set the dedup state synchronously — the next framework tick must see
+        // pendingStartUrl set so it doesn't spawn a duplicate start.
         streamStartCts?.Cancel();
         var cts = new System.Threading.CancellationTokenSource();
         streamStartCts = cts;
         pendingStartUrl = url;
 
-        Log.Info($"[ClubFFXIV] Starting stream ({targetMode}): {url}");
+        // Get off the framework thread before the heavy work. Without this,
+        // Process.Start (yt-dlp) runs synchronously here and hitches the frame
+        // by 50-200ms on Wine. Caller is `_ = StartStreamAsync(...)` from
+        // OnFrameworkUpdate, so we're on the framework thread until we yield.
+        await Task.Yield();
+
+        Log.Info($"Starting stream ({targetMode}): {url}");
         var sw = System.Diagnostics.Stopwatch.StartNew();
         try
         {
             await streamPlayer.PlayAsync(url, cts.Token);
             if (cts.IsCancellationRequested) return;
             CurrentMode = targetMode;
-            Log.Info($"[ClubFFXIV] Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
+            Log.Info($"Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
             // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
             // would spam chat every time you walk past a club.
             if (targetMode == PlaybackMode.Manual)
-                ChatGui.Print($"[ClubFFXIV] Playing: {displayName}");
+                ChatGui.Print($"Playing: {displayName}");
         }
         catch (OperationCanceledException)
         {
-            Log.Info($"[ClubFFXIV] Stream start cancelled after {sw.ElapsedMilliseconds}ms");
+            Log.Info($"Stream start cancelled after {sw.ElapsedMilliseconds}ms");
         }
         catch (Exception ex)
         {
-            Log.Error(ex, $"[ClubFFXIV] Stream start failed after {sw.ElapsedMilliseconds}ms");
+            Log.Error(ex, $"Stream start failed after {sw.ElapsedMilliseconds}ms");
             // Same rule for errors — only surface in chat if the user just hit Play.
             if (targetMode == PlaybackMode.Manual)
-                ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
+                ChatGui.PrintError($"{ex.Message}");
             if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
         }
         finally
@@ -309,7 +319,7 @@ public sealed class Plugin : IDalamudPlugin
         var pos = HousingDetector.PlayerPosition();
         if (ward == null || pos == null)
         {
-            ChatGui.PrintError("[ClubFFXIV] Calibrate: must be standing in an outdoor ward.");
+            ChatGui.PrintError("Calibrate: must be standing in an outdoor ward.");
             return false;
         }
 
@@ -343,7 +353,7 @@ public sealed class Plugin : IDalamudPlugin
                     }
                     catch (Exception ex)
                     {
-                        Log.Warning($"[ClubFFXIV] Auto-republish after calibrate failed: {ex.Message}");
+                        Log.Warning($"Auto-republish after calibrate failed: {ex.Message}");
                     }
                 });
             }
@@ -351,12 +361,12 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!wrote)
         {
-            ChatGui.PrintError($"[ClubFFXIV] Calibrate: no house with key {canonicalKey}");
+            ChatGui.PrintError($"Calibrate: no house with key {canonicalKey}");
             return false;
         }
 
         Config.Save();
-        ChatGui.Print($"[ClubFFXIV] Door calibrated at ({pos.Value.X:F1}, {pos.Value.Y:F1}, {pos.Value.Z:F1})");
+        ChatGui.Print($"Door calibrated at ({pos.Value.X:F1}, {pos.Value.Y:F1}, {pos.Value.Z:F1})");
         return true;
     }
 
@@ -413,11 +423,11 @@ public sealed class Plugin : IDalamudPlugin
             try
             {
                 var newVersion = await Binaries.UpdateYtDlpAsync();
-                Log.Info($"[ClubFFXIV] yt-dlp now at: {newVersion}");
+                Log.Info($"yt-dlp now at: {newVersion}");
             }
             catch (Exception ex)
             {
-                Log.Warning($"[ClubFFXIV] Binary update check failed: {ex.Message}");
+                Log.Warning($"Binary update check failed: {ex.Message}");
             }
         });
     }
@@ -426,6 +436,17 @@ public sealed class Plugin : IDalamudPlugin
     /// After audio state is settled for the tick, apply cross-cutting policies:
     /// game BGM muting (when our stream plays) and focus muting (when game unfocused).
     /// </summary>
+    /// <summary>
+    /// Force the next framework tick to refresh housing state immediately rather
+    /// than waiting up to 500ms. Called on territory change so BGM mute / auto-play
+    /// kicks in within ~1 frame of crossing the instance boundary instead of
+    /// half a second later.
+    /// </summary>
+    private void OnTerritoryChanged(ushort territoryType)
+    {
+        lastHousingCheck = DateTime.MinValue;
+    }
+
     private void ApplyAudioPolicy()
     {
         // Stream output mute when game is unfocused.
@@ -433,7 +454,10 @@ public sealed class Plugin : IDalamudPlugin
 
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
-        var streamIsPrimary = streamPlayer.IsPlaying
+        // Mute while a load is pending too — otherwise the game's BGM blares for the
+        // 1–3s the stream takes to connect after entering a house.
+        var streamWillPlay = streamPlayer.IsPlaying || pendingStartUrl != null;
+        var streamIsPrimary = streamWillPlay
             && CurrentMode is PlaybackMode.Indoor or PlaybackMode.Manual;
         if (streamIsPrimary)
             bgmMuter.Mute();
@@ -535,7 +559,7 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            Log.Warning($"[ClubFFXIV] Registry lookup failed: {ex.Message}");
+            Log.Warning($"Registry lookup failed: {ex.Message}");
         }
     }
 
@@ -559,6 +583,10 @@ public sealed class Plugin : IDalamudPlugin
         if (pendingStartUrl == url) return;
 
         streamPlayer.BypassSpatial();
+        // Optimistic: claim Indoor mode now so ApplyAudioPolicy mutes the game's
+        // BGM immediately, even though the stream chain takes a moment to load.
+        // StartStreamAsync reverts to Off on load failure.
+        CurrentMode = PlaybackMode.Indoor;
         _ = StartStreamAsync(url, PlaybackMode.Indoor, displayName);
     }
 
@@ -679,15 +707,15 @@ public sealed class Plugin : IDalamudPlugin
         try
         {
             var worldId = PlayerState.CurrentWorld.RowId;
-            Log.Info($"[ClubFFXIV] Fetching ward listing: world={worldId} territory={ward.TerritoryType} ward={ward.Ward}");
+            Log.Info($"Fetching ward listing: world={worldId} territory={ward.TerritoryType} ward={ward.Ward}");
             var listing = await registryClient.GetWardAsync(worldId, ward.TerritoryType, ward.Ward);
             wardCache[k] = new CachedWardListing(DateTime.UtcNow, listing);
-            Log.Info($"[ClubFFXIV] Ward listing fetched: {listing.Clubs.Count} club(s)");
+            Log.Info($"Ward listing fetched: {listing.Clubs.Count} club(s)");
         }
         catch (Exception ex)
         {
             // Use Log.Error so the inner exception chain is fully serialized.
-            Log.Error(ex, "[ClubFFXIV] Ward listing fetch failed");
+            Log.Error(ex, "Ward listing fetch failed");
         }
         finally
         {
@@ -738,7 +766,7 @@ public sealed class Plugin : IDalamudPlugin
             case "play":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("[ClubFFXIV] Usage: /club play <stream-url>");
+                    ChatGui.Print("Usage: /club play <stream-url>");
                     return;
                 }
                 try
@@ -746,24 +774,24 @@ public sealed class Plugin : IDalamudPlugin
                     Config.LastStreamUrl = rest;
                     Config.Save();
                     PlayStream(rest);
-                    ChatGui.Print($"[ClubFFXIV] Playing {rest}");
+                    ChatGui.Print($"Playing {rest}");
                 }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "Failed to start stream");
-                    ChatGui.PrintError($"[ClubFFXIV] {ex.Message}");
+                    ChatGui.PrintError($"{ex.Message}");
                 }
                 break;
 
             case "stop":
                 StopStream();
-                ChatGui.Print("[ClubFFXIV] Stopped");
+                ChatGui.Print("Stopped");
                 break;
 
             case "calibrate":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("[ClubFFXIV] Usage: /club calibrate <plotKey>");
+                    ChatGui.Print("Usage: /club calibrate <plotKey>");
                     return;
                 }
                 CalibrateDoor(rest);
@@ -774,7 +802,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                ChatGui.Print("[ClubFFXIV] Usage: /club play <url> | /club stop | /club calibrate <key> | /club config");
+                ChatGui.Print("Usage: /club play <url> | /club stop | /club calibrate <key> | /club config");
                 break;
         }
     }
