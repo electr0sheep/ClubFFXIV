@@ -60,21 +60,35 @@ curl http://localhost:8000/status.xsl    # should return HTML
 
 **Expose via Cloudflare Tunnel:**
 
-```bash
-# Install cloudflared:
-#   Mac:     brew install cloudflared
-#   Windows: winget install --id Cloudflare.cloudflared
-#   Linux:   see https://pkg.cloudflare.com
+Install cloudflared:
+- **Mac:** `brew install cloudflared`
+- **Windows:** `winget install --id Cloudflare.cloudflared`
+- **Linux:** see https://pkg.cloudflare.com
 
+Two flavors of tunnel — pick based on whether you have a domain.
+
+**Quick & ephemeral (no signup, no domain):**
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+```
+
+cloudflared prints a free public URL like `https://random-words-here.trycloudflare.com`. Your stream URL becomes `https://random-words-here.trycloudflare.com/clubffxiv.mp3` once Mixxx connects to mountpoint `/clubffxiv.mp3`.
+
+Caveats: the URL changes every time you restart the tunnel (so you'd need to re-publish to the registry each session), and Cloudflare may rate-limit very long-running ephemeral tunnels. Fine for testing or short sessions.
+
+**Permanent (own a domain on Cloudflare):**
+
+If you already have a domain managed in Cloudflare DNS, or are willing to buy one (~$10/yr from Namecheap, Porkbun, or Cloudflare Registrar):
+
+```bash
 cloudflared tunnel login
 cloudflared tunnel create clubffxiv
 cloudflared tunnel route dns clubffxiv stream.yourdomain.com
 cloudflared tunnel run --url http://localhost:8000 clubffxiv
 ```
 
-(Need your own domain on Cloudflare DNS — you already have one for the registry, reuse it with a subdomain.)
-
-Your stream URL is now `https://stream.yourdomain.com/clubffxiv.mp3` once Mixxx connects to mountpoint `/clubffxiv.mp3`. Free, encrypted, public.
+Stable URL: `https://stream.yourdomain.com/clubffxiv.mp3`. Survive restarts, share once with friends, done.
 
 **Caveats:**
 - PC sleep / shutdown = stream offline
@@ -157,17 +171,37 @@ Verify: `curl http://your-vps-ip:8000/status.xsl` — should return HTML.
 
 ### Add HTTPS
 
-Plain HTTP technically works but ClubFFXIV won't autoplay over HTTP from secure pages, and you want a real domain anyway. Easiest: point Cloudflare in front of it.
+Plain HTTP works for testing but most modern setups expect HTTPS. Three ways to get it, pick one:
 
-1. In your DNS provider, point `stream.example.com` (A record) at your VPS IP.
-2. In Cloudflare DNS, set the proxy status to **proxied (orange cloud)**.
-3. In Cloudflare → SSL/TLS → set mode to **Flexible** (Cloudflare → you over HTTP, listener → Cloudflare over HTTPS). For real production, use **Full (strict)** with Let's Encrypt on the VPS via nginx.
+**Option A — Cloudflare proxy** (easiest if you have a domain on Cloudflare DNS, or are willing to add one — Cloudflare DNS is free):
 
-Now `https://stream.example.com/...` works publicly.
+1. Point `stream.example.com` (A record) at your VPS IP in Cloudflare DNS, proxy status **orange cloud**.
+2. Cloudflare → SSL/TLS → set mode to **Flexible** (Cloudflare → VPS over HTTP, listener → Cloudflare over HTTPS).
+3. Note: Cloudflare proxy only handles 80/443. Either map Icecast to port 80 in Docker (`ports: - "80:8000"`) or run a local reverse proxy on the VPS (nginx/Caddy).
 
-> **Note on ports:** Icecast listens on 8000 by default. Cloudflare proxy only handles 80/443. Either:
-> - Run nginx on the VPS that proxies 443→8000 locally and use Cloudflare on top, OR
-> - Open Icecast directly on 80 (`docker-compose` port `80:8000`) and proxy through Cloudflare.
+**Option B — Caddy on the VPS** (one-line auto-HTTPS, no Cloudflare needed):
+
+```bash
+# Install Caddy
+sudo apt install caddy   # Debian/Ubuntu
+
+# /etc/caddy/Caddyfile
+stream.example.com {
+    reverse_proxy localhost:8000
+}
+
+sudo systemctl reload caddy
+```
+
+Caddy auto-fetches a Let's Encrypt cert on first request. Just point your DNS A record at the VPS IP and you're done.
+
+**Option C — Cloudflare Tunnel from the VPS** (no inbound port exposure, no domain DNS work):
+
+Same `cloudflared tunnel` setup as the Local PC free path above, just running on the VPS instead. Useful if your VPS provider blocks low ports or you want to avoid managing DNS.
+
+**Option D — Don't bother with HTTPS** (testing only):
+
+Stream URL becomes `http://your-vps-ip:8000/clubffxiv.mp3`. ClubFFXIV's `HttpAudioReader` accepts plain HTTP fine; the only downside is no encryption between server and listeners.
 
 ## 2. Pick a mountpoint
 
