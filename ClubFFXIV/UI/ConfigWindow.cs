@@ -53,8 +53,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawHelpBar()
     {
-        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl)
-                       && string.IsNullOrEmpty(plugin.Config.RegistryUrl);
+        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl);
 
         if (firstRun)
         {
@@ -156,6 +155,22 @@ public sealed class ConfigWindow : Window, IDisposable
             var name = plugin.HousingDetector.GetDisplayName(key.Value);
             ImGui.TextWrapped($"Inside: {name}");
 
+            // Ownership badge (local check, not server-verified).
+            var ownership = plugin.HousingDetector.CheckOwnership();
+            switch (ownership)
+            {
+                case Game.HouseOwnership.Owner:
+                    ImGui.TextColored(new Vector4(0.4f, 0.85f, 0.4f, 1f), "✓ You own this plot");
+                    break;
+                case Game.HouseOwnership.NotOwner:
+                    ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                        "⚠ You don't appear to own this plot — Publish blocked.");
+                    break;
+                case Game.HouseOwnership.Unknown:
+                    ImGui.TextDisabled("Ownership: unknown (not blocking publish)");
+                    break;
+            }
+
             ImGui.Spacing();
             var noUrl = string.IsNullOrWhiteSpace(urlInput);
             if (noUrl) ImGui.BeginDisabled();
@@ -165,7 +180,10 @@ public sealed class ConfigWindow : Window, IDisposable
                 statusLine = $"Saved locally: {name}";
             }
             ImGui.SameLine();
-            if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+            var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner
+                                     && !plugin.Config.AllowPublishWithoutOwnership;
+            var publishDisabled = !plugin.RegistryEnabled || blockedByOwnership;
+            if (publishDisabled) ImGui.BeginDisabled();
             if (ImGui.Button("Publish to registry"))
             {
                 var dn = name;
@@ -185,12 +203,32 @@ public sealed class ConfigWindow : Window, IDisposable
                     }
                 });
             }
-            if (!plugin.RegistryEnabled) ImGui.EndDisabled();
+            if (publishDisabled) ImGui.EndDisabled();
             if (noUrl) ImGui.EndDisabled();
+
+            if (blockedByOwnership)
+            {
+                ImGui.Spacing();
+                var allow = plugin.Config.AllowPublishWithoutOwnership;
+                if (ImGui.Checkbox("Allow publish without ownership check (override)", ref allow))
+                {
+                    plugin.Config.AllowPublishWithoutOwnership = allow;
+                    plugin.Config.Save();
+                }
+                ImGui.SameLine();
+                ImGui.TextDisabled("(?)");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip(
+                        "Bypasses the local 'are you the owner?' check.\n" +
+                        "Use only if the detection is wrong (FC edge cases,\n" +
+                        "API drift). The registry's first-claim-wins rule still\n" +
+                        "applies — you can't take a plot another DJ already has.");
+            }
         }
         else if (ward.HasValue)
         {
-            ImGui.TextWrapped($"Roaming ward (territory {ward.Value.TerritoryType}, ward {ward.Value.Ward + 1})");
+            var districtName = plugin.HousingDetector.LookupDistrictName(ward.Value.TerritoryType);
+            ImGui.TextWrapped($"Roaming: {districtName} Ward {ward.Value.Ward + 1}");
             ImGui.TextDisabled("Walk to a house's door and use the Calibrate button on a saved/published entry below.");
         }
         else

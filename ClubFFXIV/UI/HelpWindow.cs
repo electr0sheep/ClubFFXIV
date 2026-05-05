@@ -85,7 +85,31 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
-        SectionHeader("Easiest path (managed)");
+        SectionHeader("Free path (recommended for friends-only)");
+        ImGui.TextWrapped(
+            "Run Icecast on your own PC, expose it publicly via Cloudflare Tunnel. " +
+            "No paid hosting, no domain needed for testing.");
+        ImGui.Spacing();
+        ImGui.BulletText("Install Docker Desktop:");
+        ImGui.SameLine();
+        Hyperlink("docker.com", "https://www.docker.com/products/docker-desktop/");
+        ImGui.BulletText("Install cloudflared:");
+        ImGui.SameLine();
+        Hyperlink("cloudflare docs", "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/");
+        ImGui.BulletText("Run Icecast in Docker, then `cloudflared tunnel --url http://localhost:8000`");
+        ImGui.BulletText("cloudflared prints a free `*.trycloudflare.com` URL — paste it into ClubFFXIV");
+        ImGui.BulletText("For a stable URL, own a domain on Cloudflare DNS — see the full guide");
+        ImGui.BulletText("Bandwidth ceiling = your home upload speed (~50 listeners on 25 Mbps)");
+        ImGui.BulletText("Caveat: PC sleeping / shut down = stream offline");
+        ImGui.Spacing();
+        ImGui.Text("Other free option:");
+        ImGui.SameLine();
+        Hyperlink("Oracle Cloud Free Tier", "https://www.oracle.com/cloud/free/");
+        ImGui.SameLine();
+        ImGui.TextDisabled("(always-on, dedicated server, but signup requires CC)");
+        ImGui.Spacing();
+
+        SectionHeader("Easiest path (managed, paid)");
         ImGui.TextWrapped("Use Mixxx as your source, a managed cloud service for hosting. ~$15-25/month, no setup work.");
         ImGui.Spacing();
         ImGui.BulletText("Install Mixxx — free DJ software:");
@@ -103,8 +127,8 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.BulletText("Use the stream URL the host gives you");
         ImGui.Spacing();
 
-        SectionHeader("Cheapest path (self-host)");
-        ImGui.TextWrapped("$5 VPS + Docker Icecast + Mixxx. More setup work but full control.");
+        SectionHeader("Cheapest reliable path ($5/mo VPS)");
+        ImGui.TextWrapped("$5 VPS + Docker Icecast + Mixxx. More setup work but always-on with no free-tier risk.");
         ImGui.Spacing();
         ImGui.BulletText("Read the step-by-step guide:");
         ImGui.SameLine();

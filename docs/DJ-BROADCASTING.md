@@ -25,12 +25,99 @@ You need to run (1) yourself; (2) can be self-hosted on a cheap VPS or rented fr
 
 | Path | Cost | Effort | Best for |
 |---|---|---|---|
-| **Self-hosted Icecast on a $5 VPS** | $5/mo | medium (one-time setup) | technical users; you already run a Cloudflare worker |
-| **Azuracast self-hosted** | $5/mo | medium (more features) | want a web UI to manage your station |
+| **Local PC + Cloudflare Tunnel** | **$0** | low–medium | run on your gaming PC, no cloud signup |
+| **Oracle Cloud Free Tier + Icecast** | **$0** | medium | always-on, dedicated, real free hosting |
+| **Self-hosted Icecast on a $5 VPS** | $5/mo | medium | reliable, no risk of free-tier termination |
+| **Azuracast self-hosted on a VPS** | $5/mo | medium (more features) | want a web UI to manage your station |
 | **Managed: Azuracast Cloud / Radio.co / Centova** | $15–25/mo | low | non-technical, set-and-forget |
-| **Free tiers (ZenoLive, MyRadioStream)** | $0 | low | testing only — bitrate caps, ads, instability |
+| **Free tiers (Caster.fm, ZenoLive)** | $0 | low | testing only — bitrate caps, ads, instability |
 
-The rest of this guide walks through the **self-hosted Icecast** path. It's the cheapest and most flexible. Skip to the [Mixxx section](#3-mixxx-the-dj-deck) if you're using a managed service.
+The rest of this guide walks through the **self-hosted Icecast** path on a paid $5 VPS. The two free paths use the same Icecast + Mixxx setup; only the hosting differs (see [Free options](#free-options) below).
+
+## Free options
+
+### Local PC + Cloudflare Tunnel (recommended free path)
+
+Run Icecast on your own PC, expose it publicly via Cloudflare Tunnel. Your PC needs to be on while broadcasting (probably already is, you're playing FFXIV).
+
+**Bandwidth ceiling:** at 128 kbps per listener, ~50 listeners need 6.4 Mbps upload — fits within most home internet plans. Check your upload speed before assuming it scales.
+
+**Setup:**
+
+```bash
+# Install Docker Desktop (Windows/Mac) — https://www.docker.com/products/docker-desktop/
+# Run Icecast locally:
+
+docker run -d --name icecast -p 8000:8000 \
+  -e ICECAST_SOURCE_PASSWORD=changeme_source \
+  -e ICECAST_ADMIN_PASSWORD=changeme_admin \
+  -e ICECAST_HOSTNAME=localhost \
+  libretime/icecast:2.4.4
+
+# Verify locally:
+curl http://localhost:8000/status.xsl    # should return HTML
+```
+
+**Expose via Cloudflare Tunnel:**
+
+Install cloudflared:
+- **Mac:** `brew install cloudflared`
+- **Windows:** `winget install --id Cloudflare.cloudflared`
+- **Linux:** see https://pkg.cloudflare.com
+
+Two flavors of tunnel — pick based on whether you have a domain.
+
+**Quick & ephemeral (no signup, no domain):**
+
+```bash
+cloudflared tunnel --url http://localhost:8000
+```
+
+cloudflared prints a free public URL like `https://random-words-here.trycloudflare.com`. Your stream URL becomes `https://random-words-here.trycloudflare.com/clubffxiv.mp3` once Mixxx connects to mountpoint `/clubffxiv.mp3`.
+
+Caveats: the URL changes every time you restart the tunnel (so you'd need to re-publish to the registry each session), and Cloudflare may rate-limit very long-running ephemeral tunnels. Fine for testing or short sessions.
+
+**Permanent (own a domain on Cloudflare):**
+
+If you already have a domain managed in Cloudflare DNS, or are willing to buy one (~$10/yr from Namecheap, Porkbun, or Cloudflare Registrar):
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create clubffxiv
+cloudflared tunnel route dns clubffxiv stream.yourdomain.com
+cloudflared tunnel run --url http://localhost:8000 clubffxiv
+```
+
+Stable URL: `https://stream.yourdomain.com/clubffxiv.mp3`. Survive restarts, share once with friends, done.
+
+**Caveats:**
+- PC sleep / shutdown = stream offline
+- Home upload bandwidth = listener cap
+- Cloudflare may rate-limit very long-running tunnels (rare in practice)
+
+### Oracle Cloud Free Tier
+
+Oracle's "Always Free" tier gives 4 ARM cores + 24 GB RAM **with no time limit**. Identical setup to the $5 VPS guide below — just provision an Ampere A1 instance instead of paying for one.
+
+**Pros:** dedicated, always on, real server. **Cons:** signup requires a credit card (not charged), and Oracle has a reputation for terminating free accounts that sit idle. Set up monitoring or accept the risk.
+
+Sign up: https://www.oracle.com/cloud/free/
+
+### Hosted free tiers (last resort)
+
+These exist but compromise audio quality, inject ads, or limit listener counts:
+
+- **Caster.fm free tier** — 64 kbps cap, audio ads
+- **ZenoLive free** — bitrate cap, ads, periodic disconnects
+- **Render / Fly.io free tiers** — services spin down on inactivity, breaks streaming
+
+Fine for "test for an hour", not fine for a real club.
+
+### What doesn't work
+
+YouTube Live, Twitch, and Discord aren't compatible with ClubFFXIV — they use HLS/RTMP/WebRTC, not Icecast/MP3. The plugin's audio reader expects an Icecast-style MP3 or OGG stream. HLS support could be added in a future version but isn't today.
+
+---
 
 ---
 
@@ -84,17 +171,37 @@ Verify: `curl http://your-vps-ip:8000/status.xsl` — should return HTML.
 
 ### Add HTTPS
 
-Plain HTTP technically works but ClubFFXIV won't autoplay over HTTP from secure pages, and you want a real domain anyway. Easiest: point Cloudflare in front of it.
+Plain HTTP works for testing but most modern setups expect HTTPS. Three ways to get it, pick one:
 
-1. In your DNS provider, point `stream.example.com` (A record) at your VPS IP.
-2. In Cloudflare DNS, set the proxy status to **proxied (orange cloud)**.
-3. In Cloudflare → SSL/TLS → set mode to **Flexible** (Cloudflare → you over HTTP, listener → Cloudflare over HTTPS). For real production, use **Full (strict)** with Let's Encrypt on the VPS via nginx.
+**Option A — Cloudflare proxy** (easiest if you have a domain on Cloudflare DNS, or are willing to add one — Cloudflare DNS is free):
 
-Now `https://stream.example.com/...` works publicly.
+1. Point `stream.example.com` (A record) at your VPS IP in Cloudflare DNS, proxy status **orange cloud**.
+2. Cloudflare → SSL/TLS → set mode to **Flexible** (Cloudflare → VPS over HTTP, listener → Cloudflare over HTTPS).
+3. Note: Cloudflare proxy only handles 80/443. Either map Icecast to port 80 in Docker (`ports: - "80:8000"`) or run a local reverse proxy on the VPS (nginx/Caddy).
 
-> **Note on ports:** Icecast listens on 8000 by default. Cloudflare proxy only handles 80/443. Either:
-> - Run nginx on the VPS that proxies 443→8000 locally and use Cloudflare on top, OR
-> - Open Icecast directly on 80 (`docker-compose` port `80:8000`) and proxy through Cloudflare.
+**Option B — Caddy on the VPS** (one-line auto-HTTPS, no Cloudflare needed):
+
+```bash
+# Install Caddy
+sudo apt install caddy   # Debian/Ubuntu
+
+# /etc/caddy/Caddyfile
+stream.example.com {
+    reverse_proxy localhost:8000
+}
+
+sudo systemctl reload caddy
+```
+
+Caddy auto-fetches a Let's Encrypt cert on first request. Just point your DNS A record at the VPS IP and you're done.
+
+**Option C — Cloudflare Tunnel from the VPS** (no inbound port exposure, no domain DNS work):
+
+Same `cloudflared tunnel` setup as the Local PC free path above, just running on the VPS instead. Useful if your VPS provider blocks low ports or you want to avoid managing DNS.
+
+**Option D — Don't bother with HTTPS** (testing only):
+
+Stream URL becomes `http://your-vps-ip:8000/clubffxiv.mp3`. ClubFFXIV's `HttpAudioReader` accepts plain HTTP fine; the only downside is no encryption between server and listeners.
 
 ## 2. Pick a mountpoint
 

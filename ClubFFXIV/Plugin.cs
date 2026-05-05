@@ -29,6 +29,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IGameConfig GameConfig { get; private set; } = null!;
+    [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
@@ -205,6 +206,17 @@ public sealed class Plugin : IDalamudPlugin
             throw new InvalidOperationException("Registry URL not set");
         if (!CurrentPlotKey.HasValue)
             throw new InvalidOperationException("Not currently in a house");
+
+        // Local ownership gate. Unknown is allowed (don't lock out users on API
+        // mismatch); only confirmed NotOwner is blocked, and even that can be
+        // overridden via config for legitimate edge cases.
+        var ownership = HousingDetector.CheckOwnership();
+        if (ownership == HouseOwnership.NotOwner && !Config.AllowPublishWithoutOwnership)
+        {
+            throw new InvalidOperationException(
+                "You don't appear to own this house. " +
+                "Enable \"Allow publish without ownership check\" in /club config to override.");
+        }
 
         var dj = EnsureDjIdentity();
         var key = CurrentPlotKey.Value.Canonical;
