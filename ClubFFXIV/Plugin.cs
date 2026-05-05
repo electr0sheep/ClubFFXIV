@@ -456,13 +456,16 @@ public sealed class Plugin : IDalamudPlugin
             Config.SpatialFalloffDistance,
             Config.SpatialFullVolumeDistance);
 
-        if (result == null)
+        // Always store the proximity result (even if out of range) so the UI can
+        // show how far the closest club is — useful for calibration & debugging.
+        CurrentProximity = result;
+
+        if (result == null || !result.Value.InRange)
         {
             if (CurrentMode == PlaybackMode.Outdoor)
             {
                 streamPlayer.Stop();
                 CurrentMode = PlaybackMode.Off;
-                CurrentProximity = null;
             }
             return;
         }
@@ -473,8 +476,6 @@ public sealed class Plugin : IDalamudPlugin
             Config.SpatialMinCutoffHz,
             Config.SpatialMaxCutoffHz);
 
-        // Always keep spatial knobs current so they're applied as soon as the chain
-        // comes online (which may be 1–3s away if a fresh start is in flight).
         streamPlayer.SetSpatial(r.NormalizedNearness, cutoff);
 
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
@@ -486,12 +487,8 @@ public sealed class Plugin : IDalamudPlugin
         }
         else if (CurrentMode != PlaybackMode.Outdoor && streamPlayer.IsPlaying)
         {
-            // Already streaming the right URL (e.g. transitioning from Indoor of same DJ
-            // back outdoors — unusual but possible). Just re-tag the mode.
             CurrentMode = PlaybackMode.Outdoor;
         }
-
-        CurrentProximity = r;
     }
 
     private IEnumerable<WardProximity.Candidate> EnumerateCandidates(WardLocation ward)

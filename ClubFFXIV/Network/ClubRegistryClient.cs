@@ -2,9 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
-using System.Net.Security;
-using System.Security.Authentication;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -21,34 +18,7 @@ public sealed class ClubRegistryClient : IDisposable
     public ClubRegistryClient(string baseUrl)
     {
         this.baseUrl = baseUrl.TrimEnd('/');
-        // Explicit TLS 1.2/1.3 to avoid Dalamud's runtime defaulting to a constrained
-        // protocol set; SocketsHttpHandler also handles AIA cert fetches more reliably
-        // than the default HttpClientHandler in some Windows configurations.
-        var handler = new SocketsHttpHandler
-        {
-            SslOptions = new SslClientAuthenticationOptions
-            {
-                // TLS 1.2 only: Wine's SChannel TLS 1.3 implementation is incomplete
-                // and fails handshakes (SEC_E_TARGET_UNKNOWN / 0x80090304) against
-                // Cloudflare. TLS 1.2 is broadly supported and works under Wine.
-                EnabledSslProtocols = SslProtocols.Tls12,
-                CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
-                // Wine's SChannel implementation often fails chain validation for
-                // modern certs (Cloudflare custom domains in particular). The plugin
-                // sends no secrets over the wire — DJ private key never leaves the
-                // local config — so accepting on validation failure is acceptable.
-                RemoteCertificateValidationCallback = (_, _, _, errors) =>
-                {
-                    if (errors == SslPolicyErrors.None) return true;
-                    Plugin.Log.Warning(
-                        $"[ClubFFXIV] TLS cert validation issues ignored ({errors}). " +
-                        "If you're not on Wine/macOS, your system cert store may need attention.");
-                    return true;
-                },
-            },
-            ConnectTimeout = TimeSpan.FromSeconds(6),
-        };
-        http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+        http = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("ClubFFXIV/0.1");
     }
 

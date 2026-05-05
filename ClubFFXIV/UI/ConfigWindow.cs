@@ -169,8 +169,13 @@ public sealed class ConfigWindow : Window, IDisposable
         if (prox.HasValue)
         {
             var p = prox.Value;
-            ImGui.Text($"Approaching: {p.Candidate.DisplayName}");
+            var label = p.InRange ? "Approaching" : "Closest (out of range)";
+            ImGui.Text($"{label}: {p.Candidate.DisplayName}");
             ImGui.Text($"Distance: {p.Distance:F1} m   Nearness: {p.NormalizedNearness * 100:F0}%");
+        }
+        else if (plugin.CurrentWard.HasValue)
+        {
+            ImGui.TextDisabled("No clubs found in this ward.");
         }
     }
 

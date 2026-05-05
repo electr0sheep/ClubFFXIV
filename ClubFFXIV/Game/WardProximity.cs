@@ -18,12 +18,13 @@ public static class WardProximity
     public readonly record struct Result(
         Candidate Candidate,
         float Distance,
-        float NormalizedNearness);
+        float NormalizedNearness,
+        bool InRange);
 
     /// <summary>
-    /// Returns the closest candidate to playerPos that has a door in the same ward,
-    /// or null if no candidate is within audibleRange.
-    /// NormalizedNearness is 0 at audibleRange and 1 at fullRange.
+    /// Returns the closest candidate to playerPos (regardless of range), or null
+    /// if no candidates exist at all. InRange=true means within audibleRange.
+    /// NormalizedNearness is 0 at audibleRange and 1 at fullRange (clamped).
     /// </summary>
     public static Result? FindClosest(
         Vector3 playerPos,
@@ -46,10 +47,11 @@ public static class WardProximity
             }
         }
 
-        if (!found || bestDist > audibleRange) return null;
+        if (!found) return null;
 
+        var inRange = bestDist <= audibleRange;
         var nearness = Normalize(bestDist, audibleRange, fullRange);
-        return new Result(best, bestDist, nearness);
+        return new Result(best, bestDist, nearness, inRange);
     }
 
     /// <summary>
