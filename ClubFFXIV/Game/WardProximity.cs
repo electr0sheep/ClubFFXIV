@@ -19,16 +19,23 @@ public static class WardProximity
         Candidate Candidate,
         float Distance,
         float NormalizedNearness,
-        bool InRange);
+        bool Audible,    // within audibleRange — user actually hears it
+        bool Streaming); // within streamRange — keep the stream alive (may be silent if buffering)
 
     /// <summary>
     /// Returns the closest candidate to playerPos (regardless of range), or null
-    /// if no candidates exist at all. InRange=true means within audibleRange.
-    /// NormalizedNearness is 0 at audibleRange and 1 at fullRange (clamped).
+    /// if no candidates exist at all.
+    ///
+    /// Two range thresholds:
+    ///   - streamRange: connect/keep the stream alive within this distance, even
+    ///     if silent. Hides the 1–3s buffer wait by pre-loading before audio kicks in.
+    ///   - audibleRange: actual volume curve goes 0→1 from audibleRange to fullRange.
+    ///     Outside audibleRange but inside streamRange = pre-buffering, volume 0.
     /// </summary>
     public static Result? FindClosest(
         Vector3 playerPos,
         IEnumerable<Candidate> candidates,
+        float streamRange,
         float audibleRange,
         float fullRange)
     {
@@ -49,9 +56,10 @@ public static class WardProximity
 
         if (!found) return null;
 
-        var inRange = bestDist <= audibleRange;
+        var streaming = bestDist <= streamRange;
+        var audible = bestDist <= audibleRange;
         var nearness = Normalize(bestDist, audibleRange, fullRange);
-        return new Result(best, bestDist, nearness, inRange);
+        return new Result(best, bestDist, nearness, audible, streaming);
     }
 
     /// <summary>

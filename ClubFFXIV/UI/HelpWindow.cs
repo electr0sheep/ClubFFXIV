@@ -49,6 +49,19 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
+        SectionHeader("Supported URL types");
+        ImGui.BulletText("Twitch channel — twitch.tv/YourFavoriteDJ");
+        ImGui.BulletText("YouTube Live / video — youtube.com/watch?v=...");
+        ImGui.BulletText("Icecast / Shoutcast / direct MP3 stream");
+        ImGui.BulletText("SoundCloud track or stream");
+        ImGui.Spacing();
+        ImGui.TextDisabled(
+            "(First Twitch/YouTube use auto-downloads ~80 MB of helper binaries " +
+            "— ffmpeg + yt-dlp. One-time, then it's instant.)");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
         SectionHeader("Got a stream URL from a friend?");
         ImGui.BulletText("Paste it into the \"Stream URL\" field in /club config");
         ImGui.BulletText("Click Play");
@@ -73,8 +86,34 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.TextWrapped(
             "Hosting a club means broadcasting an audio stream that listeners tune into. " +
-            "You don't stream from inside the game — you run a separate \"radio station\" " +
-            "and tell ClubFFXIV its public URL.");
+            "Most FFXIV venues already broadcast on Twitch — if you do too, just paste " +
+            "your channel URL and you're done. The Icecast / managed-hosting paths below " +
+            "are alternatives if you want full control.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Easiest path: stream on Twitch (or YouTube Live)");
+        ImGui.TextWrapped(
+            "If you already broadcast your DJ sets on Twitch (the de facto FFXIV venue " +
+            "platform) or YouTube Live, listeners just paste your channel URL into ClubFFXIV. " +
+            "Zero new infrastructure on your side.");
+        ImGui.Spacing();
+        ImGui.BulletText("Stream as you normally do — OBS, Streamlabs, whatever");
+        ImGui.BulletText("Share your channel URL: e.g. twitch.tv/yourchannel");
+        ImGui.BulletText("Listeners paste it into Stream URL → Play (or your house auto-tunes if published)");
+        ImGui.Spacing();
+        ImGui.TextDisabled(
+            "Latency is ~5–10 seconds (Twitch HLS), so all listeners are roughly synced " +
+            "with each other but ~10 s behind your live decks.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Alternative: run your own Icecast (full control)");
+        ImGui.TextWrapped(
+            "If you want lower latency or don't want to use Twitch/YouTube, " +
+            "you can run your own Icecast server. More setup work but no platform dependency.");
         ImGui.Spacing();
 
         SectionHeader("You need three things:");

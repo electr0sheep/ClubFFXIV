@@ -50,9 +50,12 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
-    private readonly StreamPlayer streamPlayer = new();
+    public BinaryManager Binaries { get; }
+    private readonly StreamPlayer streamPlayer;
     private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
+    private DateTime lastBinaryUpdateCheck = DateTime.MinValue;
+    private static readonly TimeSpan BinaryUpdateInterval = TimeSpan.FromDays(2);
     private DjIdentity? djIdentity;
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
@@ -72,7 +75,11 @@ public sealed class Plugin : IDalamudPlugin
     {
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Config.Initialize(PluginInterface);
+
+        Binaries = new BinaryManager(PluginInterface.GetPluginConfigDirectory());
+        streamPlayer = new StreamPlayer(Binaries);
         streamPlayer.MasterVolume = Config.Volume;
+        lastBinaryUpdateCheck = Config.BinariesLastChecked;
 
         RebuildRegistryClient();
         TryLoadDjIdentity();
@@ -349,11 +356,41 @@ public sealed class Plugin : IDalamudPlugin
             UpdateLocationState();
             DriveAudio();
             ApplyAudioPolicy();
+            MaybeCheckBinaryUpdates();
         }
         catch (Exception ex)
         {
             Log.Error(ex, "OnFrameworkUpdate failed");
         }
+    }
+
+    /// <summary>
+    /// Periodic background check for yt-dlp updates. yt-dlp self-updates via -U;
+    /// ffmpeg is checked separately and rarely needs updates. Runs at most once
+    /// per BinaryUpdateInterval and only if AutoUpdateBinaries is on.
+    /// </summary>
+    private void MaybeCheckBinaryUpdates()
+    {
+        if (!Config.AutoUpdateBinaries) return;
+        if (!Binaries.Ready) return; // initial install handled lazily on first Twitch URL
+        if (DateTime.UtcNow - lastBinaryUpdateCheck < BinaryUpdateInterval) return;
+
+        lastBinaryUpdateCheck = DateTime.UtcNow;
+        Config.BinariesLastChecked = DateTime.UtcNow;
+        Config.Save();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var newVersion = await Binaries.UpdateYtDlpAsync();
+                Log.Info($"[ClubFFXIV] yt-dlp now at: {newVersion}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning($"[ClubFFXIV] Binary update check failed: {ex.Message}");
+            }
+        });
     }
 
     /// <summary>
@@ -490,6 +527,7 @@ public sealed class Plugin : IDalamudPlugin
         var result = WardProximity.FindClosest(
             pos.Value,
             candidates,
+            Config.SpatialStreamDistance,
             Config.SpatialFalloffDistance,
             Config.SpatialFullVolumeDistance);
 
@@ -497,7 +535,9 @@ public sealed class Plugin : IDalamudPlugin
         // show how far the closest club is — useful for calibration & debugging.
         CurrentProximity = result;
 
-        if (result == null || !result.Value.InRange)
+        // Streaming is the broader range — keep the stream alive even outside
+        // the audible band so the buffer is primed when the player crosses it.
+        if (result == null || !result.Value.Streaming)
         {
             if (CurrentMode == PlaybackMode.Outdoor)
             {

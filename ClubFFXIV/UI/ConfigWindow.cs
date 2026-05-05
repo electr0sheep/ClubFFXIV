@@ -48,7 +48,93 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.Separator();
         DrawSpatialTuningSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        DrawBinariesSection();
         DrawStatusFooter();
+    }
+
+    private string ytDlpVersion = "(checking...)";
+    private string ffmpegVersion = "(checking...)";
+    private bool versionsRequested;
+
+    private void DrawBinariesSection()
+    {
+        if (!ImGui.CollapsingHeader("External binaries (yt-dlp, ffmpeg)"))
+            return;
+
+        // Lazy-resolve versions on first display so we don't spawn processes
+        // on every plugin start.
+        if (!versionsRequested)
+        {
+            versionsRequested = true;
+            _ = Task.Run(async () =>
+            {
+                ytDlpVersion = await plugin.Binaries.GetYtDlpVersionAsync();
+                ffmpegVersion = await plugin.Binaries.GetFfmpegVersionAsync();
+            });
+        }
+
+        ImGui.TextWrapped(
+            "Required for Twitch / YouTube / SoundCloud playback. " +
+            "Direct MP3/Icecast streams don't need these.");
+        ImGui.Spacing();
+
+        DrawBinaryRow("yt-dlp", plugin.Binaries.YtDlpInstalled, ytDlpVersion, async () =>
+        {
+            ytDlpVersion = "(updating...)";
+            try { ytDlpVersion = await plugin.Binaries.UpdateYtDlpAsync(); statusLine = "yt-dlp updated."; }
+            catch (Exception ex) { ytDlpVersion = $"(error: {ex.Message})"; statusLine = $"yt-dlp update failed: {ex.Message}"; }
+        });
+
+        DrawBinaryRow("ffmpeg", plugin.Binaries.FfmpegInstalled, ffmpegVersion, async () =>
+        {
+            ffmpegVersion = "(updating, ~80 MB...)";
+            try { ffmpegVersion = await plugin.Binaries.UpdateFfmpegAsync(); statusLine = "ffmpeg updated."; }
+            catch (Exception ex) { ffmpegVersion = $"(error: {ex.Message})"; statusLine = $"ffmpeg update failed: {ex.Message}"; }
+        });
+
+        ImGui.Spacing();
+        var auto = plugin.Config.AutoUpdateBinaries;
+        if (ImGui.Checkbox("Auto-check for yt-dlp updates every 2 days", ref auto))
+        {
+            plugin.Config.AutoUpdateBinaries = auto;
+            plugin.Config.Save();
+        }
+
+        if (plugin.Config.BinariesLastChecked != DateTime.MinValue)
+        {
+            var ago = DateTime.UtcNow - plugin.Config.BinariesLastChecked;
+            ImGui.TextDisabled($"Last update check: {FormatAgo(ago)}");
+        }
+
+        if (!plugin.Binaries.Ready)
+        {
+            ImGui.Spacing();
+            ImGui.TextDisabled("Binaries are downloaded automatically the first time you play a Twitch / YouTube URL.");
+        }
+    }
+
+    private void DrawBinaryRow(string name, bool installed, string version, Func<Task> onUpdate)
+    {
+        ImGui.PushID("bin-" + name);
+        var icon = installed ? "✓" : "—";
+        ImGui.TextUnformatted($"{icon} {name}:");
+        ImGui.SameLine();
+        ImGui.TextDisabled(version);
+        ImGui.SameLine();
+        var btnLabel = installed ? "Check / update" : "Install";
+        if (ImGui.SmallButton(btnLabel))
+            _ = Task.Run(onUpdate);
+        ImGui.PopID();
+    }
+
+    private static string FormatAgo(TimeSpan ago)
+    {
+        if (ago < TimeSpan.FromMinutes(1)) return "just now";
+        if (ago < TimeSpan.FromHours(1)) return $"{(int)ago.TotalMinutes} min ago";
+        if (ago < TimeSpan.FromDays(1)) return $"{(int)ago.TotalHours} h ago";
+        return $"{(int)ago.TotalDays} d ago";
     }
 
     private void DrawHelpBar()
@@ -246,7 +332,9 @@ public sealed class ConfigWindow : Window, IDisposable
         if (prox.HasValue)
         {
             var p = prox.Value;
-            var label = p.InRange ? "Approaching" : "Closest (out of range)";
+            var label = p.Streaming
+                ? (p.Audible ? "Approaching" : "Pre-buffering")
+                : "Closest (out of range)";
             ImGui.Text($"{label}: {p.Candidate.DisplayName}");
             ImGui.Text($"Distance: {p.Distance:F1} m   Nearness: {p.NormalizedNearness * 100:F0}%");
         }
@@ -402,6 +490,20 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var changed = false;
 
+        var streamDist = plugin.Config.SpatialStreamDistance;
+        if (ImGui.SliderFloat("Pre-buffer distance (m)", ref streamDist, 5f, 200f, "%.0f"))
+        {
+            plugin.Config.SpatialStreamDistance = streamDist;
+            changed = true;
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Within this distance the stream connects and pre-buffers (silently).\n" +
+                "Hides the 1-3s connect delay so audio is ready when you cross the\n" +
+                "audible threshold. Should be larger than Falloff distance.");
+
         var falloff = plugin.Config.SpatialFalloffDistance;
         if (ImGui.SliderFloat("Falloff distance (m)", ref falloff, 5f, 100f, "%.0f"))
         {
@@ -411,7 +513,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Beyond this distance, the stream is silent and disconnected.");
+            ImGui.SetTooltip("Audible threshold — at this distance, volume = 0 but stream may still be pre-buffering.");
 
         var full = plugin.Config.SpatialFullVolumeDistance;
         if (ImGui.SliderFloat("Full-volume distance (m)", ref full, 0.5f, 20f, "%.1f"))

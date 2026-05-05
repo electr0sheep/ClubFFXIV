@@ -27,6 +27,12 @@ public class Configuration : IPluginConfiguration
     /// Phase 4 spatial knobs. Distances are in FFXIV world units (≈ meters).
     /// Cutoffs are in Hz.
     /// </summary>
+    /// <summary>
+    /// Beyond this distance the stream isn't connected at all. Inside it (but
+    /// outside SpatialFalloffDistance) the stream is alive at volume 0 — pre-buffering
+    /// so the audio is ready to fade in the moment the player crosses the audible threshold.
+    /// </summary>
+    public float SpatialStreamDistance { get; set; } = 60f;
     public float SpatialFalloffDistance { get; set; } = 40f;     // beyond this: silent
     public float SpatialFullVolumeDistance { get; set; } = 3f;   // closer than this: full volume
     public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled (far)
@@ -48,6 +54,17 @@ public class Configuration : IPluginConfiguration
     /// edge cases, FFXIVClientStructs API drift, etc.).
     /// </summary>
     public bool AllowPublishWithoutOwnership { get; set; } = false;
+
+    /// <summary>
+    /// Auto-update yt-dlp / ffmpeg every few days in the background.
+    /// yt-dlp updates frequently because Twitch and YouTube change their
+    /// scraping defenses; without this the plugin will eventually fail on
+    /// those URLs until the user manually updates.
+    /// </summary>
+    public bool AutoUpdateBinaries { get; set; } = true;
+
+    /// <summary>Last time we checked for binary updates (UTC).</summary>
+    public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
