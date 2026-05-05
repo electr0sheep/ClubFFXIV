@@ -84,45 +84,31 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
 
+        var reader = new SubprocessAudioReader(proc);
+
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Per-line output stays at Debug to keep /xllog clean during normal operation,
-        // but we keep a rolling buffer of the last 20 lines and dump them at Warning
-        // when ffmpeg exits unexpectedly — that's where the diagnostic info lives.
-        var recentStderr = new System.Collections.Generic.Queue<string>(capacity: 20);
-        const int RecentStderrCap = 20;
+        // Per-line at Info so we see ffmpeg's chatter without changing log filters.
+        // Exit warning only fires when WE didn't kill the process — distinguishes
+        // "ffmpeg crashed on its own" (real bug) from "we killed it via Dispose"
+        // (normal stream switch / shutdown).
         _ = Task.Run(async () =>
         {
             try
             {
                 while (await proc.StandardError.ReadLineAsync(ct) is { } line)
-                {
-                    Plugin.Log.Debug($"[ffmpeg] {line}");
-                    lock (recentStderr)
-                    {
-                        recentStderr.Enqueue(line);
-                        while (recentStderr.Count > RecentStderrCap) recentStderr.Dequeue();
-                    }
-                }
+                    Plugin.Log.Info($"[ffmpeg] {line}");
             }
-            catch { /* process exited */ }
+            catch { /* process exited or token cancelled */ }
 
             try
             {
-                if (proc.HasExited)
-                {
-                    string[] tail;
-                    lock (recentStderr) tail = recentStderr.ToArray();
-                    var joined = tail.Length == 0
-                        ? "(no stderr captured)"
-                        : "\n  " + string.Join("\n  ", tail);
-                    Plugin.Log.Warning(
-                        $"[ffmpeg] exited with code {proc.ExitCode}. Last stderr lines:{joined}");
-                }
+                if (proc.HasExited && !reader.disposed)
+                    Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
             }
             catch { /* already disposed */ }
         }, ct);
 
-        return new SubprocessAudioReader(proc);
+        return reader;
     }
 
     public int Read(float[] buffer, int offset, int count)
