@@ -29,6 +29,10 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     private readonly Stream stdout;
     private byte[] readBuffer = new byte[8192];
     private bool disposed;
+    // True only when our Dispose actively killed a still-running process.
+    // Stays false when Dispose runs *after* ffmpeg already exited on its own —
+    // so the stderr drain can correctly attribute unexpected exits.
+    private bool killedByUs;
 
     private SubprocessAudioReader(Process ffmpeg)
     {
@@ -102,7 +106,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
 
             try
             {
-                if (proc.HasExited && !reader.disposed)
+                if (proc.HasExited && !reader.killedByUs)
                     Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
             }
             catch { /* already disposed */ }
@@ -150,7 +154,13 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         disposed = true;
         try
         {
-            if (!ffmpeg.HasExited) ffmpeg.Kill(entireProcessTree: true);
+            if (!ffmpeg.HasExited)
+            {
+                killedByUs = true;
+                ffmpeg.Kill(entireProcessTree: true);
+            }
+            // If ffmpeg already exited, leave killedByUs = false so the drain
+            // task logs the unexpected-exit warning with whatever stderr we got.
         }
         catch { /* already gone */ }
         try { ffmpeg.Dispose(); } catch { /* ignore */ }
