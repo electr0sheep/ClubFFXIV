@@ -44,6 +44,14 @@ public class Configuration : IPluginConfiguration
     public bool MuteStreamWhenUnfocused { get; set; } = true;
 
     /// <summary>
+    /// Keep the stream playing when entering FC sub-territories (Company Workshop,
+    /// basement / private chamber). The game treats these as separate territories
+    /// from the house interior, but for music continuity we treat them as still
+    /// inside the same plot.
+    /// </summary>
+    public bool KeepPlayingInLinkedSubterritories { get; set; } = true;
+
+    /// <summary>
     /// Bypass the local "are you the owner of this house?" check at publish time.
     /// Off by default — turning it on lets you publish to plots you don't own per
     /// the game's records. Use only if the ownership detection is wrong (FC

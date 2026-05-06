@@ -13,7 +13,13 @@ namespace ClubFFXIV.Game;
 /// </summary>
 public sealed class HousingDetector
 {
-    public unsafe PlotKey? ResolveCurrent()
+    // Last plot we resolved while actually inside a house. Used to keep
+    // auto-play alive when the player walks into linked sub-territories
+    // (FC workshop, basement / private chamber) where HousingManager.IndoorTerritory
+    // goes null but the player hasn't really left the house.
+    private PlotKey? lastIndoorPlot;
+
+    public unsafe PlotKey? ResolveCurrent(bool keepPlayingInLinkedSubterritories = true)
     {
         var local = Plugin.PlayerState;
         if (local == null) return null;
@@ -21,16 +27,57 @@ public sealed class HousingDetector
         var hm = HousingManager.Instance();
         if (hm == null) return null;
 
-        if (hm->IndoorTerritory == null) return null;
+        if (hm->IndoorTerritory != null)
+        {
+            var worldId = local.CurrentWorld.RowId;
+            var territory = Plugin.ClientState.TerritoryType;
+            var ward = hm->GetCurrentWard();
+            var plot = hm->GetCurrentPlot();
+            var room = hm->GetCurrentRoom();
+            var division = hm->GetCurrentDivision();
 
-        var worldId = local.CurrentWorld.RowId;
-        var territory = Plugin.ClientState.TerritoryType;
-        var ward = hm->GetCurrentWard();
-        var plot = hm->GetCurrentPlot();
-        var room = hm->GetCurrentRoom();
-        var division = hm->GetCurrentDivision();
+            var resolved = new PlotKey(worldId, territory, ward, plot, room, division);
+            lastIndoorPlot = resolved;
+            return resolved;
+        }
 
-        return new PlotKey(worldId, territory, ward, plot, room, division);
+        // FC sub-territories (workshop, basement) — IndoorTerritory is null but
+        // the player hasn't really left the house. Continue treating them as
+        // inside the last resolved plot so the stream keeps playing.
+        if (keepPlayingInLinkedSubterritories
+            && IsHouseLinkedSubterritory(Plugin.ClientState.TerritoryType))
+            return lastIndoorPlot;
+
+        // Truly left housing.
+        lastIndoorPlot = null;
+        return null;
+    }
+
+    /// <summary>
+    /// Sub-territories that hang off an FC house we want to keep playing in.
+    /// Currently scoped to FC workshops only — player rooms / private chambers
+    /// are deliberately excluded since they're personal spaces, not the venue
+    /// the user came in for.
+    ///
+    /// Detected by territory PlaceName containing "Workshop" rather than a
+    /// hardcoded ID list — works across future SE additions and avoids the
+    /// risk of stale IDs.
+    /// </summary>
+    private static bool IsHouseLinkedSubterritory(uint territory)
+    {
+        try
+        {
+            var sheet = Plugin.DataManager.GetExcelSheet<TerritoryType>();
+            if (sheet == null) return false;
+            var row = sheet.GetRowOrDefault(territory);
+            if (row == null) return false;
+            var name = row.Value.PlaceName.ValueNullable?.Name.ExtractText() ?? "";
+            return name.Contains("Workshop", System.StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

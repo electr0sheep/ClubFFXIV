@@ -220,6 +220,13 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.MuteStreamWhenUnfocused = followFocus;
             plugin.Config.Save();
         }
+
+        var keepInSub = plugin.Config.KeepPlayingInLinkedSubterritories;
+        if (ImGui.Checkbox("Keep playing in FC workshop / linked sub-rooms", ref keepInSub))
+        {
+            plugin.Config.KeepPlayingInLinkedSubterritories = keepInSub;
+            plugin.Config.Save();
+        }
     }
 
     private void DrawCurrentLocationSection()
