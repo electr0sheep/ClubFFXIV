@@ -54,6 +54,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly HelpWindow helpWindow = new();
     private readonly UrlPermissionWindow permissionWindow;
     private readonly SetupWizardWindow setupWizard;
+    private readonly DirectoryWindow directoryWindow;
     public BinaryManager Binaries { get; }
     public UrlPermissions Permissions { get; }
     private readonly StreamPlayer streamPlayer;
@@ -128,16 +129,18 @@ public sealed class Plugin : IDalamudPlugin
         configWindow = new ConfigWindow(this);
         permissionWindow = new UrlPermissionWindow(Permissions);
         setupWizard = new SetupWizardWindow(this);
+        directoryWindow = new DirectoryWindow(this);
         if (!Config.SetupWizardComplete) setupWizard.IsOpen = true;
 
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(helpWindow);
         WindowSystem.AddWindow(permissionWindow);
         WindowSystem.AddWindow(setupWizard);
+        WindowSystem.AddWindow(directoryWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/club play <url> | /club stop | /club calibrate <key> | /club config",
+            HelpMessage = "/club play <url> | /club stop | /club calibrate <key> | /club config | /club directory",
         });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
@@ -161,6 +164,7 @@ public sealed class Plugin : IDalamudPlugin
         helpWindow.Dispose();
         permissionWindow.Dispose();
         setupWizard.Dispose();
+        directoryWindow.Dispose();
         streamPlayer.Dispose();
         bgmMuter.Dispose();
         registryClient?.Dispose();
@@ -168,6 +172,7 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     public void ToggleHelp() => helpWindow.Toggle();
+    public void ToggleDirectory() => directoryWindow.Toggle();
 
     public void PlayStream(string url, ClubContext? context = null)
     {
@@ -264,6 +269,22 @@ public sealed class Plugin : IDalamudPlugin
         {
             streamFailures.Remove(url);
         }
+    }
+
+    /// <summary>
+    /// Toast a Dalamud notification. Used for action results (publish / unpublish
+    /// / rename / calibrate / etc.) where a transient toast is more discoverable
+    /// than a status-line write that the user might not be looking at.
+    /// </summary>
+    public void Notify(string title, string content, NotificationType type, int durationSeconds = 5)
+    {
+        NotificationManager.AddNotification(new Notification
+        {
+            Title = title,
+            Content = content,
+            Type = type,
+            InitialDuration = TimeSpan.FromSeconds(durationSeconds),
+        });
     }
 
     /// <summary>
@@ -1222,8 +1243,13 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfig();
                 break;
 
+            case "directory":
+            case "browse":
+                ToggleDirectory();
+                break;
+
             default:
-                ChatGui.Print("Usage: /club play <url> | /club stop | /club calibrate <key> | /club config");
+                ChatGui.Print("Usage: /club play <url> | /club stop | /club calibrate <key> | /club config | /club directory");
                 break;
         }
     }

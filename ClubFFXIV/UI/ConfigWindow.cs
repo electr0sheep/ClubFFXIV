@@ -2,7 +2,7 @@ using System;
 using System.Numerics;
 using System.Threading.Tasks;
 using ClubFFXIV.Game;
-using ClubFFXIV.Network;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 
@@ -16,19 +16,24 @@ public sealed class ConfigWindow : Window, IDisposable
     private string clubNameInput = "";
     private string clubDescriptionInput = "";
     private bool clubListedInput = true;
-    private string statusLine = "";
 
-    // Inline-rename state for the Saved / Published houses lists. Holds the
-    // canonical key of the row currently being edited, plus the in-flight
-    // edits (name + description + listed flag). Only one row is editable at a time.
+    // Inline-progress text for in-flight async operations ("Publishing...",
+    // "Saving...", "Unpublishing..."). Final results go to Dalamud notifications;
+    // this field only holds the during-the-network-call indicator so the user
+    // sees something between click and toast.
+    private string inflightStatus = "";
+
+    // Inline-rename state for the unified houses list. Holds the canonical key
+    // of the row currently being edited, plus the in-flight edits (name +
+    // description + listed flag). Only one row is editable at a time.
     private string? editingKey;
     private string editingName = "";
     private string editingDescription = "";
     private bool editingListed = true;
 
-    // Public-directory browse panel state. Loaded lazily on first open.
-    private string directoryStatus = "";
-    private bool directoryFetchKickoffPending;
+    // Filter input for the My Clubs houses list. Substring-matches against the
+    // entry's display name, case-insensitive.
+    private string houseFilterInput = "";
 
     public ConfigWindow(Plugin plugin)
         : base("ClubFFXIV##ClubFFXIVConfig", ImGuiWindowFlags.NoCollapse)
@@ -45,35 +50,84 @@ public sealed class ConfigWindow : Window, IDisposable
     public override void Draw()
     {
         DrawHelpBar();
+        DrawNowPlayingHeader();
+        ImGui.Spacing();
+
+        if (ImGui.BeginTabBar("##mainTabs"))
+        {
+            if (ImGui.BeginTabItem("Now Playing"))
+            {
+                DrawNowPlayingTab();
+                ImGui.EndTabItem();
+            }
+            if (ImGui.BeginTabItem("My Clubs"))
+            {
+                DrawMyClubsTab();
+                ImGui.EndTabItem();
+            }
+            if (ImGui.BeginTabItem("Registry"))
+            {
+                DrawRegistryTab();
+                ImGui.EndTabItem();
+            }
+            if (ImGui.BeginTabItem("Settings"))
+            {
+                DrawSettingsTab();
+                ImGui.EndTabItem();
+            }
+            if (ImGui.BeginTabItem("Advanced"))
+            {
+                DrawAdvancedTab();
+                ImGui.EndTabItem();
+            }
+            ImGui.EndTabBar();
+        }
+
+        // Inflight progress indicator at the bottom — only visible during
+        // an active async op (Publishing... / Saving... / Unpublishing...).
+        // Empty most of the time; final results go to Dalamud notifications.
+        if (!string.IsNullOrEmpty(inflightStatus))
+        {
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.TextDisabled(inflightStatus);
+        }
+    }
+
+    private void DrawNowPlayingTab()
+    {
         DrawStreamSection();
         ImGui.Spacing();
         ImGui.Separator();
+        DrawProximityStatusSection();
+    }
+
+    private void DrawMyClubsTab()
+    {
         DrawCurrentLocationSection();
         ImGui.Spacing();
         ImGui.Separator();
-        DrawProximityStatusSection();
         ImGui.Spacing();
-        ImGui.Separator();
+        DrawMyHousesSection();
+    }
+
+    private void DrawRegistryTab()
+    {
         DrawRegistrySection();
-        ImGui.Spacing();
-        ImGui.Separator();
-        DrawSavedHousesSection();
-        ImGui.Spacing();
-        ImGui.Separator();
-        DrawPublishedHousesSection();
-        ImGui.Spacing();
-        ImGui.Separator();
-        DrawDirectorySection();
-        ImGui.Spacing();
-        ImGui.Separator();
+    }
+
+    private void DrawSettingsTab()
+    {
         DrawSpatialTuningSection();
         ImGui.Spacing();
         ImGui.Separator();
-        DrawPermissionsSection();
         ImGui.Spacing();
-        ImGui.Separator();
+        DrawPermissionsSection();
+    }
+
+    private void DrawAdvancedTab()
+    {
         DrawBinariesSection();
-        DrawStatusFooter();
     }
 
     private string newAllowDomainInput = "";
@@ -81,8 +135,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawPermissionsSection()
     {
-        if (!ImGui.CollapsingHeader("Permissions (allow / block lists)"))
-            return;
+        ImGui.TextUnformatted("Permissions (allow / block lists)");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         ImGui.TextWrapped(
             "Streams from unfamiliar domains are blocked until you approve them. " +
@@ -144,8 +199,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawBinariesSection()
     {
-        if (!ImGui.CollapsingHeader("External binaries (yt-dlp, ffmpeg)"))
-            return;
+        ImGui.TextUnformatted("External binaries (yt-dlp, ffmpeg)");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         // Lazy-resolve versions on first display so we don't spawn processes
         // on every plugin start.
@@ -167,15 +223,33 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawBinaryRow("yt-dlp", plugin.Binaries.YtDlpInstalled, ytDlpVersion, async () =>
         {
             ytDlpVersion = "(updating...)";
-            try { ytDlpVersion = await plugin.Binaries.UpdateYtDlpAsync(); statusLine = "yt-dlp updated."; }
-            catch (Exception ex) { ytDlpVersion = $"(error: {ex.Message})"; statusLine = $"yt-dlp update failed: {ex.Message}"; }
+            try
+            {
+                ytDlpVersion = await plugin.Binaries.UpdateYtDlpAsync();
+                plugin.Notify("ClubFFXIV", "yt-dlp updated.", NotificationType.Success);
+            }
+            catch (Exception ex)
+            {
+                ytDlpVersion = $"(error: {ex.Message})";
+                plugin.Notify("ClubFFXIV: yt-dlp update failed",
+                    ex.Message, NotificationType.Error, durationSeconds: 8);
+            }
         });
 
         DrawBinaryRow("ffmpeg", plugin.Binaries.FfmpegInstalled, ffmpegVersion, async () =>
         {
             ffmpegVersion = "(updating, ~80 MB...)";
-            try { ffmpegVersion = await plugin.Binaries.UpdateFfmpegAsync(); statusLine = "ffmpeg updated."; }
-            catch (Exception ex) { ffmpegVersion = $"(error: {ex.Message})"; statusLine = $"ffmpeg update failed: {ex.Message}"; }
+            try
+            {
+                ffmpegVersion = await plugin.Binaries.UpdateFfmpegAsync();
+                plugin.Notify("ClubFFXIV", "ffmpeg updated.", NotificationType.Success);
+            }
+            catch (Exception ex)
+            {
+                ffmpegVersion = $"(error: {ex.Message})";
+                plugin.Notify("ClubFFXIV: ffmpeg update failed",
+                    ex.Message, NotificationType.Error, durationSeconds: 8);
+            }
         });
 
         ImGui.Spacing();
@@ -221,6 +295,71 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ago < TimeSpan.FromHours(1)) return $"{(int)ago.TotalMinutes} min ago";
         if (ago < TimeSpan.FromDays(1)) return $"{(int)ago.TotalHours} h ago";
         return $"{(int)ago.TotalDays} d ago";
+    }
+
+    /// <summary>
+    /// Always-visible status strip above the tab bar: tells the user at a
+    /// glance what's playing, where they are, and the current playback mode.
+    /// Survives tab switches so the user can change settings without losing
+    /// situational awareness.
+    /// </summary>
+    private void DrawNowPlayingHeader()
+    {
+        var mode = plugin.CurrentMode;
+        var playing = mode != PlaybackMode.Off;
+
+        var icon = playing ? "▶" : "⏸";
+        var iconColor = playing
+            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
+            : new Vector4(0.6f, 0.6f, 0.6f, 1f);
+
+        // Resolve a friendly label for the current stream URL, falling back
+        // to "(none)" when nothing is playing or the URL is unknown.
+        var url = plugin.CurrentStreamUrl;
+        string label;
+        if (!playing || string.IsNullOrEmpty(url))
+        {
+            label = "Not playing";
+        }
+        else
+        {
+            var ctx = plugin.LookupClubContextForUrl(url);
+            label = !string.IsNullOrWhiteSpace(ctx?.ClubName)
+                ? ctx.Value.ClubName
+                : (url.Length > 60 ? url[..57] + "..." : url);
+        }
+
+        // Location segment (where the player is right now, not where the
+        // stream's source is).
+        string location;
+        if (plugin.CurrentPlotKey is { } pk)
+        {
+            location = plugin.HousingDetector.GetDisplayName(pk);
+        }
+        else if (plugin.CurrentWard is { } ward)
+        {
+            var district = plugin.HousingDetector.LookupDistrictName(ward.TerritoryType);
+            location = $"{district} W{ward.Ward + 1}";
+        }
+        else
+        {
+            location = "outside housing";
+        }
+
+        var modeText = playing ? mode.ToString() : "stopped";
+        var volumeText = $"vol {(int)(plugin.Config.Volume * 100)}%";
+
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
+        ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, 32), ImGuiChildFlags.Borders);
+        ImGui.Spacing();
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextColored(iconColor, icon);
+        ImGui.SameLine();
+        ImGui.TextUnformatted(label);
+        ImGui.SameLine();
+        ImGui.TextDisabled($"  ·  {location}  ·  {modeText}  ·  {volumeText}");
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
     }
 
     private void DrawHelpBar()
@@ -275,19 +414,21 @@ public sealed class ConfigWindow : Window, IDisposable
                 plugin.Config.LastStreamUrl = urlInput;
                 plugin.Config.Save();
                 plugin.PlayStream(urlInput);
-                statusLine = $"Playing: {urlInput}";
+                // Now Playing header + chat ("Playing: ...") already cover the
+                // visual feedback for a successful start.
             }
             catch (Exception ex)
             {
-                statusLine = $"Error: {ex.Message}";
                 Plugin.Log.Error(ex, "Play failed from ConfigWindow");
+                plugin.Notify("ClubFFXIV: play failed",
+                    ex.Message, NotificationType.Error, durationSeconds: 8);
             }
         }
         ImGui.SameLine();
         if (ImGui.Button("Stop", new Vector2(80, 0)))
         {
             plugin.StopStream();
-            statusLine = "Stopped.";
+            // Now Playing header reflects "stopped" — no extra status needed.
         }
 
         ImGui.Spacing();
@@ -400,7 +541,9 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.Button("Save URL for this house (local)"))
             {
                 plugin.SaveCurrentHouse(effectiveName, urlInput, clubDescriptionInput);
-                statusLine = $"Saved locally: {effectiveName}";
+                plugin.Notify("ClubFFXIV",
+                    $"Saved '{effectiveName}' locally.",
+                    NotificationType.Success);
             }
             ImGui.SameLine();
             var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner
@@ -413,20 +556,27 @@ public sealed class ConfigWindow : Window, IDisposable
                 var desc = clubDescriptionInput;
                 var url = urlInput;
                 var listed = clubListedInput;
-                statusLine = "Publishing...";
+                inflightStatus = "Publishing...";
                 _ = Task.Run(async () =>
                 {
                     try
                     {
                         await plugin.PublishCurrentHouseAsync(dn, url, desc, listed);
-                        statusLine = listed
-                            ? $"Published: {dn}"
-                            : $"Published (hidden from directory): {dn}";
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV",
+                            listed
+                                ? $"Published '{dn}'."
+                                : $"Published '{dn}' (hidden from directory).",
+                            NotificationType.Success);
                     }
                     catch (Exception ex)
                     {
                         Plugin.Log.Error(ex, "Publish failed");
-                        statusLine = $"Publish failed: {ex.Message}";
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV: publish failed",
+                            ex.Message,
+                            NotificationType.Error,
+                            durationSeconds: 8);
                     }
                 });
             }
@@ -497,12 +647,22 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.RegistryUrl = registryUrlInput.Trim();
             plugin.Config.Save();
             plugin.RebuildRegistryClient();
-            statusLine = plugin.RegistryEnabled
-                ? "Registry connected."
-                : "Registry disabled (URL is blank).";
+            plugin.Notify("ClubFFXIV",
+                plugin.RegistryEnabled
+                    ? "Registry connected."
+                    : "Registry disabled (URL is blank).",
+                NotificationType.Info);
         }
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.RegistryEnabled ? "● enabled" : "○ disabled");
+
+        ImGui.Spacing();
+        if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+        if (ImGui.Button("Browse Public Directory"))
+            plugin.ToggleDirectory();
+        if (!plugin.RegistryEnabled) ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.TextDisabled("(or /club directory)");
 
         ImGui.Spacing();
         var djId = plugin.DjId;
@@ -519,334 +679,309 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.SmallButton("Copy"))
             {
                 ImGui.SetClipboardText(djId);
-                statusLine = "DJ ID copied.";
+                plugin.Notify("ClubFFXIV", "DJ ID copied.", NotificationType.Info);
             }
         }
     }
 
-    private void DrawSavedHousesSection()
+    /// <summary>
+    /// One row in the unified My Houses list. A house can be saved-locally
+    /// (offline-first), published-to-registry, or both — Calibrate already
+    /// keeps both copies in sync, and Edit propagates name/description to
+    /// whichever copies exist.
+    /// </summary>
+    private readonly record struct UnifiedHouseRow(
+        string Key,
+        ClubEntry? Saved,
+        ClubEntry? Published)
     {
-        ImGui.TextUnformatted($"Saved Houses (local) — {plugin.Config.SavedHouses.Count}");
+        public ClubEntry Primary => Published ?? Saved!;
+        public bool IsPublished => Published != null;
+        public bool HasSavedCopy => Saved != null;
+        public bool IsLocalOnly => Saved != null && Published == null;
+    }
+
+    private System.Collections.Generic.IEnumerable<UnifiedHouseRow> EnumerateMyHouses()
+    {
+        var keys = new System.Collections.Generic.HashSet<string>(plugin.Config.SavedHouses.Keys);
+        foreach (var k in plugin.Config.PublishedHouses.Keys) keys.Add(k);
+        foreach (var k in keys)
+        {
+            plugin.Config.SavedHouses.TryGetValue(k, out var saved);
+            plugin.Config.PublishedHouses.TryGetValue(k, out var pub);
+            if (saved == null && pub == null) continue;
+            yield return new UnifiedHouseRow(k, saved, pub);
+        }
+    }
+
+    private void DrawMyHousesSection()
+    {
+        var rows = new System.Collections.Generic.List<UnifiedHouseRow>(EnumerateMyHouses());
+        rows.Sort((a, b) => string.Compare(a.Primary.DisplayName, b.Primary.DisplayName,
+            StringComparison.OrdinalIgnoreCase));
+
+        ImGui.TextUnformatted($"My Houses — {rows.Count}");
         ImGui.Spacing();
-        DrawHouseList(plugin.Config.SavedHouses, "saved", allowUnpublish: false);
-    }
 
-    private void DrawPublishedHousesSection()
-    {
-        ImGui.TextUnformatted($"Published Houses (registry) — {plugin.Config.PublishedHouses.Count}");
+        // Filter input — substring on display name, case-insensitive.
+        ImGui.TextUnformatted("Filter:");
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(-80);
+        ImGui.InputText("##houseFilter", ref houseFilterInput, 128);
+        ImGui.SameLine();
+        if (ImGui.Button("Clear", new Vector2(70, 0)))
+            houseFilterInput = "";
         ImGui.Spacing();
-        if (!plugin.RegistryEnabled)
-        {
-            ImGui.TextDisabled("Set a registry URL above to manage published clubs.");
-            return;
-        }
-        DrawHouseList(plugin.Config.PublishedHouses, "pub", allowUnpublish: true);
-    }
 
-    private void DrawDirectorySection()
-    {
-        if (!ImGui.CollapsingHeader("Public Directory (browse all listed clubs)"))
-            return;
-
-        if (!plugin.RegistryEnabled)
+        if (rows.Count == 0)
         {
-            ImGui.TextDisabled("Set a registry URL above to browse the directory.");
+            ImGui.TextDisabled(
+                "No saved or published houses yet. Stand inside your house and " +
+                "use the Current Location section above to save or publish.");
             return;
         }
 
-        // Lazy first-fetch the moment the header opens (no fetch happens
-        // while the section is collapsed, since CollapsingHeader short-circuits).
-        if (plugin.DirectoryCache == null
-            && !plugin.DirectoryFetchInFlight
-            && !directoryFetchKickoffPending)
-        {
-            KickoffDirectoryFetch(force: false);
-        }
+        var filter = houseFilterInput.Trim();
+        var hasFilter = filter.Length > 0;
+        var filterLower = hasFilter ? filter.ToLowerInvariant() : "";
 
-        if (ImGui.Button("Refresh"))
-        {
-            if (!plugin.DirectoryFetchInFlight && !directoryFetchKickoffPending)
-                KickoffDirectoryFetch(force: true);
-        }
-
-        var cache = plugin.DirectoryCache;
-        if (cache != null)
-        {
-            ImGui.SameLine();
-            var ago = DateTime.UtcNow - plugin.DirectoryCacheFetchedAt;
-            var summary = cache.Clubs.Count == 1 ? "1 club listed" : $"{cache.Clubs.Count} clubs listed";
-            ImGui.TextDisabled($"({summary}, fetched {FormatAgo(ago)})");
-        }
-
-        if (!string.IsNullOrEmpty(directoryStatus))
-        {
-            ImGui.Spacing();
-            ImGui.TextDisabled(directoryStatus);
-        }
-
-        if (cache == null) return;
-
-        if (cache.Clubs.Count == 0)
-        {
-            ImGui.Spacing();
-            ImGui.TextDisabled("No clubs are currently listed in the directory.");
-            return;
-        }
-
-        ImGui.Spacing();
-        ImGui.BeginChild("##directoryList", new Vector2(-1, 320), true);
-        foreach (var club in cache.Clubs)
-        {
-            ImGui.PushID("dir-" + club.PlotKey);
-
-            ImGui.TextUnformatted(club.DisplayName);
-            ImGui.TextDisabled("  " + FormatPlotKeyLocation(club.PlotKey));
-
-            // Description (when present): wrap inside a slightly indented region.
-            // Trim cosmetically so a long entry doesn't dominate the list — full
-            // text still shows on the URL permission prompt for the same club.
-            if (!string.IsNullOrWhiteSpace(club.Description))
-            {
-                var desc = club.Description.Length > 280
-                    ? club.Description[..277] + "..."
-                    : club.Description;
-                ImGui.Indent(12f);
-                ImGui.TextWrapped(desc);
-                ImGui.Unindent(12f);
-            }
-
-            if (ImGui.SmallButton("Play"))
-            {
-                try
-                {
-                    urlInput = club.StreamUrl;
-                    plugin.Config.LastStreamUrl = club.StreamUrl;
-                    plugin.Config.Save();
-                    plugin.PlayStream(club.StreamUrl, new ClubContext(club.DisplayName, club.Description));
-                    statusLine = $"Playing: {club.DisplayName}";
-                }
-                catch (Exception ex)
-                {
-                    Plugin.Log.Error(ex, "Directory Play failed");
-                    statusLine = $"Error: {ex.Message}";
-                }
-            }
-            ImGui.SameLine();
-            if (ImGui.SmallButton("Load URL"))
-            {
-                urlInput = club.StreamUrl;
-                statusLine = $"Loaded URL from {club.DisplayName}";
-            }
-
-            ImGui.TextDisabled("  " + (club.StreamUrl.Length > 70
-                ? club.StreamUrl[..67] + "..."
-                : club.StreamUrl));
-
-            ImGui.PopID();
-            ImGui.Spacing();
-        }
-        ImGui.EndChild();
-    }
-
-    private void KickoffDirectoryFetch(bool force)
-    {
-        directoryFetchKickoffPending = true;
-        directoryStatus = "Loading directory...";
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await plugin.FetchDirectoryAsync(force);
-                directoryStatus = "";
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.Warning($"Directory fetch failed: {ex.Message}");
-                directoryStatus = $"Error: {ex.Message}";
-            }
-            finally
-            {
-                directoryFetchKickoffPending = false;
-            }
-        });
-    }
-
-    private string FormatPlotKeyLocation(string plotKeyCanonical)
-    {
-        if (!PlotKey.TryParse(plotKeyCanonical, out var key))
-            return plotKeyCanonical;
-        return $"World {key.WorldId} — {plugin.HousingDetector.GetDisplayName(key)}";
-    }
-
-    private void DrawHouseList(System.Collections.Generic.Dictionary<string, ClubEntry> dict, string idPrefix, bool allowUnpublish)
-    {
         var canCalibrate = plugin.CurrentWard.HasValue;
-        string? toRemove = null;
+        string? toDeleteSavedOnly = null;
+        var matchCount = 0;
 
-        foreach (var (k, entry) in dict)
+        foreach (var row in rows)
         {
-            ImGui.PushID(idPrefix + "-" + k);
-
-            var calibrated = entry.DoorPosition != null;
-            var badge = calibrated ? "[+]" : "[ ]";
-
-            if (editingKey == k)
-            {
-                ImGui.TextUnformatted(badge);
-                ImGui.SameLine();
-                ImGui.SetNextItemWidth(-1);
-                ImGui.InputText("##rename", ref editingName, 81);
-
-                ImGui.TextUnformatted("Description:");
-                ImGui.SetNextItemWidth(-1);
-                ImGui.InputTextMultiline(
-                    "##editDescription",
-                    ref editingDescription,
-                    501,
-                    new Vector2(-1, 60));
-
-                if (ImGui.SmallButton("Save"))
-                {
-                    var newName = editingName.Trim();
-                    if (string.IsNullOrEmpty(newName))
-                    {
-                        statusLine = "Save cancelled — name cannot be empty.";
-                    }
-                    else if (allowUnpublish)
-                    {
-                        var key = k;
-                        var dn = newName;
-                        var desc = editingDescription;
-                        var listed = editingListed;
-                        statusLine = "Saving...";
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await plugin.RenamePublishedHouseAsync(key, dn, desc, listed);
-                                statusLine = listed
-                                    ? $"Updated: {dn}"
-                                    : $"Updated (hidden from directory): {dn}";
-                            }
-                            catch (Exception ex)
-                            {
-                                Plugin.Log.Error(ex, "Save failed");
-                                statusLine = $"Save failed: {ex.Message}";
-                            }
-                        });
-                    }
-                    else
-                    {
-                        plugin.RenameSavedHouse(k, newName, editingDescription);
-                        statusLine = $"Saved (local): {newName}";
-                    }
-                    editingKey = null;
-                    editingName = "";
-                    editingDescription = "";
-                }
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Cancel"))
-                {
-                    editingKey = null;
-                    editingName = "";
-                    editingDescription = "";
-                }
-
-                // Listed toggle is only meaningful for Published Houses
-                // (the directory is server-side; saved-only houses aren't
-                // in the registry to begin with).
-                if (allowUnpublish)
-                {
-                    ImGui.SameLine();
-                    ImGui.Checkbox("Show in public directory", ref editingListed);
-                    ImGui.SameLine();
-                    ImGui.TextDisabled("(?)");
-                    if (ImGui.IsItemHovered())
-                        ImGui.SetTooltip(
-                            "Unchecking only hides this club from the Public\n" +
-                            "Directory list — anyone who knows your plot key or\n" +
-                            "walks past still discovers it. For full privacy,\n" +
-                            "Unpublish instead.");
-                }
-            }
-            else
-            {
-                var hiddenSuffix = allowUnpublish && !entry.Listed ? "  (hidden)" : "";
-                ImGui.TextUnformatted($"{badge} {entry.DisplayName}{hiddenSuffix}");
-
-                if (ImGui.SmallButton("Load"))
-                {
-                    urlInput = entry.StreamUrl;
-                    statusLine = $"Loaded URL from {entry.DisplayName}";
-                }
-                ImGui.SameLine();
-
-                if (ImGui.SmallButton(allowUnpublish ? "Edit" : "Rename"))
-                {
-                    editingKey = k;
-                    editingName = entry.DisplayName;
-                    editingDescription = entry.Description;
-                    editingListed = entry.Listed;
-                }
-                ImGui.SameLine();
-
-                if (!canCalibrate) ImGui.BeginDisabled();
-                if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate door"))
-                {
-                    if (plugin.CalibrateDoor(k))
-                        statusLine = $"Calibrated: {entry.DisplayName}";
-                }
-                if (!canCalibrate) ImGui.EndDisabled();
-                ImGui.SameLine();
-
-                if (allowUnpublish)
-                {
-                    if (ImGui.SmallButton("Unpublish"))
-                    {
-                        var key = k;
-                        statusLine = "Unpublishing...";
-                        _ = Task.Run(async () =>
-                        {
-                            try
-                            {
-                                await plugin.UnpublishHouseAsync(key);
-                                statusLine = "Unpublished.";
-                            }
-                            catch (Exception ex)
-                            {
-                                Plugin.Log.Error(ex, "Unpublish failed");
-                                statusLine = $"Unpublish failed: {ex.Message}";
-                            }
-                        });
-                    }
-                }
-                else
-                {
-                    if (ImGui.SmallButton("Delete")) toRemove = k;
-                }
-            }
-
-            ImGui.TextDisabled("  " + entry.StreamUrl);
-            if (calibrated)
-            {
-                var p = entry.DoorPosition!;
-                ImGui.TextDisabled(
-                    $"  door: ({p.X:F1}, {p.Y:F1}, {p.Z:F1})  ward {entry.DoorWard + 1}  territory {entry.DoorTerritoryType}");
-            }
-            ImGui.PopID();
+            if (hasFilter
+                && !row.Primary.DisplayName.ToLowerInvariant().Contains(filterLower))
+                continue;
+            matchCount++;
+            DrawHouseRow(row, canCalibrate, ref toDeleteSavedOnly);
         }
 
-        if (toRemove != null)
+        if (hasFilter && matchCount == 0)
+            ImGui.TextDisabled($"No houses matched \"{filter}\".");
+
+        if (toDeleteSavedOnly != null)
         {
-            // If the user was mid-rename on the row they just deleted, drop edit state.
-            if (editingKey == toRemove)
+            // Cancel any active inline edit on the row we just deleted.
+            if (editingKey == toDeleteSavedOnly)
             {
                 editingKey = null;
                 editingName = "";
                 editingDescription = "";
             }
-            plugin.DeleteSavedHouse(toRemove);
-            statusLine = "Removed saved house.";
+            plugin.DeleteSavedHouse(toDeleteSavedOnly);
+            plugin.Notify("ClubFFXIV", "Removed saved house.", NotificationType.Success);
+        }
+    }
+
+    private void DrawHouseRow(
+        UnifiedHouseRow row,
+        bool canCalibrate,
+        ref string? toDeleteSavedOnly)
+    {
+        var key = row.Key;
+        var entry = row.Primary;
+        var calibrated = entry.DoorPosition != null;
+        ImGui.PushID("myhouses-" + key);
+
+        if (editingKey == key)
+            DrawHouseRowEditing(row);
+        else
+            DrawHouseRowReadonly(row, calibrated, canCalibrate, ref toDeleteSavedOnly);
+
+        ImGui.TextDisabled("  " + entry.StreamUrl);
+        if (calibrated)
+        {
+            var p = entry.DoorPosition!;
+            ImGui.TextDisabled(
+                $"  door: ({p.X:F1}, {p.Y:F1}, {p.Z:F1})  ward {entry.DoorWard + 1}  territory {entry.DoorTerritoryType}");
+        }
+        ImGui.PopID();
+    }
+
+    private void DrawHouseRowReadonly(
+        UnifiedHouseRow row,
+        bool calibrated,
+        bool canCalibrate,
+        ref string? toDeleteSavedOnly)
+    {
+        var key = row.Key;
+        var entry = row.Primary;
+        var calBadge = calibrated ? "[+]" : "[ ]";
+
+        // Subtle status badge ("local" / "published" / "published, hidden").
+        // The published-vs-local distinction governs what actions appear.
+        string stateBadge;
+        if (row.IsPublished)
+            stateBadge = entry.Listed ? "published" : "published, hidden";
+        else
+            stateBadge = "local";
+
+        ImGui.TextUnformatted($"{calBadge} {entry.DisplayName}");
+        ImGui.SameLine();
+        ImGui.TextDisabled($"· {stateBadge}");
+
+        if (ImGui.SmallButton("Load"))
+            urlInput = entry.StreamUrl;
+        ImGui.SameLine();
+
+        if (ImGui.SmallButton(row.IsPublished ? "Edit" : "Rename"))
+        {
+            editingKey = key;
+            editingName = entry.DisplayName;
+            editingDescription = entry.Description;
+            editingListed = entry.Listed;
+        }
+        ImGui.SameLine();
+
+        if (!canCalibrate) ImGui.BeginDisabled();
+        if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate door"))
+        {
+            if (plugin.CalibrateDoor(key))
+                plugin.Notify("ClubFFXIV",
+                    $"Calibrated door for '{entry.DisplayName}'.",
+                    NotificationType.Success);
+        }
+        if (!canCalibrate) ImGui.EndDisabled();
+        ImGui.SameLine();
+
+        if (row.IsPublished)
+        {
+            // Unpublish removes the registry copy. Saved fallback (if any)
+            // remains so Indoor mode still has a URL when registry is offline.
+            if (ImGui.SmallButton("Unpublish"))
+            {
+                var k = key;
+                var label = entry.DisplayName;
+                inflightStatus = "Unpublishing...";
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await plugin.UnpublishHouseAsync(k);
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV",
+                            $"Unpublished '{label}'.",
+                            NotificationType.Success);
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.Error(ex, "Unpublish failed");
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV: unpublish failed",
+                            ex.Message,
+                            NotificationType.Error,
+                            durationSeconds: 8);
+                    }
+                });
+            }
+        }
+        else if (row.IsLocalOnly)
+        {
+            // Local-only deletes are immediate (no network) — Delete is the
+            // only way to remove a saved-only entry.
+            if (ImGui.SmallButton("Delete")) toDeleteSavedOnly = key;
+        }
+    }
+
+    private void DrawHouseRowEditing(UnifiedHouseRow row)
+    {
+        var entry = row.Primary;
+        var calBadge = entry.DoorPosition != null ? "[+]" : "[ ]";
+
+        ImGui.TextUnformatted(calBadge);
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputText("##rename", ref editingName, 81);
+
+        ImGui.TextUnformatted("Description:");
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextMultiline(
+            "##editDescription",
+            ref editingDescription,
+            501,
+            new Vector2(-1, 60));
+
+        var key = row.Key;
+
+        if (ImGui.SmallButton("Save"))
+        {
+            var newName = editingName.Trim();
+            if (string.IsNullOrEmpty(newName))
+            {
+                plugin.Notify("ClubFFXIV",
+                    "Name cannot be empty — edit cancelled.",
+                    NotificationType.Warning);
+            }
+            else if (row.IsPublished)
+            {
+                // Published copy: signed re-publish (network) updates the
+                // registry record AND the local PublishedHouses entry. If a
+                // saved copy also exists for this plot, sync its name/desc
+                // afterwards so the two local mirrors stay coherent.
+                var dn = newName;
+                var desc = editingDescription;
+                var listed = editingListed;
+                var hasSaved = row.HasSavedCopy;
+                inflightStatus = "Saving...";
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await plugin.RenamePublishedHouseAsync(key, dn, desc, listed);
+                        if (hasSaved) plugin.RenameSavedHouse(key, dn, desc);
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV",
+                            listed
+                                ? $"Updated '{dn}'."
+                                : $"Updated '{dn}' (hidden from directory).",
+                            NotificationType.Success);
+                    }
+                    catch (Exception ex)
+                    {
+                        Plugin.Log.Error(ex, "Save failed");
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV: save failed",
+                            ex.Message,
+                            NotificationType.Error,
+                            durationSeconds: 8);
+                    }
+                });
+            }
+            else
+            {
+                plugin.RenameSavedHouse(key, newName, editingDescription);
+                plugin.Notify("ClubFFXIV",
+                    $"Saved '{newName}' locally.",
+                    NotificationType.Success);
+            }
+            editingKey = null;
+            editingName = "";
+            editingDescription = "";
+        }
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Cancel"))
+        {
+            editingKey = null;
+            editingName = "";
+            editingDescription = "";
+        }
+
+        // Listed toggle is only meaningful for published houses (the directory
+        // is server-side; saved-only entries aren't in the registry).
+        if (row.IsPublished)
+        {
+            ImGui.SameLine();
+            ImGui.Checkbox("Show in public directory", ref editingListed);
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Unchecking only hides this club from the Public\n" +
+                    "Directory list — anyone who knows your plot key or\n" +
+                    "walks past still discovers it. For full privacy,\n" +
+                    "Unpublish instead.");
         }
     }
 
@@ -862,8 +997,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSpatialTuningSection()
     {
-        if (!ImGui.CollapsingHeader("Spatial audio tuning"))
-            return;
+        ImGui.TextUnformatted("Spatial audio tuning");
+        ImGui.Separator();
+        ImGui.Spacing();
 
         var changed = false;
 
@@ -920,7 +1056,9 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             plugin.Config.ResetSpatialTuningToDefaults();
             plugin.Config.Save();
-            statusLine = "Spatial tuning reset to defaults.";
+            plugin.Notify("ClubFFXIV",
+                "Spatial tuning reset to defaults.",
+                NotificationType.Info);
         }
         ImGui.SameLine();
         ImGui.TextDisabled("(?)");
@@ -934,11 +1072,4 @@ public sealed class ConfigWindow : Window, IDisposable
                 $"  Max cutoff = {Configuration.DefaultSpatialMaxCutoffHz:F0} Hz");
     }
 
-    private void DrawStatusFooter()
-    {
-        if (string.IsNullOrEmpty(statusLine)) return;
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.TextWrapped(statusLine);
-    }
 }

@@ -184,6 +184,61 @@ public sealed class HousingDetector
 
     private readonly Dictionary<uint, string> districtNameCache = new();
 
+    /// <summary>
+    /// Resolve a numeric world ID (e.g. 21) to its in-game name (e.g. "Cactuar")
+    /// via Lumina's World sheet. Cached. Falls back to "World N" when the sheet
+    /// is unavailable, the row is missing, or the name is blank — never returns
+    /// null/empty so display sites don't have to special-case.
+    /// </summary>
+    public string LookupWorldName(uint worldId) => LookupWorld(worldId).Name;
+
+    /// <summary>
+    /// Resolve a numeric world ID to its data-center name (e.g. "Aether"). Empty
+    /// string when the DC link is missing or the world is unknown.
+    /// </summary>
+    public string LookupDataCenterName(uint worldId) => LookupWorld(worldId).DataCenter;
+
+    private WorldInfo LookupWorld(uint worldId)
+    {
+        if (worldInfoCache.TryGetValue(worldId, out var cached))
+            return cached;
+
+        var resolved = ResolveWorld(worldId);
+        worldInfoCache[worldId] = resolved;
+        return resolved;
+    }
+
+    private readonly Dictionary<uint, WorldInfo> worldInfoCache = new();
+
+    /// <summary>Cached snapshot of a world row: friendly name + data-center name.</summary>
+    private readonly record struct WorldInfo(string Name, string DataCenter);
+
+    private static WorldInfo ResolveWorld(uint worldId)
+    {
+        try
+        {
+            var sheet = Plugin.DataManager.GetExcelSheet<World>();
+            if (sheet == null) return new WorldInfo($"World {worldId}", "");
+
+            var row = sheet.GetRowOrDefault(worldId);
+            if (row == null) return new WorldInfo($"World {worldId}", "");
+
+            var name = row.Value.Name.ExtractText();
+            if (string.IsNullOrWhiteSpace(name)) name = $"World {worldId}";
+
+            // DataCenter is a row link to WorldDCGroupType. Empty string when the
+            // row's DC pointer is null (e.g. test / placeholder worlds), which
+            // FormatPlotKeyLocation handles gracefully by omitting the parens.
+            var dc = row.Value.DataCenter.ValueNullable?.Name.ExtractText() ?? "";
+
+            return new WorldInfo(name, dc);
+        }
+        catch
+        {
+            return new WorldInfo($"World {worldId}", "");
+        }
+    }
+
     private static string ResolveDistrictName(uint territoryType)
     {
         try
