@@ -491,7 +491,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
 
-        var newPlot = HousingDetector.ResolveCurrent();
+        var newPlot = HousingDetector.ResolveCurrent(Config.KeepPlayingInLinkedSubterritories);
         var resolveCurrentMs = sw.ElapsedMilliseconds; sw.Restart();
 
         var newWard = HousingDetector.ResolveOutdoor();
