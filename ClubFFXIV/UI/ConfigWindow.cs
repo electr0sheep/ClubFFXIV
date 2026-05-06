@@ -523,7 +523,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var maxHz = plugin.Config.SpatialMaxCutoffHz;
-        if (ImGui.SliderFloat("Max cutoff Hz (clearest)", ref maxHz, 2000f, 18000f, "%.0f"))
+        if (ImGui.SliderFloat("Max cutoff Hz (clearest)", ref maxHz, 500f, 18000f, "%.0f"))
         {
             plugin.Config.SpatialMaxCutoffHz = maxHz;
             changed = true;
