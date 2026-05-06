@@ -7,6 +7,7 @@ using ClubFFXIV.Game;
 using ClubFFXIV.Network;
 using ClubFFXIV.UI;
 using Dalamud.Game.Command;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
@@ -30,6 +31,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IGameConfig GameConfig { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
@@ -50,7 +52,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
+    private readonly UrlPermissionWindow permissionWindow;
+    private readonly SetupWizardWindow setupWizard;
     public BinaryManager Binaries { get; }
+    public UrlPermissions Permissions { get; }
     private readonly StreamPlayer streamPlayer;
     private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
@@ -69,11 +74,42 @@ public sealed class Plugin : IDalamudPlugin
     // until they Play again or change territory. Without this, Stop in a registered
     // house would immediately resume Indoor auto-play on the next tick.
     private bool userInhibitsAutoPlay;
+    // Suppresses repeated chat warnings when an auto-play target needs yt-dlp /
+    // ffmpeg but the user hasn't installed them. We tell them once per session,
+    // then silently no-op subsequent ticks instead of spamming /xllog.
+    private bool warnedAboutMissingBinaries;
+
+    // Per-URL failure tracking with backoff. The auto-play loop runs every
+    // 500ms, so a persistent failure (404, DNS NXDOMAIN, refused, slow 5xx,
+    // yt-dlp/ffmpeg crash, etc.) without backoff would log an Error and
+    // attempt a fresh stream start at 2 Hz indefinitely. Backoff schedule
+    // is short for the first couple of retries (transient blips recover
+    // fast) and stretches to 5 min after we've concluded the URL is broken.
+    // Mutated from off-thread Task continuations + read from the framework
+    // thread, so all access is gated by failureLock.
+    private sealed class StreamFailureState
+    {
+        public int ConsecutiveFailures;
+        public DateTime LastAttemptUtc;
+        public DateTime NextAttemptUtc;
+        public string LastErrorMessage = "";
+    }
+    private readonly Dictionary<string, StreamFailureState> streamFailures = new();
+    private readonly object failureLock = new();
+    private const int NotifyAfterFailures = 3;
 
     // Ward listing cache: keyed by (worldId, territoryType, ward), TTL 60s.
     private readonly Dictionary<string, CachedWardListing> wardCache = new();
     private static readonly TimeSpan WardCacheTtl = TimeSpan.FromSeconds(60);
     private string? wardFetchInFlight;
+
+    // Public directory cache: a single global blob, fetched lazily when the
+    // user opens the Public Directory panel. TTL 60s; the UI also exposes a
+    // manual Refresh button.
+    private DirectoryListing? directoryCache;
+    private DateTime directoryCacheFetchedAt = DateTime.MinValue;
+    private static readonly TimeSpan DirectoryCacheTtl = TimeSpan.FromSeconds(60);
+    private bool directoryFetchInFlight;
 
     public Plugin()
     {
@@ -81,6 +117,7 @@ public sealed class Plugin : IDalamudPlugin
         Config.Initialize(PluginInterface);
 
         Binaries = new BinaryManager(PluginInterface.GetPluginConfigDirectory());
+        Permissions = new UrlPermissions(Config);
         streamPlayer = new StreamPlayer(Binaries);
         streamPlayer.MasterVolume = Config.Volume;
         lastBinaryUpdateCheck = Config.BinariesLastChecked;
@@ -89,8 +126,14 @@ public sealed class Plugin : IDalamudPlugin
         TryLoadDjIdentity();
 
         configWindow = new ConfigWindow(this);
+        permissionWindow = new UrlPermissionWindow(Permissions);
+        setupWizard = new SetupWizardWindow(this);
+        if (!Config.SetupWizardComplete) setupWizard.IsOpen = true;
+
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(helpWindow);
+        WindowSystem.AddWindow(permissionWindow);
+        WindowSystem.AddWindow(setupWizard);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -116,6 +159,8 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.RemoveAllWindows();
         configWindow.Dispose();
         helpWindow.Dispose();
+        permissionWindow.Dispose();
+        setupWizard.Dispose();
         streamPlayer.Dispose();
         bgmMuter.Dispose();
         registryClient?.Dispose();
@@ -124,14 +169,187 @@ public sealed class Plugin : IDalamudPlugin
 
     public void ToggleHelp() => helpWindow.Toggle();
 
-    public void PlayStream(string url)
+    public void PlayStream(string url, ClubContext? context = null)
     {
-        streamPlayer.BypassSpatial();
-        // Optimistic: set mode now so UI reflects intent. The async chain build
-        // happens in the background — if it fails we revert.
-        CurrentMode = PlaybackMode.Manual;
-        userInhibitsAutoPlay = false;
-        _ = StartStreamAsync(url, PlaybackMode.Manual, $"Stream: {url}");
+        // No explicit context → best-effort lookup against locally-known
+        // sources (saved/published houses, cached directory, cached wards).
+        // A miss is fine: the prompt just doesn't show club info.
+        var ctx = context ?? LookupClubContextForUrl(url);
+        WithPermission(url,
+            onAllow: () =>
+            {
+                streamPlayer.BypassSpatial();
+                CurrentMode = PlaybackMode.Manual;
+                userInhibitsAutoPlay = false;
+                _ = StartStreamAsync(url, PlaybackMode.Manual, $"Stream: {url}");
+            },
+            onBlock: () => ChatGui.Print($"[ClubFFXIV] URL blocked: {url}"),
+            context: ctx);
+    }
+
+    /// <summary>
+    /// Run an action conditional on URL permission. Allow → onAllow now.
+    /// Block → onBlock. Ask → queue prompt; onAllow runs only if user allows.
+    /// Optional <paramref name="context"/> is shown on the prompt so the user
+    /// can recognize "this URL belongs to club X".
+    /// </summary>
+    public void WithPermission(
+        string url, Action onAllow, Action? onBlock = null, ClubContext? context = null)
+    {
+        switch (Permissions.Check(url))
+        {
+            case UrlDecision.Allow:
+                onAllow();
+                break;
+            case UrlDecision.Block:
+                onBlock?.Invoke();
+                break;
+            case UrlDecision.Ask:
+                permissionWindow.Prompt(url, onAllow, onBlock ?? (() => { }), context);
+                permissionWindow.EnsureOpenIfPending();
+                break;
+        }
+    }
+
+    private static TimeSpan BackoffForFailure(int consecutiveFailures) =>
+        consecutiveFailures switch
+        {
+            <= 1 => TimeSpan.FromSeconds(5),
+            2 => TimeSpan.FromSeconds(15),
+            3 => TimeSpan.FromSeconds(60),
+            _ => TimeSpan.FromMinutes(5),
+        };
+
+    /// <summary>
+    /// True if <paramref name="url"/> recently failed and we're still inside
+    /// its backoff window. Auto-play paths (Indoor / Outdoor) consult this
+    /// before kicking off a new start so we don't retry at the framework-tick
+    /// rate. Manual play deliberately bypasses the cooldown — the user's
+    /// explicit click is signal that they want to try again now.
+    /// </summary>
+    private bool IsStreamInCooldown(string url)
+    {
+        lock (failureLock)
+        {
+            return streamFailures.TryGetValue(url, out var s)
+                && DateTime.UtcNow < s.NextAttemptUtc;
+        }
+    }
+
+    /// <summary>
+    /// Records a failed start. Returns the (post-increment) consecutive failure
+    /// count for the URL, which the caller uses to decide log severity and
+    /// whether to fire the user-facing notification.
+    /// </summary>
+    private int RecordStreamFailure(string url, string error)
+    {
+        lock (failureLock)
+        {
+            if (!streamFailures.TryGetValue(url, out var s))
+            {
+                s = new StreamFailureState();
+                streamFailures[url] = s;
+            }
+            s.ConsecutiveFailures++;
+            s.LastAttemptUtc = DateTime.UtcNow;
+            s.NextAttemptUtc = DateTime.UtcNow + BackoffForFailure(s.ConsecutiveFailures);
+            s.LastErrorMessage = error;
+            return s.ConsecutiveFailures;
+        }
+    }
+
+    private void ClearStreamFailure(string url)
+    {
+        lock (failureLock)
+        {
+            streamFailures.Remove(url);
+        }
+    }
+
+    /// <summary>
+    /// One-shot Dalamud toast at the failure threshold. Subsequent retries on
+    /// the same URL stay silent (Debug-level logs only) until the URL recovers
+    /// or the user starts a new session.
+    /// </summary>
+    private void NotifyStreamFailed(string url, string displayName, string error)
+    {
+        var label = string.IsNullOrWhiteSpace(displayName) ? url : displayName;
+        // Truncate URL/error to keep the toast readable; the full strings are
+        // already in /xllog if a power-user wants to dig.
+        var trimmedError = error.Length > 200 ? error[..197] + "..." : error;
+        NotificationManager.AddNotification(new Notification
+        {
+            Title = "ClubFFXIV: stream unavailable",
+            Content = $"{label}\n{trimmedError}\n\nWill retry every few minutes.",
+            Type = NotificationType.Warning,
+            InitialDuration = TimeSpan.FromSeconds(8),
+        });
+    }
+
+    /// <summary>
+    /// Pre-flight check for auto-play (Indoor / Outdoor): if the URL needs
+    /// yt-dlp + ffmpeg but those aren't installed, emit a one-time chat
+    /// warning and suppress this tick. Without this guard, the auto-play
+    /// loop would re-attempt every 500ms and spam the log with bin-missing
+    /// errors. Manual play already surfaces the error directly to the user
+    /// via StartStreamAsync's catch.
+    /// </summary>
+    private bool BinariesMissingForUrl(string url)
+    {
+        if (UrlClassifier.ClassifyUrl(url) != AudioSourceKind.YtDlp) return false;
+        if (Binaries.Ready) return false;
+        if (!warnedAboutMissingBinaries)
+        {
+            warnedAboutMissingBinaries = true;
+            ChatGui.PrintError(
+                "[ClubFFXIV] A nearby club's stream needs yt-dlp + ffmpeg, which haven't " +
+                "been installed yet. Open /club config → External binaries to download (~83 MB).");
+        }
+        return true;
+    }
+
+    private bool TryAutoPlayPermission(string url, ClubContext? context = null)
+    {
+        var decision = Permissions.Check(url);
+        if (decision == UrlDecision.Allow) return true;
+        if (decision == UrlDecision.Ask)
+        {
+            permissionWindow.Prompt(url,
+                onAllow: () => { },
+                onBlock: () => { },
+                context: context);
+            permissionWindow.EnsureOpenIfPending();
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Best-effort URL → ClubContext lookup against everything we already know
+    /// locally. Used when a manual play / paste hits the "Ask" decision and we
+    /// have no caller-provided context. Returns null if no match.
+    /// </summary>
+    public ClubContext? LookupClubContextForUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        foreach (var entry in Config.PublishedHouses.Values)
+            if (entry.StreamUrl == url) return new ClubContext(entry.DisplayName, entry.Description);
+        foreach (var entry in Config.SavedHouses.Values)
+            if (entry.StreamUrl == url) return new ClubContext(entry.DisplayName, entry.Description);
+
+        if (directoryCache != null)
+        {
+            foreach (var c in directoryCache.Clubs)
+                if (c.StreamUrl == url) return new ClubContext(c.DisplayName, c.Description);
+        }
+
+        foreach (var ward in wardCache.Values)
+        {
+            foreach (var c in ward.Listing.Clubs)
+                if (c.StreamUrl == url) return new ClubContext(c.DisplayName, c.Description);
+        }
+
+        return null;
     }
 
     public void StopStream()
@@ -168,6 +386,9 @@ public sealed class Plugin : IDalamudPlugin
         {
             await streamPlayer.PlayAsync(url, cts.Token);
             if (cts.IsCancellationRequested) return;
+            // URL recovered — drop any prior failure state so we don't
+            // keep penalizing it after a transient blip resolves.
+            ClearStreamFailure(url);
             CurrentMode = targetMode;
             Log.Info($"Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
             // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
@@ -181,10 +402,31 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            Log.Error(ex, $"Stream start failed after {sw.ElapsedMilliseconds}ms");
-            // Same rule for errors — only surface in chat if the user just hit Play.
+            var failureCount = RecordStreamFailure(url, ex.Message);
+
+            // Throttled logging: first few failures get a full Error stack so
+            // /xllog has the diagnostic. After the threshold we drop to Debug
+            // (filtered out by default) so a permanently-broken URL doesn't
+            // flood the log every backoff cycle.
+            if (failureCount <= NotifyAfterFailures)
+                Log.Error(ex, $"Stream start failed after {sw.ElapsedMilliseconds}ms (failure #{failureCount}, {targetMode})");
+            else
+                Log.Debug($"Stream still failing: {url} (failure #{failureCount}, last={ex.Message})");
+
             if (targetMode == PlaybackMode.Manual)
+            {
+                // Manual play already surfaces in chat — no extra notification
+                // needed. The chat error is what the user is looking at right
+                // after clicking Play.
                 ChatGui.PrintError($"{ex.Message}");
+            }
+            else if (failureCount == NotifyAfterFailures)
+            {
+                // Auto-play has no other UX cue. Toast exactly once when we
+                // cross the threshold; subsequent retries stay silent.
+                NotifyStreamFailed(url, displayName, ex.Message);
+            }
+
             if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
         }
         finally
@@ -200,7 +442,7 @@ public sealed class Plugin : IDalamudPlugin
     public string? DjId => djIdentity?.DjId;
     public bool RegistryEnabled => registryClient != null;
 
-    public void SaveCurrentHouse(string displayName, string url)
+    public void SaveCurrentHouse(string displayName, string url, string description)
     {
         if (!CurrentPlotKey.HasValue) return;
         var key = CurrentPlotKey.Value.Canonical;
@@ -208,6 +450,7 @@ public sealed class Plugin : IDalamudPlugin
             existing = new ClubEntry();
         existing.DisplayName = displayName;
         existing.StreamUrl = url;
+        existing.Description = description;
         Config.SavedHouses[key] = existing;
         Config.Save();
 
@@ -216,7 +459,7 @@ public sealed class Plugin : IDalamudPlugin
             && CurrentPlotKey.Value.Canonical == key
             && streamPlayer.CurrentUrl != url)
         {
-            EnterIndoor(url, displayName);
+            EnterIndoor(url, new ClubContext(displayName, description));
         }
     }
 
@@ -233,6 +476,7 @@ public sealed class Plugin : IDalamudPlugin
             ? null
             : new ClubRegistryClient(Config.RegistryUrl);
         wardCache.Clear();
+        InvalidateDirectoryCache();
     }
 
     public DjIdentity EnsureDjIdentity()
@@ -244,7 +488,8 @@ public sealed class Plugin : IDalamudPlugin
         return djIdentity;
     }
 
-    public async Task PublishCurrentHouseAsync(string displayName, string streamUrl)
+    public async Task PublishCurrentHouseAsync(
+        string displayName, string streamUrl, string description, bool listed)
     {
         if (registryClient == null)
             throw new InvalidOperationException("Registry URL not set");
@@ -272,7 +517,8 @@ public sealed class Plugin : IDalamudPlugin
         else if (Config.SavedHouses.TryGetValue(key, out var saved) && HasDoor(saved))
             door = ToDoorPayload(saved);
 
-        await registryClient.PublishAsync(key, streamUrl, displayName, dj, door);
+        await registryClient.PublishAsync(
+            key, streamUrl, displayName, dj, door, listed, description);
 
         if (existing == null)
         {
@@ -281,9 +527,12 @@ public sealed class Plugin : IDalamudPlugin
         }
         existing.DisplayName = displayName;
         existing.StreamUrl = streamUrl;
+        existing.Description = description;
+        existing.Listed = listed;
         Config.Save();
 
         InvalidateWardCacheForDoor(door);
+        InvalidateDirectoryCache();
 
         // If the DJ is themselves listening in Indoor mode for this plot, the
         // active stream is stale — switch to the new URL.
@@ -292,8 +541,60 @@ public sealed class Plugin : IDalamudPlugin
             && CurrentPlotKey.Value.Canonical == key
             && streamPlayer.CurrentUrl != streamUrl)
         {
-            EnterIndoor(streamUrl, displayName);
+            EnterIndoor(streamUrl, new ClubContext(displayName, description));
         }
+    }
+
+    /// <summary>
+    /// Update the displayName for an already-published house. Re-publishes the
+    /// existing record (same streamUrl, same door coords) signed by the DJ key
+    /// — the registry's djId match is what gates this; nobody else can rename
+    /// your club. Unlike <see cref="PublishCurrentHouseAsync"/>, this does NOT
+    /// require the DJ to be standing inside the plot.
+    /// </summary>
+    public async Task RenamePublishedHouseAsync(
+        string canonicalKey, string newDisplayName, string newDescription, bool newListed)
+    {
+        if (registryClient == null)
+            throw new InvalidOperationException("Registry URL not set");
+        if (djIdentity == null)
+            throw new InvalidOperationException("No DJ identity — cannot rename");
+        if (!Config.PublishedHouses.TryGetValue(canonicalKey, out var entry))
+            throw new InvalidOperationException("House not in published list");
+        if (string.IsNullOrWhiteSpace(newDisplayName))
+            throw new InvalidOperationException("Name cannot be empty");
+        if (newDisplayName.Length > 80)
+            throw new InvalidOperationException("Name too long (max 80 chars)");
+        if (newDescription.Length > 500)
+            throw new InvalidOperationException("Description too long (max 500 chars)");
+
+        var door = HasDoor(entry) ? ToDoorPayload(entry) : null;
+        await registryClient.PublishAsync(
+            canonicalKey, entry.StreamUrl, newDisplayName, djIdentity, door, newListed, newDescription);
+
+        entry.DisplayName = newDisplayName;
+        entry.Description = newDescription;
+        entry.Listed = newListed;
+        Config.Save();
+
+        // Drop the cached ward listing so the DJ's own client refetches the
+        // updated displayName for outdoor proximity (rather than serving the
+        // stale name from the previous fetch for up to 60s).
+        InvalidateWardCacheForDoor(door);
+        InvalidateDirectoryCache();
+    }
+
+    /// <summary>
+    /// Update the displayName + description for a locally-saved house.
+    /// Local-only; no network.
+    /// </summary>
+    public void RenameSavedHouse(string canonicalKey, string newDisplayName, string newDescription)
+    {
+        if (string.IsNullOrWhiteSpace(newDisplayName)) return;
+        if (!Config.SavedHouses.TryGetValue(canonicalKey, out var entry)) return;
+        entry.DisplayName = newDisplayName.Length > 80 ? newDisplayName[..80] : newDisplayName;
+        entry.Description = newDescription.Length > 500 ? newDescription[..500] : newDescription;
+        Config.Save();
     }
 
     public async Task UnpublishHouseAsync(string canonicalKey)
@@ -311,6 +612,7 @@ public sealed class Plugin : IDalamudPlugin
             Config.PublishedHouses.Remove(canonicalKey);
             Config.Save();
         }
+        InvalidateDirectoryCache();
     }
 
     public bool CalibrateDoor(string canonicalKey)
@@ -343,13 +645,17 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var doorPayload = ToDoorPayload(pub);
                 var dn = pub.DisplayName;
+                var desc = pub.Description;
                 var url = pub.StreamUrl;
+                var listed = pub.Listed;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await registryClient.PublishAsync(canonicalKey, url, dn, djIdentity, doorPayload);
+                        await registryClient.PublishAsync(
+                            canonicalKey, url, dn, djIdentity, doorPayload, listed, desc);
                         InvalidateWardCacheForDoor(doorPayload);
+                        InvalidateDirectoryCache();
                     }
                     catch (Exception ex)
                     {
@@ -433,7 +739,10 @@ public sealed class Plugin : IDalamudPlugin
     private void MaybeCheckBinaryUpdates()
     {
         if (!Config.AutoUpdateBinaries) return;
-        if (!Binaries.Ready) return; // initial install handled lazily on first Twitch URL
+        // No binaries installed = nothing to update. The user has to opt into
+        // installation explicitly (setup wizard or /club config); we don't
+        // download in the background.
+        if (!Binaries.Ready) return;
         if (DateTime.UtcNow - lastBinaryUpdateCheck < BinaryUpdateInterval) return;
 
         lastBinaryUpdateCheck = DateTime.UtcNow;
@@ -582,7 +891,7 @@ public sealed class Plugin : IDalamudPlugin
         if (Config.SavedHouses.TryGetValue(key.Canonical, out var saved)
             && !string.IsNullOrWhiteSpace(saved.StreamUrl))
         {
-            EnterIndoor(saved.StreamUrl, saved.DisplayName);
+            EnterIndoor(saved.StreamUrl, new ClubContext(saved.DisplayName, saved.Description));
             return;
         }
 
@@ -599,7 +908,7 @@ public sealed class Plugin : IDalamudPlugin
             var record = await registryClient!.GetAsync(key.Canonical);
             if (record == null) return;
             if (!Nullable.Equals(CurrentPlotKey, key)) return;
-            EnterIndoor(record.StreamUrl, record.DisplayName);
+            EnterIndoor(record.StreamUrl, new ClubContext(record.DisplayName, record.Description));
         }
         catch (Exception ex)
         {
@@ -612,7 +921,7 @@ public sealed class Plugin : IDalamudPlugin
     /// URL outdoors (player walked from the door into the house), drop the spatial
     /// chain in place — no restart, no rebuffering.
     /// </summary>
-    private void EnterIndoor(string url, string displayName)
+    private void EnterIndoor(string url, ClubContext context)
     {
         // Seamless: same URL was already streaming outdoors.
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl == url)
@@ -626,12 +935,16 @@ public sealed class Plugin : IDalamudPlugin
         // Already trying to start this exact URL — let it finish.
         if (pendingStartUrl == url) return;
 
+        if (!TryAutoPlayPermission(url, context)) return;
+        if (BinariesMissingForUrl(url)) return;
+        if (IsStreamInCooldown(url)) return;
+
         streamPlayer.BypassSpatial();
         // Optimistic: claim Indoor mode now so ApplyAudioPolicy mutes the game's
         // BGM immediately, even though the stream chain takes a moment to load.
         // StartStreamAsync reverts to Off on load failure.
         CurrentMode = PlaybackMode.Indoor;
-        _ = StartStreamAsync(url, PlaybackMode.Indoor, displayName);
+        _ = StartStreamAsync(url, PlaybackMode.Indoor, context.ClubName);
     }
 
     private void HandleOutdoorMode(WardLocation ward)
@@ -676,8 +989,11 @@ public sealed class Plugin : IDalamudPlugin
 
         if (needNewStream && pendingStartUrl != r.Candidate.StreamUrl)
         {
-            // Diagnostic: log why we decided to (re)start so we can see if it's
-            // a real EOF/URL change or a spurious trigger.
+            var ctx = new ClubContext(r.Candidate.DisplayName, r.Candidate.Description);
+            if (!TryAutoPlayPermission(r.Candidate.StreamUrl, ctx)) return;
+            if (BinariesMissingForUrl(r.Candidate.StreamUrl)) return;
+            if (IsStreamInCooldown(r.Candidate.StreamUrl)) return;
+
             Log.Info(
                 $"Outdoor restart trigger: " +
                 $"currentUrlMatches={streamPlayer.CurrentUrl == r.Candidate.StreamUrl} " +
@@ -712,7 +1028,8 @@ public sealed class Plugin : IDalamudPlugin
                     entry.PlotKey,
                     entry.DisplayName,
                     entry.StreamUrl,
-                    new Vector3(entry.Door.X, entry.Door.Y, entry.Door.Z));
+                    new Vector3(entry.Door.X, entry.Door.Y, entry.Door.Z),
+                    entry.Description);
             }
         }
     }
@@ -726,7 +1043,7 @@ public sealed class Plugin : IDalamudPlugin
         if (entry.DoorWard != ward.Ward) return false;
         if (string.IsNullOrWhiteSpace(entry.StreamUrl)) return false;
         candidate = new WardProximity.Candidate(
-            key, entry.DisplayName, entry.StreamUrl, entry.DoorPosition.ToVec());
+            key, entry.DisplayName, entry.StreamUrl, entry.DoorPosition.ToVec(), entry.Description);
         return true;
     }
 
@@ -788,6 +1105,56 @@ public sealed class Plugin : IDalamudPlugin
         if (door == null) return;
         var worldId = PlayerState.CurrentWorld.RowId;
         wardCache.Remove($"{worldId}:{door.TerritoryType}:{door.Ward}");
+    }
+
+    // ---- Public directory cache ----
+
+    /// <summary>Last fetched directory listing, if any. UI thread reads this.</summary>
+    public DirectoryListing? DirectoryCache => directoryCache;
+
+    public DateTime DirectoryCacheFetchedAt => directoryCacheFetchedAt;
+
+    public bool DirectoryFetchInFlight => directoryFetchInFlight;
+
+    /// <summary>
+    /// Fetches the public directory listing. Serves cached data when fresh,
+    /// otherwise hits the registry. <paramref name="force"/> bypasses the TTL
+    /// (used by the manual Refresh button). Concurrent calls collapse to the
+    /// in-flight fetch.
+    /// </summary>
+    public async Task<DirectoryListing> FetchDirectoryAsync(bool force = false)
+    {
+        if (registryClient == null)
+            throw new InvalidOperationException("Registry URL not set");
+
+        if (!force
+            && directoryCache != null
+            && DateTime.UtcNow - directoryCacheFetchedAt < DirectoryCacheTtl)
+        {
+            return directoryCache;
+        }
+
+        if (directoryFetchInFlight && directoryCache != null)
+            return directoryCache;
+
+        directoryFetchInFlight = true;
+        try
+        {
+            var listing = await registryClient.GetDirectoryAsync();
+            directoryCache = listing;
+            directoryCacheFetchedAt = DateTime.UtcNow;
+            return listing;
+        }
+        finally
+        {
+            directoryFetchInFlight = false;
+        }
+    }
+
+    private void InvalidateDirectoryCache()
+    {
+        directoryCache = null;
+        directoryCacheFetchedAt = DateTime.MinValue;
     }
 
     private static bool HasDoor(ClubEntry e) =>

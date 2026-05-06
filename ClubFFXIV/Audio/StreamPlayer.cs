@@ -112,10 +112,21 @@ public sealed class StreamPlayer : IDisposable
 
         if (kind == AudioSourceKind.YtDlp)
         {
-            // Need ffmpeg + yt-dlp on disk first. EnsureInstalledAsync is a
-            // no-op once binaries are cached; first call may take ~30s as it
-            // downloads ~80MB.
-            await binaryManager.EnsureInstalledAsync(ct: ct).ConfigureAwait(false);
+            // Binaries are no longer auto-downloaded — installing them is an
+            // explicit step in the setup wizard / /club config. Surface a
+            // clear, actionable error if the user hits a yt-dlp URL without
+            // installing first.
+            if (!binaryManager.Ready)
+            {
+                var missing = !binaryManager.YtDlpInstalled && !binaryManager.FfmpegInstalled
+                    ? "yt-dlp + ffmpeg"
+                    : !binaryManager.YtDlpInstalled
+                        ? "yt-dlp"
+                        : "ffmpeg";
+                throw new InvalidOperationException(
+                    $"This stream type needs {missing}, which hasn't been downloaded. " +
+                    $"Open /club config → External binaries to install (~83 MB total).");
+            }
             var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, ct).ConfigureAwait(false);
             newSource = sub;
             newDisposable = sub;
