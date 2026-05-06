@@ -114,15 +114,22 @@ Hit it from a separate terminal (`curl http://127.0.0.1:8787/health` etc.) to ve
 **Deploy**
 
 ```bash
-# 1. Provision KV namespaces (one-time)
-npx wrangler kv:namespace create CLUBS_KV
-npx wrangler kv:namespace create CLUBS_KV --preview
+# 1. Copy the example config (wrangler.toml itself is gitignored so each
+#    operator's IDs stay out of the repo).
+cp wrangler.toml.example wrangler.toml
 
-# 2. Paste the two returned IDs into wrangler.toml under [[kv_namespaces]]
+# 2. Provision the KV namespace (one-time)
+npx wrangler kv namespace create CLUBS_KV
 
-# 3. Deploy
+# 3. Paste the returned id into wrangler.toml under [[kv_namespaces]]
+
+# 4. Deploy
 npx wrangler deploy
 ```
+
+`wrangler dev` runs in local mode by default and uses an in-process KV
+simulation, so a preview namespace isn't needed unless you explicitly run
+`wrangler dev --remote`.
 
 Wrangler prints the public URL (e.g. `https://clubffxiv-registry.<account>.workers.dev`). Set this as the Registry URL in `/club config` to point the plugin at your instance instead of the default.
 

@@ -3,3 +3,6 @@ node_modules/
 .dev.vars
 *.log
 dist/
+
+# Local deployment config — copy wrangler.toml.example and fill in your IDs.
+wrangler.toml

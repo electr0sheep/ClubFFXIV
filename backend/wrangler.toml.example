@@ -1,0 +1,15 @@
+# Copy this file to wrangler.toml and fill in your own KV namespace id
+# before deploying. wrangler.toml is gitignored so each operator's IDs
+# stay out of the repo.
+
+name = "registry"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+# Replace `id` after running `wrangler kv namespace create CLUBS_KV`.
+# (No `preview_id` — `wrangler dev` runs in local mode and uses an in-process
+# KV simulation. Only `wrangler dev --remote` would need a preview namespace.)
+[[kv_namespaces]]
+binding = "CLUBS_KV"
+id = "REPLACE_ME_WITH_YOUR_KV_NAMESPACE_ID"
+preview_urls = false
