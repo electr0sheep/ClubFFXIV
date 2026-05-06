@@ -50,8 +50,73 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawSpatialTuningSection();
         ImGui.Spacing();
         ImGui.Separator();
+        DrawPermissionsSection();
+        ImGui.Spacing();
+        ImGui.Separator();
         DrawBinariesSection();
         DrawStatusFooter();
+    }
+
+    private string newAllowDomainInput = "";
+    private string newBlockDomainInput = "";
+
+    private void DrawPermissionsSection()
+    {
+        if (!ImGui.CollapsingHeader("Permissions (allow / block lists)"))
+            return;
+
+        ImGui.TextWrapped(
+            "Streams from unfamiliar domains are blocked until you approve them. " +
+            "Manage the allow / block lists here.");
+        ImGui.Spacing();
+
+        DrawList("Allowed domains", plugin.Config.AllowedDomains, ref newAllowDomainInput, "allow-d");
+        DrawList("Blocked domains", plugin.Config.BlockedDomains, ref newBlockDomainInput, "block-d");
+        DrawListReadOnly("Allowed URLs", plugin.Config.AllowedUrls, "allow-u");
+        DrawListReadOnly("Blocked URLs", plugin.Config.BlockedUrls, "block-u");
+    }
+
+    private void DrawList(string label, System.Collections.Generic.HashSet<string> set,
+                          ref string input, string idPrefix)
+    {
+        ImGui.TextUnformatted($"{label} ({set.Count})");
+        string? toRemove = null;
+        foreach (var item in set)
+        {
+            ImGui.PushID(idPrefix + "-" + item);
+            ImGui.BulletText(item);
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove")) toRemove = item;
+            ImGui.PopID();
+        }
+        if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
+
+        ImGui.SetNextItemWidth(280);
+        ImGui.InputText($"##{idPrefix}-add", ref input, 256);
+        ImGui.SameLine();
+        if (ImGui.Button($"Add##{idPrefix}-addbtn") && !string.IsNullOrWhiteSpace(input))
+        {
+            set.Add(input.Trim());
+            plugin.Config.Save();
+            input = "";
+        }
+        ImGui.Spacing();
+    }
+
+    private void DrawListReadOnly(string label, System.Collections.Generic.HashSet<string> set, string idPrefix)
+    {
+        ImGui.TextUnformatted($"{label} ({set.Count})");
+        string? toRemove = null;
+        foreach (var item in set)
+        {
+            ImGui.PushID(idPrefix + "-" + item);
+            ImGui.TextDisabled("  " + (item.Length > 60 ? item[..57] + "..." : item));
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Remove")) toRemove = item;
+            ImGui.PopID();
+        }
+        if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
+        ImGui.Spacing();
     }
 
     private string ytDlpVersion = "(checking...)";
