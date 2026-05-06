@@ -25,7 +25,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings)
     {
         this.permissions = permissions;
-        Size = new Vector2(520, 340);
+        Size = new Vector2(520, 440);
         SizeCondition = ImGuiCond.FirstUseEver;
         IsOpen = false;
     }
@@ -102,6 +102,20 @@ public sealed class UrlPermissionWindow : Window, IDisposable
                 ImGui.EndChild();
                 ImGui.PopStyleColor();
             }
+
+            // Disclaimer: the registry doesn't authenticate identity. Anyone can
+            // generate a keypair and publish, so a "Club" name and description
+            // are NOT proof of who's actually behind the URL. Frame the trust
+            // model so users don't read the club info as verification.
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                "⚠ Anyone can publish to the registry. The club name and description");
+            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                "  above were written by whoever published this URL — they are not");
+            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                "  verified. Don't 'Allow domain' for an unfamiliar host based on");
+            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                "  these alone.");
         }
 
         ImGui.Spacing();
