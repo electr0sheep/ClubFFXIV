@@ -7,6 +7,7 @@ using ClubFFXIV.Game;
 using ClubFFXIV.Network;
 using ClubFFXIV.UI;
 using Dalamud.Game.Command;
+using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
@@ -30,6 +31,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IGameConfig GameConfig { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
+    [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
@@ -76,6 +78,25 @@ public sealed class Plugin : IDalamudPlugin
     // ffmpeg but the user hasn't installed them. We tell them once per session,
     // then silently no-op subsequent ticks instead of spamming /xllog.
     private bool warnedAboutMissingBinaries;
+
+    // Per-URL failure tracking with backoff. The auto-play loop runs every
+    // 500ms, so a persistent failure (404, DNS NXDOMAIN, refused, slow 5xx,
+    // yt-dlp/ffmpeg crash, etc.) without backoff would log an Error and
+    // attempt a fresh stream start at 2 Hz indefinitely. Backoff schedule
+    // is short for the first couple of retries (transient blips recover
+    // fast) and stretches to 5 min after we've concluded the URL is broken.
+    // Mutated from off-thread Task continuations + read from the framework
+    // thread, so all access is gated by failureLock.
+    private sealed class StreamFailureState
+    {
+        public int ConsecutiveFailures;
+        public DateTime LastAttemptUtc;
+        public DateTime NextAttemptUtc;
+        public string LastErrorMessage = "";
+    }
+    private readonly Dictionary<string, StreamFailureState> streamFailures = new();
+    private readonly object failureLock = new();
+    private const int NotifyAfterFailures = 3;
 
     // Ward listing cache: keyed by (worldId, territoryType, ward), TTL 60s.
     private readonly Dictionary<string, CachedWardListing> wardCache = new();
@@ -190,6 +211,81 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private static TimeSpan BackoffForFailure(int consecutiveFailures) =>
+        consecutiveFailures switch
+        {
+            <= 1 => TimeSpan.FromSeconds(5),
+            2 => TimeSpan.FromSeconds(15),
+            3 => TimeSpan.FromSeconds(60),
+            _ => TimeSpan.FromMinutes(5),
+        };
+
+    /// <summary>
+    /// True if <paramref name="url"/> recently failed and we're still inside
+    /// its backoff window. Auto-play paths (Indoor / Outdoor) consult this
+    /// before kicking off a new start so we don't retry at the framework-tick
+    /// rate. Manual play deliberately bypasses the cooldown — the user's
+    /// explicit click is signal that they want to try again now.
+    /// </summary>
+    private bool IsStreamInCooldown(string url)
+    {
+        lock (failureLock)
+        {
+            return streamFailures.TryGetValue(url, out var s)
+                && DateTime.UtcNow < s.NextAttemptUtc;
+        }
+    }
+
+    /// <summary>
+    /// Records a failed start. Returns the (post-increment) consecutive failure
+    /// count for the URL, which the caller uses to decide log severity and
+    /// whether to fire the user-facing notification.
+    /// </summary>
+    private int RecordStreamFailure(string url, string error)
+    {
+        lock (failureLock)
+        {
+            if (!streamFailures.TryGetValue(url, out var s))
+            {
+                s = new StreamFailureState();
+                streamFailures[url] = s;
+            }
+            s.ConsecutiveFailures++;
+            s.LastAttemptUtc = DateTime.UtcNow;
+            s.NextAttemptUtc = DateTime.UtcNow + BackoffForFailure(s.ConsecutiveFailures);
+            s.LastErrorMessage = error;
+            return s.ConsecutiveFailures;
+        }
+    }
+
+    private void ClearStreamFailure(string url)
+    {
+        lock (failureLock)
+        {
+            streamFailures.Remove(url);
+        }
+    }
+
+    /// <summary>
+    /// One-shot Dalamud toast at the failure threshold. Subsequent retries on
+    /// the same URL stay silent (Debug-level logs only) until the URL recovers
+    /// or the user starts a new session.
+    /// </summary>
+    private void NotifyStreamFailed(string url, string displayName, string error)
+    {
+        var label = string.IsNullOrWhiteSpace(displayName) ? url : displayName;
+        // Truncate URL/error to keep the toast readable; the full strings are
+        // already in /xllog if a power-user wants to dig.
+        var trimmedError = error.Length > 200 ? error[..197] + "..." : error;
+        NotificationManager.AddNotification(new Notification
+        {
+            Title = "ClubFFXIV: stream unavailable",
+            Content = $"{label}\n{trimmedError}\n\nWill retry every few minutes.",
+            Type = NotificationType.Warning,
+            InitialDuration = TimeSpan.FromSeconds(8),
+        });
+    }
+
     /// <summary>
     /// Pre-flight check for auto-play (Indoor / Outdoor): if the URL needs
     /// yt-dlp + ffmpeg but those aren't installed, emit a one-time chat
@@ -290,6 +386,9 @@ public sealed class Plugin : IDalamudPlugin
         {
             await streamPlayer.PlayAsync(url, cts.Token);
             if (cts.IsCancellationRequested) return;
+            // URL recovered — drop any prior failure state so we don't
+            // keep penalizing it after a transient blip resolves.
+            ClearStreamFailure(url);
             CurrentMode = targetMode;
             Log.Info($"Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
             // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
@@ -303,10 +402,31 @@ public sealed class Plugin : IDalamudPlugin
         }
         catch (Exception ex)
         {
-            Log.Error(ex, $"Stream start failed after {sw.ElapsedMilliseconds}ms");
-            // Same rule for errors — only surface in chat if the user just hit Play.
+            var failureCount = RecordStreamFailure(url, ex.Message);
+
+            // Throttled logging: first few failures get a full Error stack so
+            // /xllog has the diagnostic. After the threshold we drop to Debug
+            // (filtered out by default) so a permanently-broken URL doesn't
+            // flood the log every backoff cycle.
+            if (failureCount <= NotifyAfterFailures)
+                Log.Error(ex, $"Stream start failed after {sw.ElapsedMilliseconds}ms (failure #{failureCount}, {targetMode})");
+            else
+                Log.Debug($"Stream still failing: {url} (failure #{failureCount}, last={ex.Message})");
+
             if (targetMode == PlaybackMode.Manual)
+            {
+                // Manual play already surfaces in chat — no extra notification
+                // needed. The chat error is what the user is looking at right
+                // after clicking Play.
                 ChatGui.PrintError($"{ex.Message}");
+            }
+            else if (failureCount == NotifyAfterFailures)
+            {
+                // Auto-play has no other UX cue. Toast exactly once when we
+                // cross the threshold; subsequent retries stay silent.
+                NotifyStreamFailed(url, displayName, ex.Message);
+            }
+
             if (CurrentMode == targetMode) CurrentMode = PlaybackMode.Off;
         }
         finally
@@ -817,6 +937,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!TryAutoPlayPermission(url, context)) return;
         if (BinariesMissingForUrl(url)) return;
+        if (IsStreamInCooldown(url)) return;
 
         streamPlayer.BypassSpatial();
         // Optimistic: claim Indoor mode now so ApplyAudioPolicy mutes the game's
@@ -871,6 +992,7 @@ public sealed class Plugin : IDalamudPlugin
             var ctx = new ClubContext(r.Candidate.DisplayName, r.Candidate.Description);
             if (!TryAutoPlayPermission(r.Candidate.StreamUrl, ctx)) return;
             if (BinariesMissingForUrl(r.Candidate.StreamUrl)) return;
+            if (IsStreamInCooldown(r.Candidate.StreamUrl)) return;
 
             Log.Info(
                 $"Outdoor restart trigger: " +
