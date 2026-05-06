@@ -638,7 +638,7 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         ImGui.TextUnformatted("Registry");
         ImGui.Spacing();
-        ImGui.TextWrapped("Backend URL (e.g. https://clubffxiv-registry.workers.dev):");
+        ImGui.TextWrapped("Backend URL (e.g. https://registry.clubffxiv.workers.dev):");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText("##registryUrl", ref registryUrlInput, 512);
 

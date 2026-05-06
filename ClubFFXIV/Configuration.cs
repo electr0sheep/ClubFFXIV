@@ -19,7 +19,7 @@ public class Configuration : IPluginConfiguration
     // Defaults to the public ClubFFXIV registry so the plugin works out of the box.
     // Users can point at their own backend by changing this in /club config; clearing
     // it disables registry features (local SavedHouses still work).
-    public string RegistryUrl { get; set; } = "https://clubffxiv-registry.clubffxiv-registry.workers.dev";
+    public string RegistryUrl { get; set; } = "https://registry.clubffxiv.workers.dev";
     public string DjPrivateKeyBase64 { get; set; } = "";
 
     /// <summary>

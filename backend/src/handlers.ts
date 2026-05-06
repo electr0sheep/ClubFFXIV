@@ -1,4 +1,5 @@
 import { djIdFromPubkey, verifySignature } from "./auth";
+import { validateStreamUrl, validateStreamUrlSyntax } from "./streamUrlValidation";
 
 /// Thrown by safePut / safeDelete when the underlying KV write fails with a
 /// quota / rate-limit signature. Caught at the router so we can return a
@@ -118,8 +119,9 @@ export async function handlePost(
   if (!parsed.streamUrl || parsed.displayName === undefined) {
     return jsonResponse({ error: "missing streamUrl or displayName" }, 400);
   }
-  if (!validateUrl(parsed.streamUrl)) {
-    return jsonResponse({ error: "streamUrl must be http(s)" }, 400);
+  const syntaxErr = validateStreamUrlSyntax(parsed.streamUrl);
+  if (syntaxErr) {
+    return jsonResponse({ error: syntaxErr }, 400);
   }
 
   const dnResult = sanitizeDisplayName(parsed.displayName);
@@ -139,12 +141,25 @@ export async function handlePost(
 
   const existingRaw = await env.CLUBS_KV.get(`club:${plotKey}`);
   let previousDoor: Door | undefined;
+  let previousStreamUrl: string | undefined;
   if (existingRaw) {
     const existing = JSON.parse(existingRaw) as ClubRecord;
     if (existing.djId !== djId) {
       return jsonResponse({ error: "plot owned by another DJ" }, 403);
     }
     previousDoor = existing.door;
+    previousStreamUrl = existing.streamUrl;
+  }
+
+  // Probe the stream URL last — after all cheap validations and the ownership
+  // check pass — so an unauthorized or malformed publish never triggers a
+  // network call. Re-publishes that don't change the URL skip the probe; the
+  // cache covers explicit URL changes within its TTL window.
+  if (parsed.streamUrl !== previousStreamUrl) {
+    const urlCheck = await validateStreamUrl(env, parsed.streamUrl);
+    if (!urlCheck.ok) {
+      return jsonResponse({ error: `streamUrl rejected: ${urlCheck.reason}` }, 400);
+    }
   }
 
   // Default to listed for back-compat: pre-listed-flag clients sent no `listed`
@@ -431,15 +446,6 @@ function doorError(d: Door): string | null {
     if (typeof v !== "number" || !Number.isFinite(v)) return `door.${k} must be a finite number`;
   }
   return null;
-}
-
-function validateUrl(s: string): boolean {
-  try {
-    const u = new URL(s);
-    return u.protocol === "http:" || u.protocol === "https:";
-  } catch {
-    return false;
-  }
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
