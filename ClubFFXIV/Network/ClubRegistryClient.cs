@@ -74,8 +74,8 @@ public sealed class ClubRegistryClient : IDisposable
         using var resp = await http.SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
         {
-            var body = await resp.Content.ReadAsStringAsync(ct);
-            throw ParseRegistryError(resp.StatusCode, body, "Publish");
+            var respBody = await resp.Content.ReadAsStringAsync(ct);
+            throw ParseRegistryError(resp.StatusCode, respBody, "Publish");
         }
     }
 
@@ -108,8 +108,8 @@ public sealed class ClubRegistryClient : IDisposable
         if (resp.StatusCode == HttpStatusCode.NotFound) return;
         if (!resp.IsSuccessStatusCode)
         {
-            var body = await resp.Content.ReadAsStringAsync(ct);
-            throw ParseRegistryError(resp.StatusCode, body, "Delete");
+            var respBody = await resp.Content.ReadAsStringAsync(ct);
+            throw ParseRegistryError(resp.StatusCode, respBody, "Delete");
         }
     }
 

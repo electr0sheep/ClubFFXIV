@@ -71,7 +71,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         ImGui.Spacing();
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
-        ImGui.BeginChild("##permUrl", new Vector2(-1, 50), ImGuiChildFlags.Borders);
+        ImGui.BeginChild("##permUrl", new Vector2(-1, 50), true);
         ImGui.Spacing();
         ImGui.TextWrapped(c.Url);
         ImGui.EndChild();
@@ -96,7 +96,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
             if (!string.IsNullOrWhiteSpace(ctx.Description))
             {
                 ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
-                ImGui.BeginChild("##permDesc", new Vector2(-1, 70), ImGuiChildFlags.Borders);
+                ImGui.BeginChild("##permDesc", new Vector2(-1, 70), true);
                 ImGui.Spacing();
                 ImGui.TextWrapped(ctx.Description);
                 ImGui.EndChild();
