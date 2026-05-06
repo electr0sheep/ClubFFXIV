@@ -25,7 +25,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings)
     {
         this.permissions = permissions;
-        Size = new Vector2(520, 240);
+        Size = new Vector2(520, 340);
         SizeCondition = ImGuiCond.FirstUseEver;
         IsOpen = false;
     }
@@ -38,13 +38,15 @@ public sealed class UrlPermissionWindow : Window, IDisposable
     /// Repeated calls for the same URL while one is queued or showing are no-ops —
     /// auto-play paths fire every tick, and we don't want the queue (and its
     /// captured lambdas) to grow unbounded.
+    /// Optional <paramref name="context"/> is rendered above the action buttons
+    /// so the user can see "this URL is for: {ClubName}" with the description.
     /// </summary>
-    public void Prompt(string url, Action onAllow, Action onBlock)
+    public void Prompt(string url, Action onAllow, Action onBlock, ClubContext? context = null)
     {
         lock (gate)
         {
             if (!tracked.Add(url)) return;
-            pending.Enqueue(new PendingPrompt(url, onAllow, onBlock));
+            pending.Enqueue(new PendingPrompt(url, onAllow, onBlock, context));
         }
     }
 
@@ -78,6 +80,30 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         var host = UrlPermissions.ExtractHost(c.Url) ?? "(unknown)";
         ImGui.Spacing();
         ImGui.TextDisabled($"Host: {host}");
+
+        // Club context (when known): name + description. Best-effort — if the
+        // caller didn't pass context and the URL doesn't match anything in our
+        // local caches, this section is simply omitted.
+        if (c.Context is { } ctx && !ctx.IsEmpty)
+        {
+            ImGui.Spacing();
+            if (!string.IsNullOrWhiteSpace(ctx.ClubName))
+            {
+                ImGui.TextUnformatted("Club:");
+                ImGui.SameLine();
+                ImGui.TextWrapped(ctx.ClubName);
+            }
+            if (!string.IsNullOrWhiteSpace(ctx.Description))
+            {
+                ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
+                ImGui.BeginChild("##permDesc", new Vector2(-1, 70), ImGuiChildFlags.Borders);
+                ImGui.Spacing();
+                ImGui.TextWrapped(ctx.Description);
+                ImGui.EndChild();
+                ImGui.PopStyleColor();
+            }
+        }
+
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
@@ -132,5 +158,6 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         if (HasPending && !IsOpen) IsOpen = true;
     }
 
-    private sealed record PendingPrompt(string Url, Action OnAllow, Action OnBlock);
+    private sealed record PendingPrompt(
+        string Url, Action OnAllow, Action OnBlock, ClubContext? Context);
 }

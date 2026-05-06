@@ -1,14 +1,20 @@
 using System;
 using System.Collections.Generic;
 using System.Numerics;
+using System.Threading.Tasks;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
 
 namespace ClubFFXIV.UI;
 
 /// <summary>
-/// First-run wizard offering to whitelist common stream-source domains so
-/// the user isn't bombarded with permission prompts for well-known hosts.
+/// First-run wizard. Three sections:
+///   1. Pre-approve common stream-source domains so the user isn't bombarded
+///      with permission prompts later.
+///   2. Explain why ClubFFXIV needs yt-dlp + ffmpeg and let the user explicitly
+///      download them. We do NOT silently auto-download — the user clicks here
+///      or in /club config.
+///   3. Explain why auto-update is a good idea and let the user opt out.
 /// </summary>
 public sealed class SetupWizardWindow : Window, IDisposable
 {
@@ -29,14 +35,24 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private readonly Dictionary<string, bool> selections = new();
 
+    // Wizard-local copies of toggleable settings — applied to Config only on
+    // Done so closing the window mid-wizard doesn't half-persist state.
+    private bool wizardAutoUpdate;
+
+    // Binary install state. The download itself runs on a Task; the wizard
+    // polls these fields each frame to render status.
+    private string binaryStatus = "";
+    private bool binaryInstallInFlight;
+
     public SetupWizardWindow(Plugin plugin)
         : base("ClubFFXIV — Setup##ClubFFXIVSetup",
                ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoSavedSettings)
     {
         this.plugin = plugin;
-        Size = new Vector2(540, 460);
+        Size = new Vector2(580, 720);
         SizeCondition = ImGuiCond.FirstUseEver;
         foreach (var (d, _) in CommonDomains) selections[d] = true;
+        wizardAutoUpdate = plugin.Config.AutoUpdateBinaries;
     }
 
     public void Dispose() { }
@@ -44,16 +60,37 @@ public sealed class SetupWizardWindow : Window, IDisposable
     public override void Draw()
     {
         ImGui.TextWrapped(
-            "Welcome to ClubFFXIV! For your safety, the plugin asks before playing " +
-            "streams from any new domain. You can pre-approve some well-known hosts " +
-            "below so you aren't prompted for them later.");
-        ImGui.Spacing();
-        ImGui.TextDisabled("You can change these any time in /club config → Permissions.");
+            "Welcome to ClubFFXIV! A short walk-through to get you set up — " +
+            "you can change everything below later in /club config.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        ImGui.TextUnformatted("Pre-approve these domains:");
+        DrawDomainsSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawBinariesSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawAutoUpdateSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        DrawFooter();
+    }
+
+    private void DrawDomainsSection()
+    {
+        ImGui.TextUnformatted("1. Pre-approve common stream domains");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "For your safety, the plugin asks before playing streams from any " +
+            "new domain. Check the well-known hosts you trust to skip the prompt:");
         ImGui.Spacing();
 
         foreach (var (domain, desc) in CommonDomains)
@@ -66,25 +103,140 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextDisabled($"— {desc}");
         }
+    }
+
+    private void DrawBinariesSection()
+    {
+        ImGui.TextUnformatted("2. Install external tools (yt-dlp + ffmpeg)");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Twitch, YouTube, SoundCloud, Mixcloud, Twitcasting, and Niconico " +
+            "ship their streams in segmented / encrypted formats the plugin " +
+            "can't decode on its own. ClubFFXIV uses two open-source tools " +
+            "to handle them:");
+        ImGui.Spacing();
+        ImGui.BulletText("yt-dlp (~3 MB) — extracts the actual stream URL from those sites");
+        ImGui.BulletText("ffmpeg (~80 MB) — decodes that stream into raw audio");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Direct MP3 / Icecast / Shoutcast / OGG streams (e.g. SomaFM, your " +
+            "own Icecast server) do NOT need these — those are decoded in-process. " +
+            "Skip this step if you only plan to use direct streams.");
+        ImGui.Spacing();
+
+        DrawBinaryStatusLine("yt-dlp", plugin.Binaries.YtDlpInstalled);
+        DrawBinaryStatusLine("ffmpeg", plugin.Binaries.FfmpegInstalled);
+        ImGui.Spacing();
+
+        var ready = plugin.Binaries.Ready;
+        var disabled = ready || binaryInstallInFlight;
+        if (disabled) ImGui.BeginDisabled();
+        var btnLabel = ready
+            ? "Already installed"
+            : binaryInstallInFlight
+                ? "Downloading..."
+                : "Download yt-dlp + ffmpeg (~83 MB)";
+        if (ImGui.Button(btnLabel, new Vector2(280, 0)))
+        {
+            StartBinaryDownload();
+        }
+        if (disabled) ImGui.EndDisabled();
+
+        if (!string.IsNullOrEmpty(binaryStatus))
+        {
+            ImGui.SameLine();
+            ImGui.TextDisabled(binaryStatus);
+        }
 
         ImGui.Spacing();
-        ImGui.Separator();
+        ImGui.TextDisabled(
+            "You can also install (or check / update) later in /club config → " +
+            "External binaries.");
+    }
+
+    private static void DrawBinaryStatusLine(string name, bool installed)
+    {
+        var color = installed
+            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
+            : new Vector4(0.85f, 0.5f, 0.4f, 1f);
+        var prefix = installed ? "✓" : "✗";
+        var suffix = installed ? "installed" : "not installed";
+        ImGui.TextColored(color, $"  {prefix} {name} {suffix}");
+    }
+
+    private void StartBinaryDownload()
+    {
+        binaryInstallInFlight = true;
+        binaryStatus = "Starting download...";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await plugin.Binaries.EnsureInstalledAsync(progress: msg => binaryStatus = msg);
+                binaryStatus = "Download complete.";
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Setup wizard: binary download failed");
+                binaryStatus = $"Download failed: {ex.Message}";
+            }
+            finally
+            {
+                binaryInstallInFlight = false;
+            }
+        });
+    }
+
+    private void DrawAutoUpdateSection()
+    {
+        ImGui.TextUnformatted("3. Keep yt-dlp up to date");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Twitch and YouTube frequently change how their streams are " +
+            "protected to deter scrapers. The yt-dlp project usually ships " +
+            "fixes within a day — but without auto-updates, your Twitch / " +
+            "YouTube playback will eventually break until you remember to " +
+            "manually update.");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "We strongly recommend leaving this on. yt-dlp self-updates via " +
+            "'yt-dlp -U' (no system-level changes, no admin prompt), and the " +
+            "check runs in the background at most once every 2 days.");
         ImGui.Spacing();
 
+        ImGui.Checkbox(
+            "Check for yt-dlp updates every 2 days  (recommended)",
+            ref wizardAutoUpdate);
+
+        if (!wizardAutoUpdate)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                "  ⚠ With auto-update off, expect Twitch / YouTube playback to " +
+                "break periodically.");
+            ImGui.TextDisabled(
+                "  Manually update from /club config → External binaries → Check / update.");
+        }
+    }
+
+    private void DrawFooter()
+    {
+        if (binaryInstallInFlight) ImGui.BeginDisabled();
         if (ImGui.Button("Done", new Vector2(120, 0)))
         {
             foreach (var (domain, on) in selections)
                 if (on) plugin.Config.AllowedDomains.Add(domain);
+            plugin.Config.AutoUpdateBinaries = wizardAutoUpdate;
             plugin.Config.SetupWizardComplete = true;
             plugin.Config.Save();
             IsOpen = false;
         }
-        ImGui.SameLine();
-        if (ImGui.Button("Skip — approve nothing", new Vector2(180, 0)))
+        if (binaryInstallInFlight) ImGui.EndDisabled();
+
+        if (binaryInstallInFlight)
         {
-            plugin.Config.SetupWizardComplete = true;
-            plugin.Config.Save();
-            IsOpen = false;
+            ImGui.SameLine();
+            ImGui.TextDisabled("(wait for download to finish)");
         }
     }
 }
