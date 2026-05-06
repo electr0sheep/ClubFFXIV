@@ -24,21 +24,42 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>
     /// Phase 4 spatial knobs. Distances are in FFXIV world units (≈ meters).
-    /// Cutoffs are in Hz.
+    /// Cutoffs are in Hz. Defaults are exposed as constants so the UI's
+    /// "Reset to defaults" button stays in sync with the property initializers.
     /// </summary>
+    public const float DefaultSpatialStreamDistance = 60f;
+    public const float DefaultSpatialFalloffDistance = 40f;
+    public const float DefaultSpatialFullVolumeDistance = 3f;
+    public const float DefaultSpatialMinCutoffHz = 400f;
+    // Outdoor cap stays well below indoor's bypass (20 kHz), so even right at the
+    // door you hear a muffled "wall in the way" sound. Crossing the threshold into
+    // the house is what removes the lowpass entirely.
+    public const float DefaultSpatialMaxCutoffHz = 2500f;
+
     /// <summary>
     /// Beyond this distance the stream isn't connected at all. Inside it (but
     /// outside SpatialFalloffDistance) the stream is alive at volume 0 — pre-buffering
     /// so the audio is ready to fade in the moment the player crosses the audible threshold.
     /// </summary>
-    public float SpatialStreamDistance { get; set; } = 60f;
-    public float SpatialFalloffDistance { get; set; } = 40f;     // beyond this: silent
-    public float SpatialFullVolumeDistance { get; set; } = 3f;   // closer than this: full volume
-    public float SpatialMinCutoffHz { get; set; } = 400f;        // most muffled (far)
-    // Outdoor cap stays well below indoor's bypass (20 kHz), so even right at the
-    // door you hear a muffled "wall in the way" sound. Crossing the threshold into
-    // the house is what removes the lowpass entirely.
-    public float SpatialMaxCutoffHz { get; set; } = 2500f;       // muffled even at door
+    public float SpatialStreamDistance { get; set; } = DefaultSpatialStreamDistance;
+    public float SpatialFalloffDistance { get; set; } = DefaultSpatialFalloffDistance;
+    public float SpatialFullVolumeDistance { get; set; } = DefaultSpatialFullVolumeDistance;
+    public float SpatialMinCutoffHz { get; set; } = DefaultSpatialMinCutoffHz;
+    public float SpatialMaxCutoffHz { get; set; } = DefaultSpatialMaxCutoffHz;
+
+    /// <summary>
+    /// Restore all spatial-audio knobs to their factory defaults. Caller is
+    /// responsible for invoking <see cref="Save"/> afterwards (matches the
+    /// existing pattern where UI handlers explicitly persist).
+    /// </summary>
+    public void ResetSpatialTuningToDefaults()
+    {
+        SpatialStreamDistance = DefaultSpatialStreamDistance;
+        SpatialFalloffDistance = DefaultSpatialFalloffDistance;
+        SpatialFullVolumeDistance = DefaultSpatialFullVolumeDistance;
+        SpatialMinCutoffHz = DefaultSpatialMinCutoffHz;
+        SpatialMaxCutoffHz = DefaultSpatialMaxCutoffHz;
+    }
 
     /// <summary>Mute our stream when the FFXIV window loses focus.</summary>
     public bool MuteStreamWhenUnfocused { get; set; } = true;
@@ -70,6 +91,19 @@ public class Configuration : IPluginConfiguration
     /// <summary>Last time we checked for binary updates (UTC).</summary>
     public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
 
+    /// <summary>
+    /// URL permission lists. Exact-URL matches win over domain matches; allow
+    /// matches win over block matches. Anything not on either list prompts the
+    /// user when first encountered.
+    /// </summary>
+    public HashSet<string> AllowedDomains { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> BlockedDomains { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> AllowedUrls { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> BlockedUrls { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True once the user has been shown the first-run setup wizard.</summary>
+    public bool SetupWizardComplete { get; set; } = false;
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 
@@ -85,6 +119,13 @@ public class ClubEntry
     public string StreamUrl { get; set; } = "";
 
     /// <summary>
+    /// DJ-authored description. Shown in the public directory and in URL
+    /// permission prompts. Capped at 500 chars on the server; new entries
+    /// default to empty.
+    /// </summary>
+    public string Description { get; set; } = "";
+
+    /// <summary>
     /// World-space coordinates of the front door for proximity audio.
     /// Set by the calibration flow ("stand at the door, hit Calibrate").
     /// Null = no spatial audio for this house — falls back to inside-only auto-play.
@@ -97,6 +138,15 @@ public class ClubEntry
     /// </summary>
     public uint? DoorTerritoryType { get; set; }
     public int? DoorWard { get; set; }
+
+    /// <summary>
+    /// Whether the club appears in the public directory browse list. Defaults
+    /// to true so houses saved/published before this field existed remain
+    /// listed after upgrade. Hiding from the directory does NOT hide the
+    /// record from per-plot lookup or ward-proximity discovery — that's a
+    /// directory-list-only flag; full privacy = don't publish.
+    /// </summary>
+    public bool Listed { get; set; } = true;
 }
 
 [Serializable]

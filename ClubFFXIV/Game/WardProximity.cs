@@ -13,7 +13,8 @@ public static class WardProximity
         string CanonicalKey,
         string DisplayName,
         string StreamUrl,
-        Vector3 DoorPosition);
+        Vector3 DoorPosition,
+        string Description);
 
     public readonly record struct Result(
         Candidate Candidate,

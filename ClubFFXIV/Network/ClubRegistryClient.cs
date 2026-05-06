@@ -48,14 +48,18 @@ public sealed class ClubRegistryClient : IDisposable
         string displayName,
         DjIdentity dj,
         DoorPayload? door = null,
+        bool listed = true,
+        string description = "",
         CancellationToken ct = default)
     {
         var body = JsonSerializer.Serialize(new PublishRequest
         {
             StreamUrl = streamUrl,
             DisplayName = displayName,
+            Description = description,
             Nonce = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Door = door,
+            Listed = listed,
         });
         var signature = dj.Sign($"POST:{plotKey}:{body}");
 
@@ -70,9 +74,18 @@ public sealed class ClubRegistryClient : IDisposable
         using var resp = await http.SendAsync(req, ct);
         if (!resp.IsSuccessStatusCode)
         {
-            var err = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Publish failed ({(int)resp.StatusCode}): {err}");
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            throw ParseRegistryError(resp.StatusCode, body, "Publish");
         }
+    }
+
+    public async Task<DirectoryListing> GetDirectoryAsync(CancellationToken ct = default)
+    {
+        var url = $"{baseUrl}/clubs";
+        using var resp = await http.GetAsync(url, ct);
+        resp.EnsureSuccessStatusCode();
+        var json = await resp.Content.ReadAsStringAsync(ct);
+        return JsonSerializer.Deserialize<DirectoryListing>(json) ?? new DirectoryListing();
     }
 
     public async Task DeleteAsync(string plotKey, DjIdentity dj, CancellationToken ct = default)
@@ -95,18 +108,112 @@ public sealed class ClubRegistryClient : IDisposable
         if (resp.StatusCode == HttpStatusCode.NotFound) return;
         if (!resp.IsSuccessStatusCode)
         {
-            var err = await resp.Content.ReadAsStringAsync(ct);
-            throw new InvalidOperationException($"Delete failed ({(int)resp.StatusCode}): {err}");
+            var body = await resp.Content.ReadAsStringAsync(ct);
+            throw ParseRegistryError(resp.StatusCode, body, "Delete");
         }
     }
 
     public void Dispose() => http.Dispose();
+
+    /// <summary>
+    /// Translate an HTTP error body (typically `{ error, code?, retryAfterSeconds? }`)
+    /// into a clean exception whose <c>Message</c> is suitable for the existing
+    /// UI catch-sites that format as <c>"$action failed: {ex.Message}"</c> — i.e.
+    /// the message itself does NOT prefix the action. For known transient codes
+    /// (QUOTA_EXHAUSTED / RATE_LIMITED) the server's message is surfaced verbatim
+    /// plus a humanized retry hint. <paramref name="action"/> is only used in the
+    /// fallback case where the body wasn't structured JSON.
+    /// </summary>
+    private static Exception ParseRegistryError(HttpStatusCode status, string body, string action)
+    {
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<RegistryErrorBody>(body);
+                if (parsed != null && !string.IsNullOrWhiteSpace(parsed.Error))
+                {
+                    var retry = parsed.RetryAfterSeconds is { } secs && secs > 0
+                        ? TimeSpan.FromSeconds(secs)
+                        : (TimeSpan?)null;
+                    if (parsed.Code == "QUOTA_EXHAUSTED" || parsed.Code == "RATE_LIMITED")
+                    {
+                        var hint = retry.HasValue ? $" (try again in {FormatRetry(retry.Value)})" : "";
+                        return new RegistryException(parsed.Error + hint, parsed.Code, retry);
+                    }
+                    return new RegistryException(parsed.Error, parsed.Code, retry);
+                }
+            }
+            catch (JsonException)
+            {
+                // Body wasn't JSON — fall through to the raw-body format below.
+            }
+        }
+        // Body wasn't structured. Stay terse so the catch-site's
+        // "$action failed: {ex.Message}" wrapper reads cleanly.
+        _ = action;
+        var snippet = string.IsNullOrEmpty(body) ? "" : $": {body}";
+        return new InvalidOperationException($"server returned {(int)status}{snippet}");
+    }
+
+    private static string FormatRetry(TimeSpan ts)
+    {
+        if (ts.TotalSeconds < 90) return $"about {Math.Max(1, (int)ts.TotalSeconds)} seconds";
+        if (ts.TotalMinutes < 90) return $"about {Math.Max(1, (int)ts.TotalMinutes)} minutes";
+        return $"about {Math.Max(1, (int)ts.TotalHours)} hours";
+    }
+}
+
+/// <summary>
+/// Thrown by <see cref="ClubRegistryClient"/> when the backend returns a
+/// structured error body. Exposes the server's <see cref="Code"/> (e.g.
+/// "QUOTA_EXHAUSTED") and the <see cref="RetryAfter"/> hint so callers can
+/// distinguish "transient, retry later" from "you broke the request."
+/// </summary>
+public sealed class RegistryException : Exception
+{
+    public string? Code { get; }
+    public TimeSpan? RetryAfter { get; }
+
+    public RegistryException(string message, string? code = null, TimeSpan? retryAfter = null)
+        : base(message)
+    {
+        Code = code;
+        RetryAfter = retryAfter;
+    }
+
+    public bool IsTransient => Code is "QUOTA_EXHAUSTED" or "RATE_LIMITED";
+}
+
+internal sealed class RegistryErrorBody
+{
+    [JsonPropertyName("error")] public string Error { get; set; } = "";
+    [JsonPropertyName("code")] public string? Code { get; set; }
+    [JsonPropertyName("retryAfterSeconds")] public int? RetryAfterSeconds { get; set; }
 }
 
 public sealed class ClubRecord
 {
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
+    [JsonPropertyName("description")] public string Description { get; set; } = "";
+    [JsonPropertyName("djId")] public string DjId { get; set; } = "";
+    [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
+    [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
+    [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
+}
+
+public sealed class DirectoryListing
+{
+    [JsonPropertyName("clubs")] public List<DirectoryListingEntry> Clubs { get; set; } = new();
+}
+
+public sealed class DirectoryListingEntry
+{
+    [JsonPropertyName("plotKey")] public string PlotKey { get; set; } = "";
+    [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
+    [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
+    [JsonPropertyName("description")] public string Description { get; set; } = "";
     [JsonPropertyName("djId")] public string DjId { get; set; } = "";
     [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
@@ -125,6 +232,7 @@ public sealed class WardListingEntry
     [JsonPropertyName("plotKey")] public string PlotKey { get; set; } = "";
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
+    [JsonPropertyName("description")] public string Description { get; set; } = "";
     [JsonPropertyName("djId")] public string DjId { get; set; } = "";
     [JsonPropertyName("door")] public DoorPayload Door { get; set; } = new();
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
@@ -143,9 +251,11 @@ internal sealed class PublishRequest
 {
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
+    [JsonPropertyName("description")] public string Description { get; set; } = "";
     [JsonPropertyName("nonce")] public long Nonce { get; set; }
     [JsonPropertyName("door"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DoorPayload? Door { get; set; }
+    [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
 }
 
 internal sealed class DeleteRequest

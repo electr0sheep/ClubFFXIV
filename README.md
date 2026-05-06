@@ -95,8 +95,9 @@ The backend is a single Cloudflare Worker in `backend/` (TypeScript) backed by W
 **Endpoints**
 - `GET  /health` — liveness check
 - `GET  /time` — server time (for clock-skew debugging)
+- `GET  /clubs` — public directory: all clubs whose DJ opted into the browse list
 - `GET  /clubs/:plotKey` — fetch a single club record by plot key
-- `POST /clubs/:plotKey` — publish/update (Ed25519-signed; first writer claims the plot)
+- `POST /clubs/:plotKey` — publish/update (Ed25519-signed; first writer claims the plot). Body field `listed: false` hides the club from `GET /clubs` only — per-plot lookup and ward proximity still work.
 - `DELETE /clubs/:plotKey` — unpublish (signed by the original DJ key)
 - `GET  /wards/:worldId/:territoryType/:ward` — list all calibrated clubs in a ward (used for outdoor proximity discovery)
 
@@ -131,10 +132,11 @@ Wrangler prints the public URL (e.g. `https://clubffxiv-registry.<account>.worke
 - Plenty for a small community; comfortable headroom for a few thousand active listeners
 
 **Schema**
-- `club:{plotKey}` → JSON `ClubRecord` (streamUrl, displayName, djId, pubkey, updatedAt, optional door coords)
+- `club:{plotKey}` → JSON `ClubRecord` (streamUrl, displayName, djId, pubkey, updatedAt, optional door coords, `listed` flag)
 - `ward:{worldId}:{territoryType}:{ward}` → JSON map of `{plotKey: WardIndexEntry}` for one-shot ward listing
+- `directory` → JSON map of `{plotKey: DirectoryEntry}` for the public browse list (`GET /clubs`)
 
-The ward index is maintained alongside the per-club record on every publish/delete. KV doesn't have transactions, so concurrent writes to the same ward could race; for a low-traffic registry this is acceptable.
+The ward and directory indexes are maintained alongside the per-club record on every publish/delete. KV doesn't have transactions, so concurrent writes could race; for a low-traffic registry this is acceptable.
 
 ## Caveats
 
