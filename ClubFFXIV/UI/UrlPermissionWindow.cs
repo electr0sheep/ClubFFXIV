@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Numerics;
 using ClubFFXIV.Network;
 using Dalamud.Interface.Windowing;
@@ -15,7 +15,9 @@ namespace ClubFFXIV.UI;
 public sealed class UrlPermissionWindow : Window, IDisposable
 {
     private readonly UrlPermissions permissions;
-    private readonly ConcurrentQueue<PendingPrompt> pending = new();
+    private readonly Queue<PendingPrompt> pending = new();
+    private readonly HashSet<string> tracked = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object gate = new();
     private PendingPrompt? current;
 
     public UrlPermissionWindow(UrlPermissions permissions)
@@ -33,17 +35,28 @@ public sealed class UrlPermissionWindow : Window, IDisposable
     /// <summary>
     /// Queue a permission prompt. onAllow fires if the user allows (URL or domain);
     /// onBlock fires if they block. Skip just dismisses without modifying lists.
-    /// Safe to call from any thread — the queue is processed on the UI thread.
+    /// Repeated calls for the same URL while one is queued or showing are no-ops —
+    /// auto-play paths fire every tick, and we don't want the queue (and its
+    /// captured lambdas) to grow unbounded.
     /// </summary>
     public void Prompt(string url, Action onAllow, Action onBlock)
     {
-        pending.Enqueue(new PendingPrompt(url, onAllow, onBlock));
+        lock (gate)
+        {
+            if (!tracked.Add(url)) return;
+            pending.Enqueue(new PendingPrompt(url, onAllow, onBlock));
+        }
     }
 
     public override void Draw()
     {
-        if (current == null && pending.TryDequeue(out var next))
-            current = next;
+        if (current == null)
+        {
+            lock (gate)
+            {
+                if (pending.Count > 0) current = pending.Dequeue();
+            }
+        }
 
         if (current == null)
         {
@@ -72,36 +85,46 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         if (ImGui.Button("Allow this URL", new Vector2(140, 0)))
         {
             permissions.AllowUrl(c.Url);
-            c.OnAllow();
-            current = null;
+            Resolve(c, c.OnAllow);
             return;
         }
         ImGui.SameLine();
         if (ImGui.Button($"Allow {host}", new Vector2(180, 0)))
         {
             permissions.AllowDomain(c.Url);
-            c.OnAllow();
-            current = null;
+            Resolve(c, c.OnAllow);
             return;
         }
         ImGui.SameLine();
         if (ImGui.Button("Block (don't ask again)", new Vector2(180, 0)))
         {
             permissions.BlockUrl(c.Url);
-            c.OnBlock();
-            current = null;
+            Resolve(c, c.OnBlock);
             return;
         }
 
         ImGui.Spacing();
         if (ImGui.Button("Skip (ask again later)"))
         {
-            c.OnBlock();
-            current = null;
+            Resolve(c, c.OnBlock);
         }
     }
 
-    public bool HasPending => current != null || !pending.IsEmpty;
+    private void Resolve(PendingPrompt c, Action callback)
+    {
+        lock (gate) tracked.Remove(c.Url);
+        current = null;
+        callback();
+    }
+
+    public bool HasPending
+    {
+        get
+        {
+            if (current != null) return true;
+            lock (gate) return pending.Count > 0;
+        }
+    }
 
     /// <summary>Re-open if there are pending prompts. Called by Plugin per tick.</summary>
     public void EnsureOpenIfPending()
