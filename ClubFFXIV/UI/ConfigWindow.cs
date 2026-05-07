@@ -384,61 +384,59 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (entries.Count == 0)
         {
-            DrawNowPlayingRow(
-                icon: "⏸",
-                iconColor: new Vector4(0.6f, 0.6f, 0.6f, 1f),
-                label: "Not playing",
-                showButtons: false,
-                entry: default);
+            // Static placeholder — no playback to act on.
+            ImGui.AlignTextToFramePadding();
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1f), "⏸");
+            ImGui.SameLine();
+            ImGui.TextUnformatted("Not playing");
         }
         else
         {
             foreach (var entry in entries)
-            {
-                var icon = entry.Muted ? "♪" : "▶";
-                var iconColor = entry.Muted
-                    ? new Vector4(0.6f, 0.6f, 0.6f, 1f)
-                    : new Vector4(0.4f, 0.85f, 0.4f, 1f);
-                DrawNowPlayingRow(icon, iconColor, entry.Label, showButtons: true, entry);
-            }
+                DrawNowPlayingRow(entry);
         }
 
         ImGui.EndChild();
         ImGui.PopStyleColor();
     }
 
-    private void DrawNowPlayingRow(
-        string icon,
-        Vector4 iconColor,
-        string label,
-        bool showButtons,
-        Plugin.NowPlayingEntry entry)
+    private void DrawNowPlayingRow(Plugin.NowPlayingEntry entry)
     {
-        ImGui.PushID(entry.Url.Length > 0 ? "np-" + entry.Url : "np-empty");
+        ImGui.PushID("np-" + entry.Url);
+
+        // The icon itself is the mute/unmute click target. Action-based
+        // affordance: when audible, show a mute symbol (clicking silences);
+        // when muted, show the green play button (clicking resumes).
+        var muted = entry.Muted;
+        var icon = muted ? "▶" : "⏸";
+        var iconColor = muted
+            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
+            : new Vector4(0.85f, 0.85f, 0.85f, 1f);
+
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(iconColor, icon);
-        ImGui.SameLine();
-        ImGui.TextUnformatted(label);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(muted ? "Click to play" : "Click to mute");
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            plugin.ToggleNowPlayingMute(entry);
 
-        if (showButtons)
-        {
-            // Right-align the buttons against the row's right edge. Same
-            // visual idiom as the "? Help" affordance in the help bar.
-            var muteLabel = entry.Muted ? "Unmute" : "Mute";
-            const string blacklistLabel = "Blacklist";
-            var pad = ImGui.GetStyle().FramePadding.X * 2 + 4;
-            var muteW = ImGui.CalcTextSize(muteLabel).X + pad;
-            var blacklistW = ImGui.CalcTextSize(blacklistLabel).X + pad;
-            var totalW = muteW + blacklistW + ImGui.GetStyle().ItemSpacing.X;
-            ImGui.SameLine();
-            ImGui.SetCursorPosX(
-                ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - totalW);
-            if (ImGui.SmallButton(muteLabel + "##" + entry.Url))
-                plugin.ToggleNowPlayingMute(entry);
-            ImGui.SameLine();
-            if (ImGui.SmallButton(blacklistLabel + "##" + entry.Url))
-                plugin.BlacklistNowPlaying(entry);
-        }
+        ImGui.SameLine();
+        ImGui.TextUnformatted(entry.Label);
+        // Full URL on hover, in case the truncation hid the relevant tail.
+        if (entry.Label != entry.Url && ImGui.IsItemHovered())
+            ImGui.SetTooltip(entry.Url);
+
+        // Right-aligned Blacklist button. Idiom matches the "? Help" pattern
+        // — measure label width and offset the cursor.
+        const string blacklistLabel = "Blacklist";
+        var pad = ImGui.GetStyle().FramePadding.X * 2 + 4;
+        var blacklistW = ImGui.CalcTextSize(blacklistLabel).X + pad;
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(
+            ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - blacklistW);
+        if (ImGui.SmallButton(blacklistLabel + "##" + entry.Url))
+            plugin.BlacklistNowPlaying(entry);
+
         ImGui.PopID();
     }
 

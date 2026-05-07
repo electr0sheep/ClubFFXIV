@@ -502,7 +502,8 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>
     /// Snapshot of every audio source currently producing (or about to produce)
     /// sound. Empty list = "Not playing". Single-stream and multi-stream voices
-    /// are interleaved; the UI renders one row per entry.
+    /// are interleaved; the UI renders one row per entry. Label is the stream
+    /// URL (truncated for display) — the row's click handler shows the full URL.
     /// </summary>
     public IReadOnlyList<NowPlayingEntry> GetNowPlayingEntries()
     {
@@ -510,11 +511,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
-            var ctx = LookupClubContextForUrl(url);
-            var label = !string.IsNullOrWhiteSpace(ctx?.ClubName)
-                ? ctx.Value.ClubName
-                : (url.Length > 60 ? url[..57] + "..." : url);
-            result.Add(new NowPlayingEntry(url, label, streamPlayer.UserMuted, PlotKey: null));
+            result.Add(new NowPlayingEntry(url, TruncateUrl(url), streamPlayer.UserMuted, PlotKey: null));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
@@ -522,16 +519,15 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var key in msp.ActiveKeys())
             {
                 var voiceUrl = msp.GetVoiceUrl(key) ?? "";
-                var name = LookupClubNameForPlotKey(key);
-                var label = !string.IsNullOrWhiteSpace(name)
-                    ? name!
-                    : (voiceUrl.Length > 60 ? voiceUrl[..57] + "..." : voiceUrl);
-                result.Add(new NowPlayingEntry(voiceUrl, label, msp.IsVoiceMuted(key), PlotKey: key));
+                result.Add(new NowPlayingEntry(voiceUrl, TruncateUrl(voiceUrl), msp.IsVoiceMuted(key), PlotKey: key));
             }
         }
 
         return result;
     }
+
+    private static string TruncateUrl(string url) =>
+        url.Length > 60 ? url[..57] + "..." : url;
 
     /// <summary>Toggle the user-mute flag on a Now Playing row.</summary>
     public void ToggleNowPlayingMute(NowPlayingEntry entry)
@@ -558,29 +554,6 @@ public sealed class Plugin : IDalamudPlugin
         {
             multiStreamPlayer?.RemoveVoice(entry.PlotKey);
         }
-    }
-
-    /// <summary>
-    /// Resolve a plot's display name from local saved/published mirrors first
-    /// (instant), falling back to the directory cache (instant if cached).
-    /// Returns null if the plot key is unknown to us.
-    /// </summary>
-    private string? LookupClubNameForPlotKey(string canonicalKey)
-    {
-        if (Config.PublishedHouses.TryGetValue(canonicalKey, out var pub)
-            && !string.IsNullOrWhiteSpace(pub.DisplayName))
-            return pub.DisplayName;
-        if (Config.SavedHouses.TryGetValue(canonicalKey, out var saved)
-            && !string.IsNullOrWhiteSpace(saved.DisplayName))
-            return saved.DisplayName;
-        if (DirectoryCache is { } cache)
-        {
-            foreach (var c in cache.Clubs)
-                if (c.PlotKey == canonicalKey
-                    && !string.IsNullOrWhiteSpace(c.DisplayName))
-                    return c.DisplayName;
-        }
-        return null;
     }
 
     private bool MultiStreamActive => Config.MultiStreamEnabled;
