@@ -1094,14 +1094,14 @@ public sealed class ConfigWindow : Window, IDisposable
         // Rows with both copies show both buttons; the user picks which to edit.
         if (row.HasSavedCopy && row.Saved != null)
         {
-            if (IconSmallButton(FontAwesomeIcon.Pencil, "edit-local", "Edit local override"))
+            if (IconSmallButton(FontAwesomeIcon.Pen, "edit-local", "Edit local override"))
                 plugin.ClubFormWindow.OpenLocalEdit(key, row.Saved);
             ImGui.SameLine();
         }
         if (row.IsPublished && row.Published != null)
         {
             if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-            if (IconSmallButton(FontAwesomeIcon.Pencil, "edit-club", "Edit club listing"))
+            if (IconSmallButton(FontAwesomeIcon.Pen, "edit-club", "Edit club listing"))
                 plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
             if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             ImGui.SameLine();
