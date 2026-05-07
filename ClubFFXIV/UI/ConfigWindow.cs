@@ -403,7 +403,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             // Static placeholder — no playback to act on.
             ImGui.AlignTextToFramePadding();
-            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.IconFont);
+            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
             ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1f), FontAwesomeIcon.Pause.ToIconString());
             ImGui.PopFont();
             ImGui.SameLine();
@@ -433,7 +433,7 @@ public sealed class ConfigWindow : Window, IDisposable
             : new Vector4(0.85f, 0.85f, 0.85f, 1f);
 
         ImGui.AlignTextToFramePadding();
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.IconFont);
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
         ImGui.TextColored(iconColor, icon.ToIconString());
         ImGui.PopFont();
         if (ImGui.IsItemHovered())
