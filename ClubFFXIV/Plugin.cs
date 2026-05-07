@@ -507,8 +507,10 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>
     /// Snapshot of every audio source currently producing (or about to produce)
     /// sound. Empty list = "Not playing". Single-stream and multi-stream voices
-    /// are interleaved; the UI renders one row per entry. Label is the stream
-    /// URL (truncated for display) — the row's click handler shows the full URL.
+    /// are interleaved; the UI renders one row per entry. Label prefers the
+    /// resolved title (yt-dlp's --print title for Yt/Twitch, icy-name +
+    /// inline StreamTitle for Icecast) and falls back to a truncated URL when
+    /// the title isn't (yet) known.
     /// </summary>
     public IReadOnlyList<NowPlayingEntry> GetNowPlayingEntries()
     {
@@ -516,7 +518,7 @@ public sealed class Plugin : IDalamudPlugin
 
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
-            result.Add(new NowPlayingEntry(url, TruncateUrl(url), streamPlayer.UserMuted, PlotKey: null));
+            result.Add(new NowPlayingEntry(url, GetDisplayLabel(url), streamPlayer.UserMuted, PlotKey: null));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
@@ -524,12 +526,16 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var key in msp.ActiveKeys())
             {
                 var voiceUrl = msp.GetVoiceUrl(key) ?? "";
-                result.Add(new NowPlayingEntry(voiceUrl, TruncateUrl(voiceUrl), msp.IsVoiceMuted(key), PlotKey: key));
+                result.Add(new NowPlayingEntry(voiceUrl, GetDisplayLabel(voiceUrl), msp.IsVoiceMuted(key), PlotKey: key));
             }
         }
 
         return result;
     }
+
+    /// <summary>Human-readable label for a stream URL. Title if cached, else truncated URL.</summary>
+    public string GetDisplayLabel(string url) =>
+        TitleCache.Get(url) ?? TruncateUrl(url);
 
     private static string TruncateUrl(string url) =>
         url.Length > 60 ? url[..57] + "..." : url;

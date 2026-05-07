@@ -1,6 +1,9 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
+using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
@@ -51,25 +54,56 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
     public static async Task<HttpAudioReader> CreateAsync(string url, CancellationToken ct = default)
     {
         var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        // Don't accept ICY metadata interleaving — keeps the decoder happy.
-        // (We don't display "Now Playing" yet; if we add that, switch to "1" and parse.)
         HttpResponseMessage? response = null;
         Stream? networkStream = null;
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, url);
-            req.Headers.TryAddWithoutValidation("Icy-MetaData", "0");
+            // Ask the server to interleave Icecast/Shoutcast metadata blocks
+            // ("StreamTitle='Artist - Song';...") into the audio stream every
+            // icy-metaint bytes. We strip them out below before the decoder
+            // sees them, and surface StreamTitle changes to TitleCache.
+            req.Headers.TryAddWithoutValidation("Icy-MetaData", "1");
             req.Headers.UserAgent.ParseAdd("ClubFFXIV/0.1");
 
             response = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
 
+            // Initial display title from response headers. icy-name is the
+            // station's name (e.g. "SomaFM Groove Salad"); inline StreamTitle
+            // updates will overwrite this as tracks change. Both headers are
+            // optional — many static MP3 endpoints don't send either, in
+            // which case the UI falls back to the URL.
+            if (response.Headers.TryGetValues("icy-name", out var names))
+            {
+                var name = string.Join(" ", names).Trim();
+                if (!string.IsNullOrEmpty(name))
+                    TitleCache.Set(url, name);
+            }
+
+            // icy-metaint: bytes of audio between metadata blocks. Servers
+            // that don't honor our Icy-MetaData: 1 request omit this header,
+            // in which case the response is pure audio and we skip the
+            // stripping wrapper.
+            int metaInt = 0;
+            if (response.Headers.TryGetValues("icy-metaint", out var miHeader)
+                && int.TryParse(miHeader.FirstOrDefault(), out var mi))
+            {
+                metaInt = mi;
+            }
+
             var mediaType = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() ?? "";
+            Stream rawStream = await response.Content.ReadAsStreamAsync(ct);
+
+            if (metaInt > 0)
+            {
+                rawStream = new IcyMetadataStream(rawStream, metaInt, url);
+            }
+
             // NLayer / NVorbis both call Stream.Position to track frame offsets.
             // HttpBaseStream throws NotSupportedException on Position. Wrap so it
             // works for forward-only consumption.
-            networkStream = new PositionTrackingStream(
-                await response.Content.ReadAsStreamAsync(ct));
+            networkStream = new PositionTrackingStream(rawStream);
 
             ISampleProvider decoder;
             IDisposable decoderDisposable;
@@ -122,6 +156,142 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
         try { networkStream.Dispose(); } catch { /* ignore */ }
         try { response.Dispose(); } catch { /* ignore */ }
         try { http.Dispose(); } catch { /* ignore */ }
+    }
+
+    /// <summary>
+    /// Strips inline ICY/Shoutcast metadata from the HTTP audio stream so the
+    /// downstream decoder only sees audio bytes. Wire format: every
+    /// <c>metaint</c> bytes of audio, the server inserts a 1-byte length
+    /// prefix (multiplied by 16) and that many bytes of ASCII metadata —
+    /// typically <c>StreamTitle='Artist - Song';StreamUrl='...';</c> padded
+    /// with NULs to a 16-byte multiple. We extract <c>StreamTitle</c> and
+    /// push it into <see cref="TitleCache"/> keyed by the user's URL so the
+    /// Now Playing header updates as tracks change.
+    /// </summary>
+    private sealed class IcyMetadataStream : Stream
+    {
+        private static readonly Regex StreamTitleRegex =
+            new(@"StreamTitle='([^']*)'", RegexOptions.Compiled);
+
+        private readonly Stream inner;
+        private readonly int metaint;
+        private readonly string url;
+        private int audioBytesRemaining;
+        private string? lastTitle;
+
+        public IcyMetadataStream(Stream inner, int metaint, string url)
+        {
+            this.inner = inner;
+            this.metaint = metaint;
+            this.url = url;
+            this.audioBytesRemaining = metaint;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (audioBytesRemaining == 0)
+            {
+                ConsumeMetadataBlock();
+                audioBytesRemaining = metaint;
+            }
+
+            int toRead = Math.Min(count, audioBytesRemaining);
+            int n = inner.Read(buffer, offset, toRead);
+            audioBytesRemaining -= n;
+            return n;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+        {
+            if (audioBytesRemaining == 0)
+            {
+                await ConsumeMetadataBlockAsync(ct).ConfigureAwait(false);
+                audioBytesRemaining = metaint;
+            }
+
+            int toRead = Math.Min(count, audioBytesRemaining);
+            int n = await inner.ReadAsync(buffer.AsMemory(offset, toRead), ct).ConfigureAwait(false);
+            audioBytesRemaining -= n;
+            return n;
+        }
+
+        private void ConsumeMetadataBlock()
+        {
+            int lengthByte = inner.ReadByte();
+            if (lengthByte <= 0) return;     // EOF or "no metadata this round"
+            int metaLength = lengthByte * 16;
+
+            var metaBuf = new byte[metaLength];
+            int total = 0;
+            while (total < metaLength)
+            {
+                int n = inner.Read(metaBuf, total, metaLength - total);
+                if (n == 0) return;          // EOF mid-metadata; bail
+                total += n;
+            }
+            ParseAndPublish(metaBuf, total);
+        }
+
+        private async Task ConsumeMetadataBlockAsync(CancellationToken ct)
+        {
+            var lengthBuf = new byte[1];
+            int lr = await inner.ReadAsync(lengthBuf.AsMemory(0, 1), ct).ConfigureAwait(false);
+            if (lr == 0 || lengthBuf[0] == 0) return;
+            int metaLength = lengthBuf[0] * 16;
+
+            var metaBuf = new byte[metaLength];
+            int total = 0;
+            while (total < metaLength)
+            {
+                int n = await inner.ReadAsync(metaBuf.AsMemory(total, metaLength - total), ct).ConfigureAwait(false);
+                if (n == 0) return;
+                total += n;
+            }
+            ParseAndPublish(metaBuf, total);
+        }
+
+        private void ParseAndPublish(byte[] buf, int length)
+        {
+            // Strip trailing NULs — servers pad metadata blocks to a 16-byte
+            // multiple, even when the actual text is shorter.
+            while (length > 0 && buf[length - 1] == 0) length--;
+            if (length == 0) return;
+
+            var meta = Encoding.UTF8.GetString(buf, 0, length);
+            var match = StreamTitleRegex.Match(meta);
+            if (!match.Success) return;
+
+            var title = match.Groups[1].Value.Trim();
+            if (string.IsNullOrEmpty(title)) return;
+            // Don't republish when nothing changed — most stations re-emit
+            // the same StreamTitle every metaint window during a track.
+            if (title == lastTitle) return;
+
+            lastTitle = title;
+            try { TitleCache.Set(url, title); }
+            catch { /* never let UI bookkeeping break audio decode */ }
+        }
+
+        public override void Flush() { /* no-op */ }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 
     /// <summary>
