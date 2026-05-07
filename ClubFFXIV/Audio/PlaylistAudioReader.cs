@@ -32,7 +32,6 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 {
     public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(44100, 2);
 
-    private readonly string userUrl;
     private readonly Process ytdlp;
     private readonly StreamReader ytdlpStdout;
     private readonly BinaryManager binaries;
@@ -45,9 +44,8 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     private bool killedByUs;
     private bool disposed;
 
-    private PlaylistAudioReader(string userUrl, Process ytdlp, BinaryManager binaries, SubprocessAudioReader firstInner)
+    private PlaylistAudioReader(Process ytdlp, BinaryManager binaries, SubprocessAudioReader firstInner)
     {
-        this.userUrl = userUrl;
         this.ytdlp = ytdlp;
         this.ytdlpStdout = ytdlp.StandardOutput;
         this.binaries = binaries;
@@ -69,11 +67,6 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        // Title first, URL second — same yt-dlp invocation, so no cold-start
-        // penalty. Each item emits two stdout lines (title, then URL); we
-        // read them in pairs here and in AdvanceAsync. Lets the Now Playing
-        // header show "Song Title" instead of a googlevideo CDN URL.
-        psi.ArgumentList.Add("--print"); psi.ArgumentList.Add("%(title)s");
         psi.ArgumentList.Add("-g");
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
         psi.ArgumentList.Add("--no-playlist");
@@ -88,17 +81,14 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         var ytdlp = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start yt-dlp");
 
-        // Read first item (title + URL) synchronously so the caller gets a
-        // playable reader immediately. Bound the wait so a stuck yt-dlp
-        // doesn't hang us.
+        // Read first URL synchronously so the caller gets a playable reader
+        // immediately. Bound the wait so a stuck yt-dlp doesn't hang us.
         using var initCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         initCts.CancelAfter(TimeSpan.FromSeconds(20));
-        string? titleLine;
-        string? urlLine;
+        string? firstLine;
         try
         {
-            titleLine = await ytdlp.StandardOutput.ReadLineAsync(initCts.Token);
-            urlLine = await ytdlp.StandardOutput.ReadLineAsync(initCts.Token);
+            firstLine = await ytdlp.StandardOutput.ReadLineAsync(initCts.Token);
         }
         catch
         {
@@ -107,9 +97,9 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             throw;
         }
 
-        if (string.IsNullOrEmpty(urlLine))
+        if (string.IsNullOrEmpty(firstLine))
         {
-            // yt-dlp closed stdout without emitting a URL — bubble the
+            // yt-dlp closed stdout without emitting anything — bubble the
             // stderr message so the user sees why (private playlist, etc.).
             string stderr;
             try
@@ -123,9 +113,6 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
                 string.IsNullOrEmpty(stderr) ? "yt-dlp returned no URL" : $"yt-dlp: {stderr}");
         }
 
-        if (!string.IsNullOrWhiteSpace(titleLine))
-            TitleCache.Set(url, titleLine.Trim());
-
         // Drain stderr in the background so the pipe doesn't fill and stall
         // yt-dlp once we start consuming stdout lazily.
         _ = Task.Run(async () =>
@@ -138,8 +125,8 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             catch { /* exited or disposed */ }
         });
 
-        var firstInner = SubprocessAudioReader.FromResolvedUrl(urlLine.Trim(), binaries, ct);
-        return new PlaylistAudioReader(url, ytdlp, binaries, firstInner);
+        var firstInner = SubprocessAudioReader.FromResolvedUrl(firstLine.Trim(), binaries, ct);
+        return new PlaylistAudioReader(ytdlp, binaries, firstInner);
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -194,22 +181,9 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     {
         try
         {
-            // Each item is two stdout lines (title, then URL) — match the
-            // CreateAsync init read. Title-empty is fine (some extractors
-            // omit it); URL-empty means the playlist is exhausted.
-            var titleLine = await ytdlpStdout.ReadLineAsync(cts.Token);
-            if (titleLine == null) return null;       // EOF on title line
-            var urlLine = await ytdlpStdout.ReadLineAsync(cts.Token);
-            if (string.IsNullOrEmpty(urlLine)) return null;
-
-            // For multi-item playlists the title changes per song, so the
-            // cache entry under the user's URL gets overwritten as items
-            // play through. With --no-playlist (current default) this only
-            // runs once at most before EOF.
-            if (!string.IsNullOrWhiteSpace(titleLine))
-                TitleCache.Set(userUrl, titleLine.Trim());
-
-            return SubprocessAudioReader.FromResolvedUrl(urlLine.Trim(), binaries, cts.Token);
+            var line = await ytdlpStdout.ReadLineAsync(cts.Token);
+            if (string.IsNullOrEmpty(line)) return null; // exhausted
+            return SubprocessAudioReader.FromResolvedUrl(line.Trim(), binaries, cts.Token);
         }
         catch (OperationCanceledException)
         {

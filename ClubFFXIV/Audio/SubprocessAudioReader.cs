@@ -234,12 +234,6 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        // Title first, URL second — same yt-dlp call, so no extra cold-start
-        // cost. Lets the Now Playing header show "Song Title" instead of an
-        // opaque googlevideo URL. Order matters: yt-dlp emits --print fields
-        // in the order they're declared, so we parse line[0] as title and
-        // line[1] as the resolved media URL.
-        psi.ArgumentList.Add("--print"); psi.ArgumentList.Add("%(title)s");
         psi.ArgumentList.Add("-g");                   // print direct media URL only
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
         // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
@@ -265,9 +259,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
         await proc.WaitForExitAsync(cts.Token);
 
-        // Don't .Trim() the whole stdout — that drops a leading empty title
-        // line, which would shift our line indices. Trim each line instead.
-        var stdout = await stdoutTask;
+        var stdout = (await stdoutTask).Trim();
         var stderr = (await stderrTask).Trim();
 
         if (proc.ExitCode != 0)
@@ -277,18 +269,13 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             throw new InvalidOperationException($"yt-dlp: {msg}");
         }
 
-        var lines = stdout.Split('\n');
-        if (lines.Length < 2)
-            throw new InvalidOperationException("yt-dlp returned no URL");
-
-        var title = lines[0].Trim();
-        // -g may print multiple URLs (one per format); take the first one
-        // after the title.
-        var firstUrl = lines[1].Trim();
+        // -g may print multiple URLs (one per format); take the first.
+        var firstUrl = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries) is { Length: > 0 } lines
+            ? lines[0].Trim()
+            : "";
         if (string.IsNullOrEmpty(firstUrl))
             throw new InvalidOperationException("yt-dlp returned no URL");
 
-        TitleCache.Set(url, title);
         return firstUrl;
     }
 }
