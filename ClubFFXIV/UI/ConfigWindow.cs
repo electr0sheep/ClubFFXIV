@@ -429,17 +429,14 @@ public sealed class ConfigWindow : Window, IDisposable
         // affordance: when audible, show a mute symbol (clicking silences);
         // when muted, show the green play button (clicking resumes).
         var muted = entry.Muted;
-        var icon = muted ? FontAwesomeIcon.Play : FontAwesomeIcon.Pause;
-        var iconColor = muted
-            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
-            : new Vector4(0.85f, 0.85f, 0.85f, 1f);
+        var icon = muted ? FontAwesomeIcon.VolumeUp : FontAwesomeIcon.VolumeMute;
 
         ImGui.AlignTextToFramePadding();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(iconColor, icon.ToIconString());
+        ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f), icon.ToIconString());
         ImGui.PopFont();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(muted ? "Click to play" : "Click to mute");
+            ImGui.SetTooltip(muted ? "Click to unmute" : "Click to mute");
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
             plugin.ToggleNowPlayingMute(entry);
 
