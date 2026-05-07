@@ -478,8 +478,68 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.MasterVolume = volume;
         if (multiStreamPlayer != null) multiStreamPlayer.MasterVolume = volume;
     }
-    public bool IsStreamPlaying => streamPlayer.IsPlaying;
+    /// <summary>
+    /// True if EITHER the single-stream player or the multi-stream mixer is
+    /// currently producing audio. The Now Playing header reads this — multi
+    /// alone counts as "playing", which the previous single-stream-only check
+    /// missed.
+    /// </summary>
+    public bool IsStreamPlaying =>
+        streamPlayer.IsPlaying || multiStreamPlayer?.HasAnyActivity == true;
     public string? CurrentStreamUrl => streamPlayer.CurrentUrl;
+
+    /// <summary>
+    /// Human-readable label for what's currently playing — drives the Now
+    /// Playing header strip. Single-stream wins when active (Indoor / Manual);
+    /// otherwise reports the active multi-stream voice (or count). Returns
+    /// "Not playing" when nothing is producing audio.
+    /// </summary>
+    public string GetNowPlayingLabel()
+    {
+        if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
+        {
+            var ctx = LookupClubContextForUrl(url);
+            return !string.IsNullOrWhiteSpace(ctx?.ClubName)
+                ? ctx.Value.ClubName
+                : (url.Length > 60 ? url[..57] + "..." : url);
+        }
+
+        if (multiStreamPlayer is { HasAnyActivity: true } msp)
+        {
+            var keys = msp.ActiveKeys();
+            if (keys.Count == 1)
+            {
+                var name = LookupClubNameForPlotKey(keys[0]);
+                return !string.IsNullOrWhiteSpace(name) ? name : "1 club streaming";
+            }
+            return $"{keys.Count} clubs streaming";
+        }
+
+        return "Not playing";
+    }
+
+    /// <summary>
+    /// Resolve a plot's display name from local saved/published mirrors first
+    /// (instant), falling back to the directory cache (instant if cached).
+    /// Returns null if the plot key is unknown to us.
+    /// </summary>
+    private string? LookupClubNameForPlotKey(string canonicalKey)
+    {
+        if (Config.PublishedHouses.TryGetValue(canonicalKey, out var pub)
+            && !string.IsNullOrWhiteSpace(pub.DisplayName))
+            return pub.DisplayName;
+        if (Config.SavedHouses.TryGetValue(canonicalKey, out var saved)
+            && !string.IsNullOrWhiteSpace(saved.DisplayName))
+            return saved.DisplayName;
+        if (DirectoryCache is { } cache)
+        {
+            foreach (var c in cache.Clubs)
+                if (c.PlotKey == canonicalKey
+                    && !string.IsNullOrWhiteSpace(c.DisplayName))
+                    return c.DisplayName;
+        }
+        return null;
+    }
 
     private bool MultiStreamActive => Config.MultiStreamEnabled;
 

@@ -368,49 +368,15 @@ public sealed class ConfigWindow : Window, IDisposable
     /// </summary>
     private void DrawNowPlayingHeader()
     {
-        var mode = plugin.CurrentMode;
-        var playing = mode != PlaybackMode.Off;
+        // IsStreamPlaying covers both the single-stream player and any active
+        // multi-stream voices, so the header reflects multi-stream mode too.
+        var playing = plugin.IsStreamPlaying;
 
         var icon = playing ? "▶" : "⏸";
         var iconColor = playing
             ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
             : new Vector4(0.6f, 0.6f, 0.6f, 1f);
-
-        // Resolve a friendly label for the current stream URL, falling back
-        // to "(none)" when nothing is playing or the URL is unknown.
-        var url = plugin.CurrentStreamUrl;
-        string label;
-        if (!playing || string.IsNullOrEmpty(url))
-        {
-            label = "Not playing";
-        }
-        else
-        {
-            var ctx = plugin.LookupClubContextForUrl(url);
-            label = !string.IsNullOrWhiteSpace(ctx?.ClubName)
-                ? ctx.Value.ClubName
-                : (url.Length > 60 ? url[..57] + "..." : url);
-        }
-
-        // Location segment (where the player is right now, not where the
-        // stream's source is).
-        string location;
-        if (plugin.CurrentPlotKey is { } pk)
-        {
-            location = plugin.HousingDetector.GetDisplayName(pk);
-        }
-        else if (plugin.CurrentWard is { } ward)
-        {
-            var district = plugin.HousingDetector.LookupDistrictName(ward.TerritoryType);
-            location = $"{district} W{ward.Ward + 1}";
-        }
-        else
-        {
-            location = "outside housing";
-        }
-
-        var modeText = playing ? mode.ToString() : "stopped";
-        var volumeText = $"vol {(int)(plugin.Config.Volume * 100)}%";
+        var label = plugin.GetNowPlayingLabel();
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
         ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, 32), true);
@@ -419,8 +385,6 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextColored(iconColor, icon);
         ImGui.SameLine();
         ImGui.TextUnformatted(label);
-        ImGui.SameLine();
-        ImGui.TextDisabled($"  ·  {location}  ·  {modeText}  ·  {volumeText}");
         ImGui.EndChild();
         ImGui.PopStyleColor();
     }
