@@ -480,20 +480,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (canonical != lastClubUrlPlotKey)
         {
             lastClubUrlPlotKey = canonical;
-            if (canonical != null
-                && plugin.Config.PublishedHouses.TryGetValue(canonical, out var pub))
-            {
-                clubUrlInput = pub.StreamUrl;
-            }
-            else if (canonical != null
-                && plugin.Config.SavedHouses.TryGetValue(canonical, out var saved))
-            {
-                clubUrlInput = saved.StreamUrl;
-            }
-            else
-            {
-                clubUrlInput = "";
-            }
+            clubUrlInput = LookupSavedStreamUrl(canonical) ?? "";
         }
 
         if (key.HasValue)
@@ -1093,6 +1080,14 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var trimmed = clubNameInput.Trim();
         return string.IsNullOrEmpty(trimmed) ? fallback : trimmed;
+    }
+
+    private string? LookupSavedStreamUrl(string? canonical)
+    {
+        if (canonical == null) return null;
+        if (plugin.Config.PublishedHouses.TryGetValue(canonical, out var pub)) return pub.StreamUrl;
+        if (plugin.Config.SavedHouses.TryGetValue(canonical, out var saved)) return saved.StreamUrl;
+        return null;
     }
 
     private void DrawSpatialTuningSection()

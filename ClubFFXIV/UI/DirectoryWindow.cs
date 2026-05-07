@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Numerics;
 using System.Threading.Tasks;
 using ClubFFXIV.Game;
@@ -21,24 +20,32 @@ public sealed class DirectoryWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
 
-    private string searchQuery = "";
+    // Per-column filter state. AND'd together when filtering rows; empty = no
+    // constraint. Match is case-insensitive substring.
+    private string nameFilter = "";
+    private string locationFilter = "";
+    private string descriptionFilter = "";
+    private string urlFilter = "";
+
     private string statusMessage = "";
     private bool fetchKickoffPending;
-    private DirectorySort sortMode = DirectorySort.Name;
 
-    public enum DirectorySort
-    {
-        Name,
-        RecentlyUpdated,
-        World,
-    }
+    // Column user IDs passed to TableSetupColumn and read back from
+    // TableGetSortSpecs to know which column the user clicked. Values are
+    // arbitrary but must be stable across frames.
+    private const uint ColName = 1;
+    private const uint ColLocation = 2;
+    private const uint ColDescription = 3;
+    private const uint ColUpdated = 4;
+    private const uint ColUrl = 5;
+    private const uint ColActions = 6;
 
     public DirectoryWindow(Plugin plugin)
         : base("ClubFFXIV — Public Directory##ClubFFXIVDirectory",
                ImGuiWindowFlags.NoCollapse)
     {
         this.plugin = plugin;
-        Size = new Vector2(620, 540);
+        Size = new Vector2(900, 540);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -70,11 +77,7 @@ public sealed class DirectoryWindow : Window, IDisposable
 
         DrawHeader();
         ImGui.Spacing();
-        DrawSearch();
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawList();
+        DrawTable();
     }
 
     private void DrawHeader()
@@ -103,41 +106,7 @@ public sealed class DirectoryWindow : Window, IDisposable
         }
     }
 
-    private void DrawSearch()
-    {
-        ImGui.TextUnformatted("Search:");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(-280);
-        ImGui.InputText("##dirSearch", ref searchQuery, 128);
-        ImGui.SameLine();
-        if (ImGui.Button("Clear", new Vector2(70, 0)))
-            searchQuery = "";
-        ImGui.SameLine();
-        ImGui.TextUnformatted("Sort:");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(125);
-        if (ImGui.BeginCombo("##dirSort", SortLabel(sortMode)))
-        {
-            foreach (var v in Enum.GetValues<DirectorySort>())
-            {
-                if (ImGui.Selectable(SortLabel(v), v == sortMode))
-                    sortMode = v;
-            }
-            ImGui.EndCombo();
-        }
-        ImGui.TextDisabled(
-            "  Search matches club name, description, location, or stream URL.");
-    }
-
-    private static string SortLabel(DirectorySort s) => s switch
-    {
-        DirectorySort.Name => "Name (A→Z)",
-        DirectorySort.RecentlyUpdated => "Recently updated",
-        DirectorySort.World => "World",
-        _ => s.ToString(),
-    };
-
-    private void DrawList()
+    private void DrawTable()
     {
         var cache = plugin.DirectoryCache;
         if (cache == null)
@@ -145,67 +114,182 @@ public sealed class DirectoryWindow : Window, IDisposable
             ImGui.TextDisabled("Loading...");
             return;
         }
-
         if (cache.Clubs.Count == 0)
         {
             ImGui.TextDisabled("No clubs are currently listed in the directory.");
             return;
         }
 
-        var query = searchQuery.Trim();
-        var hasQuery = query.Length > 0;
-        var queryLower = hasQuery ? query.ToLowerInvariant() : "";
+        var flags = ImGuiTableFlags.Resizable
+                  | ImGuiTableFlags.Reorderable
+                  | ImGuiTableFlags.Hideable
+                  | ImGuiTableFlags.Sortable
+                  | ImGuiTableFlags.RowBg
+                  | ImGuiTableFlags.BordersOuter
+                  | ImGuiTableFlags.BordersV
+                  | ImGuiTableFlags.ScrollY
+                  | ImGuiTableFlags.SizingStretchProp;
 
-        ImGui.BeginChild("##dirList", new Vector2(-1, -1), true);
+        if (!ImGui.BeginTable("##dirTable", 6, flags, new Vector2(-1, -1)))
+            return;
 
-        var matchCount = 0;
-        foreach (var club in SortClubs(cache.Clubs, sortMode))
-        {
-            if (hasQuery && !MatchesSearch(club, queryLower)) continue;
-            matchCount++;
+        ImGui.TableSetupColumn("Name",
+            ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultSort,
+            1.5f, ColName);
+        ImGui.TableSetupColumn("Location",
+            ImGuiTableColumnFlags.WidthStretch,
+            1.8f, ColLocation);
+        ImGui.TableSetupColumn("Description",
+            ImGuiTableColumnFlags.WidthStretch,
+            2.5f, ColDescription);
+        ImGui.TableSetupColumn("Updated",
+            ImGuiTableColumnFlags.WidthFixed,
+            90f, ColUpdated);
+        ImGui.TableSetupColumn("Stream URL",
+            ImGuiTableColumnFlags.WidthStretch,
+            2.0f, ColUrl);
+        ImGui.TableSetupColumn("Actions",
+            ImGuiTableColumnFlags.WidthFixed
+            | ImGuiTableColumnFlags.NoSort
+            | ImGuiTableColumnFlags.NoHide,
+            130f, ColActions);
+
+        // Pin both the header row and the filter row so they remain visible
+        // while the user scrolls through clubs.
+        ImGui.TableSetupScrollFreeze(0, 2);
+        ImGui.TableHeadersRow();
+
+        // Filter row — manually rendered below the auto-generated headers so
+        // each column gets its own substring filter input. Updated and Actions
+        // columns have no filter cell (numeric / button-only).
+        ImGui.TableNextRow();
+        DrawFilterCell("##fName", ref nameFilter);
+        DrawFilterCell("##fLoc", ref locationFilter);
+        DrawFilterCell("##fDesc", ref descriptionFilter);
+        ImGui.TableNextColumn(); // Updated — no filter
+        DrawFilterCell("##fUrl", ref urlFilter);
+        ImGui.TableNextColumn(); // Actions — no filter
+
+        // Filter then sort. Dataset is small (registry directory rarely tops
+        // a few hundred entries) — re-running every frame is cheap and keeps
+        // the code straightforward.
+        var rows = new List<DirectoryListingEntry>(cache.Clubs.Count);
+        foreach (var club in cache.Clubs)
+            if (MatchesFilters(club)) rows.Add(club);
+
+        SortRows(rows);
+
+        foreach (var club in rows)
             DrawRow(club);
+
+        if (rows.Count == 0)
+        {
+            ImGui.TableNextRow();
+            ImGui.TableNextColumn();
+            ImGui.TextDisabled("No clubs match the active filters.");
         }
 
-        if (hasQuery && matchCount == 0)
-            ImGui.TextDisabled($"No clubs matched \"{query}\".");
-
-        ImGui.EndChild();
+        ImGui.EndTable();
     }
 
-    private static IEnumerable<DirectoryListingEntry> SortClubs(
-        List<DirectoryListingEntry> clubs, DirectorySort mode) => mode switch
+    private static void DrawFilterCell(string id, ref string value)
     {
-        DirectorySort.Name => clubs.OrderBy(
-            c => c.DisplayName, StringComparer.OrdinalIgnoreCase),
-        DirectorySort.RecentlyUpdated => clubs.OrderByDescending(c => c.UpdatedAt),
-        DirectorySort.World => clubs
-            .OrderBy(c => ExtractWorldId(c.PlotKey))
-            .ThenBy(c => c.DisplayName, StringComparer.OrdinalIgnoreCase),
-        _ => clubs,
-    };
+        ImGui.TableNextColumn();
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputTextWithHint(id, "filter…", ref value, 64);
+    }
 
-    private static uint ExtractWorldId(string plotKey) =>
-        PlotKey.TryParse(plotKey, out var key) ? key.WorldId : uint.MaxValue;
+    private bool MatchesFilters(DirectoryListingEntry e)
+    {
+        if (nameFilter.Length > 0
+            && !e.DisplayName.Contains(nameFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (locationFilter.Length > 0
+            && !FormatPlotKeyLocation(e.PlotKey).Contains(locationFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (descriptionFilter.Length > 0
+            && !e.Description.Contains(descriptionFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (urlFilter.Length > 0
+            && !e.StreamUrl.Contains(urlFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
+
+    private void SortRows(List<DirectoryListingEntry> rows)
+    {
+        var specs = ImGui.TableGetSortSpecs();
+        uint key = ColName;
+        var ascending = true;
+        if (specs.SpecsCount > 0)
+        {
+            var spec = specs.Specs;
+            key = spec.ColumnUserID;
+            ascending = spec.SortDirection == ImGuiSortDirection.Ascending;
+        }
+
+        rows.Sort((a, b) =>
+        {
+            var cmp = key switch
+            {
+                ColName => string.Compare(a.DisplayName, b.DisplayName,
+                                          StringComparison.OrdinalIgnoreCase),
+                ColLocation => string.Compare(
+                    FormatPlotKeyLocation(a.PlotKey),
+                    FormatPlotKeyLocation(b.PlotKey),
+                    StringComparison.OrdinalIgnoreCase),
+                ColDescription => string.Compare(a.Description, b.Description,
+                                                 StringComparison.OrdinalIgnoreCase),
+                ColUpdated => a.UpdatedAt.CompareTo(b.UpdatedAt),
+                ColUrl => string.Compare(a.StreamUrl, b.StreamUrl,
+                                         StringComparison.OrdinalIgnoreCase),
+                _ => 0,
+            };
+            return ascending ? cmp : -cmp;
+        });
+    }
 
     private void DrawRow(DirectoryListingEntry club)
     {
+        ImGui.TableNextRow();
         ImGui.PushID("dir-" + club.PlotKey);
 
+        ImGui.TableNextColumn();
         ImGui.TextUnformatted(club.DisplayName);
-        ImGui.TextDisabled("  " + FormatPlotKeyLocation(club.PlotKey));
 
+        ImGui.TableNextColumn();
+        ImGui.TextWrapped(FormatPlotKeyLocation(club.PlotKey));
+
+        ImGui.TableNextColumn();
         if (!string.IsNullOrWhiteSpace(club.Description))
         {
-            // Truncated for the row; full text shows in the URL permission prompt
-            // when the user picks Play.
-            var desc = club.Description.Length > 280
-                ? club.Description[..277] + "..."
+            // Long descriptions wrap inside the cell; the URL permission
+            // prompt shows the full text when the listener actually picks Play.
+            var desc = club.Description.Length > 240
+                ? club.Description[..237] + "..."
                 : club.Description;
-            ImGui.Indent(12f);
             ImGui.TextWrapped(desc);
-            ImGui.Unindent(12f);
+        }
+        else
+        {
+            ImGui.TextDisabled("—");
         }
 
+        ImGui.TableNextColumn();
+        var ago = DateTime.UtcNow
+                - DateTimeOffset.FromUnixTimeMilliseconds(club.UpdatedAt).UtcDateTime;
+        ImGui.TextUnformatted(FormatAgo(ago));
+
+        ImGui.TableNextColumn();
+        // Show a head-of-URL preview that fits the column; full URL on hover.
+        var urlPreview = club.StreamUrl.Length > 60
+            ? club.StreamUrl[..57] + "..."
+            : club.StreamUrl;
+        ImGui.TextUnformatted(urlPreview);
+        if (ImGui.IsItemHovered() && club.StreamUrl.Length > 0)
+            ImGui.SetTooltip(club.StreamUrl);
+
+        ImGui.TableNextColumn();
         if (ImGui.SmallButton("Play"))
         {
             try
@@ -224,28 +308,13 @@ public sealed class DirectoryWindow : Window, IDisposable
             }
         }
         ImGui.SameLine();
-        if (ImGui.SmallButton("Copy URL"))
+        if (ImGui.SmallButton("Copy"))
         {
             ImGui.SetClipboardText(club.StreamUrl);
             statusMessage = "URL copied.";
         }
 
-        ImGui.TextDisabled("  " + (club.StreamUrl.Length > 80
-            ? club.StreamUrl[..77] + "..."
-            : club.StreamUrl));
-
         ImGui.PopID();
-        ImGui.Spacing();
-    }
-
-    private bool MatchesSearch(DirectoryListingEntry e, string queryLower)
-    {
-        if (e.DisplayName.ToLowerInvariant().Contains(queryLower)) return true;
-        if (e.Description.ToLowerInvariant().Contains(queryLower)) return true;
-        if (e.StreamUrl.ToLowerInvariant().Contains(queryLower)) return true;
-        // Decoded location: "World 1234 — Mist Ward 1, Plot 12"
-        if (FormatPlotKeyLocation(e.PlotKey).ToLowerInvariant().Contains(queryLower)) return true;
-        return false;
     }
 
     private string FormatPlotKeyLocation(string plotKeyCanonical)
