@@ -835,7 +835,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (!ImGui.BeginTable("##myHousesTable", 6, flags, new Vector2(-1, -1)))
             return;
 
-        ImGui.TableSetupColumn("✓",
+        ImGui.TableSetupColumn("Calibrated",
             ImGuiTableColumnFlags.WidthFixed, 28f, HCalib);
         ImGui.TableSetupColumn("Name",
             ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultSort,
@@ -853,7 +853,7 @@ public sealed class ConfigWindow : Window, IDisposable
             180f, HActions);
 
         ImGui.TableSetupScrollFreeze(0, 2);
-        ImGui.TableHeadersRow();
+        DrawHousesTableHeaders();
 
         // Filter row pinned with the headers. Calibrated and State columns
         // skip the filter input — they're small enumerated value sets where
@@ -894,6 +894,53 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableNextColumn();
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText(id, ref value, 64);
+    }
+
+    // Manual header row so the Calibrated column can render a FontAwesome
+    // crosshair glyph (the icon font has to be pushed before TableHeader for
+    // the glyph to resolve). Other columns pass through their setup names.
+    private static void DrawHousesTableHeaders()
+    {
+        var iconFont = Plugin.PluginInterface.UiBuilder.FontIcon;
+        int columnCount = ImGui.TableGetColumnCount();
+
+        ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
+        for (int col = 0; col < columnCount; col++)
+        {
+            if (!ImGui.TableSetColumnIndex(col)) continue;
+            ImGui.PushID(col);
+
+            if (col == 0)
+            {
+                ImGui.PushFont(iconFont);
+                ImGui.TableHeader(FontAwesomeIcon.Crosshairs.ToIconString());
+                ImGui.PopFont();
+                if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    ImGui.SetTooltip("Door calibration");
+            }
+            else
+            {
+                ImGui.TableHeader(ImGui.TableGetColumnName(col));
+            }
+
+            ImGui.PopID();
+        }
+    }
+
+    // Compact icon button using the FontAwesome icon font. The "##id" suffix
+    // gives ImGui a stable widget identity that doesn't depend on the glyph,
+    // so multiple buttons with the same icon (e.g. two Pencils, or Ban for
+    // both Unpublish and Delete) don't collide. AllowWhenDisabled keeps the
+    // tooltip visible when the button is wrapped in BeginDisabled — important
+    // because an icon-only disabled button is otherwise unreadable.
+    private static bool IconSmallButton(FontAwesomeIcon icon, string id, string tooltip)
+    {
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        bool clicked = ImGui.SmallButton(icon.ToIconString() + "##" + id);
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(tooltip);
+        return clicked;
     }
 
     private bool HouseMatchesFilters(UnifiedHouseRow row)
@@ -1047,21 +1094,22 @@ public sealed class ConfigWindow : Window, IDisposable
         // Rows with both copies show both buttons; the user picks which to edit.
         if (row.HasSavedCopy && row.Saved != null)
         {
-            if (ImGui.SmallButton("Edit local"))
+            if (IconSmallButton(FontAwesomeIcon.Pencil, "edit-local", "Edit local override"))
                 plugin.ClubFormWindow.OpenLocalEdit(key, row.Saved);
             ImGui.SameLine();
         }
         if (row.IsPublished && row.Published != null)
         {
             if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-            if (ImGui.SmallButton("Edit club"))
+            if (IconSmallButton(FontAwesomeIcon.Pencil, "edit-club", "Edit club listing"))
                 plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
             if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             ImGui.SameLine();
         }
 
         if (!canCalibrate) ImGui.BeginDisabled();
-        if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate"))
+        if (IconSmallButton(FontAwesomeIcon.Crosshairs, "calibrate",
+                calibrated ? "Re-calibrate door position" : "Calibrate door position"))
         {
             if (plugin.CalibrateDoor(key))
                 plugin.Notify("ClubFFXIV",
@@ -1075,7 +1123,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             // Unpublish removes the registry copy. Saved fallback (if any)
             // remains so Indoor mode still has a URL when registry is offline.
-            if (ImGui.SmallButton("Unpublish"))
+            if (IconSmallButton(FontAwesomeIcon.Ban, "unpublish", "Unpublish from registry"))
             {
                 var k = key;
                 var label = entry.DisplayName;
@@ -1105,7 +1153,8 @@ public sealed class ConfigWindow : Window, IDisposable
         else if (row.IsLocalOnly)
         {
             // Local-only deletes are immediate (no network).
-            if (ImGui.SmallButton("Delete")) toDeleteSavedOnly = key;
+            if (IconSmallButton(FontAwesomeIcon.Ban, "delete", "Delete saved house"))
+                toDeleteSavedOnly = key;
         }
     }
 
