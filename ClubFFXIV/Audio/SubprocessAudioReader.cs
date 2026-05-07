@@ -20,7 +20,7 @@ namespace ClubFFXIV.Audio;
 /// Stops the subprocess on Dispose. Network/decoder errors return 0 from Read,
 /// which signals end-of-stream to NAudio's WaveOutEvent — playback stops cleanly.
 /// </summary>
-public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
+public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, ICleanExitSource
 {
     public WaveFormat WaveFormat { get; } =
         WaveFormat.CreateIeeeFloatWaveFormat(44100, 2);
@@ -44,8 +44,9 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     /// <summary>
     /// Resolves the URL via yt-dlp, then spawns ffmpeg to decode the resolved
     /// stream into raw PCM. Throws on yt-dlp failure (offline channel, bad URL).
-    /// <paramref name="playlistRandom"/> shuffles the playlist before yt-dlp
-    /// picks its single item — only meaningful when the URL is a playlist.
+    /// For playlist URLs, <paramref name="playlistRandom"/> picks shuffle vs.
+    /// lazy-iterate mode (the two are mutually exclusive in yt-dlp). Both modes
+    /// yield the first emitted item; single-video URLs ignore both flags.
     /// </summary>
     public static async Task<SubprocessAudioReader> CreateAsync(
         string url, BinaryManager binaries, bool playlistRandom = false,
@@ -58,7 +59,23 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         // and print the underlying media URL.
         var resolvedUrl = await ResolveUrlAsync(url, binaries, playlistRandom, ct);
 
-        // Step 2 — spawn ffmpeg, pipe PCM to stdout.
+        // Step 2 — ffmpeg spawn factored into FromResolvedUrl so the playlist
+        // wrapper can build inner readers without re-running yt-dlp.
+        return FromResolvedUrl(resolvedUrl, binaries, ct);
+    }
+
+    /// <summary>
+    /// Spawn ffmpeg directly against an already-resolved media URL (no yt-dlp
+    /// involvement). Used by <see cref="PlaylistAudioReader"/> after pulling
+    /// the next item URL from a long-lived yt-dlp's stdout — letting the
+    /// wrapper run multiple ffmpegs back-to-back from a single yt-dlp.
+    /// </summary>
+    public static SubprocessAudioReader FromResolvedUrl(
+        string resolvedMediaUrl, BinaryManager binaries, CancellationToken ct = default)
+    {
+        if (!binaries.Ready)
+            throw new InvalidOperationException("ffmpeg not yet installed");
+
         var psi = new ProcessStartInfo
         {
             FileName = binaries.FfmpegPath,
@@ -82,7 +99,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         psi.ArgumentList.Add("-reconnect_streamed"); psi.ArgumentList.Add("1");
         psi.ArgumentList.Add("-reconnect_delay_max"); psi.ArgumentList.Add("5");
 
-        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(resolvedUrl);
+        psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(resolvedMediaUrl);
         psi.ArgumentList.Add("-vn");                 // drop video
         psi.ArgumentList.Add("-ar"); psi.ArgumentList.Add("44100");
         psi.ArgumentList.Add("-ac"); psi.ArgumentList.Add("2");
@@ -95,10 +112,6 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         var reader = new SubprocessAudioReader(proc);
 
         // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
-        // Per-line at Info so we see ffmpeg's chatter without changing log filters.
-        // Exit warning only fires when WE didn't kill the process — distinguishes
-        // "ffmpeg crashed on its own" (real bug) from "we killed it via Dispose"
-        // (normal stream switch / shutdown).
         _ = Task.Run(async () =>
         {
             try
@@ -210,7 +223,8 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     }
 
     private static async Task<string> ResolveUrlAsync(
-        string url, BinaryManager binaries, bool playlistRandom, CancellationToken ct)
+        string url, BinaryManager binaries, bool playlistRandom,
+        CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -225,18 +239,13 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
         // --no-playlist tells yt-dlp to download the video, not the playlist.
         psi.ArgumentList.Add("--no-playlist");
-        // For pure playlist URLs, --no-playlist is moot; --playlist-items 1
-        // limits resolution to a single item so yt-dlp doesn't walk the whole
-        // playlist (which is slow for large lists). The Loop feature combines
-        // with this to advance through the playlist one song per loop cycle.
-        psi.ArgumentList.Add("--playlist-items"); psi.ArgumentList.Add("1");
+        // For pure playlist URLs, --playlist-random shuffles before emit;
+        // off, yt-dlp emits items in their original order. Either way we
+        // only read the first stdout line below, so we get one URL per
+        // invocation. (PlaylistAudioReader is the long-form path that
+        // consumes every emitted URL across multiple ffmpegs.)
         if (playlistRandom)
-        {
-            // Shuffle the playlist before --playlist-items picks "the first
-            // one", so each invocation gets a random song. Only meaningful for
-            // playlist URLs; harmless on single videos.
             psi.ArgumentList.Add("--playlist-random");
-        }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);
 

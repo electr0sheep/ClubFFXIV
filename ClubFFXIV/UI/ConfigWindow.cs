@@ -152,10 +152,13 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "When a finite source (e.g. a single YouTube video) reaches\n" +
-                "its end, automatically restart it from the beginning.\n" +
-                "Indefinite streams (Twitch, Icecast) never reach a natural\n" +
-                "end, so this setting is a no-op for them.");
+                "When a finite source ends, restart it from the top:\n" +
+                "  • Single video: replays the same video.\n" +
+                "  • Playlist: starts the playlist over (with a fresh\n" +
+                "    shuffle if 'Random playlist order' is on).\n" +
+                "Off = playlist plays through once and stops.\n" +
+                "Indefinite streams (Twitch, Icecast) never reach a\n" +
+                "natural end, so this setting is a no-op for them.");
 
         var random = plugin.Config.PlaylistRandom;
         if (ImGui.Checkbox("Random playlist order", ref random))
@@ -167,11 +170,10 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "When the URL is a playlist, shuffle it before yt-dlp picks\n" +
-                "the single song to play. Combined with Loop, this gives a\n" +
-                "never-ending random rotation through the playlist. Off =\n" +
-                "playlist item 1 plays every time. No effect on single videos\n" +
-                "or live streams.");
+                "How playlist items are ordered:\n" +
+                "  • Off: original playlist order.\n" +
+                "  • On: yt-dlp shuffles the playlist before iteration.\n" +
+                "No effect on single videos or live streams.");
     }
 
     private void DrawAdvancedTab()

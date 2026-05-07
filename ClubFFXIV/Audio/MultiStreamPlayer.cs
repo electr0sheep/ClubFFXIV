@@ -186,7 +186,8 @@ internal sealed class MultiStreamPlayer : IDisposable
                         $"MultiStreamPlayer: skipping {url} — yt-dlp/ffmpeg not installed.");
                     return false;
                 }
-                var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, PlaylistRandom, cts.Token).ConfigureAwait(false);
+                var sub = await SubprocessAudioReader.CreateAsync(
+                    url, binaryManager, PlaylistRandom, cts.Token).ConfigureAwait(false);
                 source = sub;
                 disposable = sub;
             }

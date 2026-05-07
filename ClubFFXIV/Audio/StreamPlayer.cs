@@ -37,8 +37,9 @@ public sealed class StreamPlayer : IDisposable
     private string? currentUrl;
 
     /// <summary>
-    /// Forwarded to yt-dlp as --playlist-random. Plugin keeps this in sync
-    /// with <see cref="Configuration.PlaylistRandom"/> on each framework tick;
+    /// Forwarded to yt-dlp as --playlist-random when true, --lazy-playlist
+    /// when false. Plugin keeps this in sync with
+    /// <see cref="Configuration.PlaylistRandom"/> on each framework tick;
     /// the value is read at the next <see cref="PlayAsync"/> call.
     /// </summary>
     public bool PlaylistRandom { get; set; }
@@ -167,7 +168,12 @@ public sealed class StreamPlayer : IDisposable
                     $"This stream type needs {missing}, which hasn't been downloaded. " +
                     $"Open /pclub config → External binaries to install (~83 MB total).");
             }
-            var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, PlaylistRandom, ct).ConfigureAwait(false);
+            // PlaylistAudioReader holds the long-lived yt-dlp + iterates
+            // ffmpeg invocations as items end. For single-video URLs it
+            // degenerates to one ffmpeg + a clean EOF, just like the old
+            // single-shot path.
+            var sub = await PlaylistAudioReader.CreateAsync(
+                url, binaryManager, PlaylistRandom, ct).ConfigureAwait(false);
             newSource = sub;
             newDisposable = sub;
         }
@@ -210,7 +216,9 @@ public sealed class StreamPlayer : IDisposable
         var endedSource = newSource;
         built.Output.PlaybackStopped += (_, _) =>
         {
-            if (endedSource is SubprocessAudioReader sub && sub.DidExitCleanly())
+            // ICleanExitSource covers both single-stream (SubprocessAudioReader)
+            // and playlist (PlaylistAudioReader) sources uniformly.
+            if (endedSource is ICleanExitSource clean && clean.DidExitCleanly())
             {
                 var u = endedUrl;
                 _ = Task.Run(() => StreamNaturallyEnded?.Invoke(u));
