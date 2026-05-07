@@ -402,8 +402,11 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>
     /// Starts a stream off the framework thread. Cancels any prior in-flight start.
     /// On completion, sets CurrentMode and prints a chat notification.
+    /// <paramref name="announce"/> = false suppresses chat prints for auto-play
+    /// (Indoor/Outdoor are gated by targetMode; the loop path is also auto and
+    /// passes false to skip the per-iteration "Playing:" line).
     /// </summary>
-    private async Task StartStreamAsync(string url, PlaybackMode targetMode, string displayName)
+    private async Task StartStreamAsync(string url, PlaybackMode targetMode, string displayName, bool announce = true)
     {
         // Set the dedup state synchronously — the next framework tick must see
         // pendingStartUrl set so it doesn't spawn a duplicate start.
@@ -430,8 +433,9 @@ public sealed class Plugin : IDalamudPlugin
             CurrentMode = targetMode;
             Log.Info($"Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
             // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
-            // would spam chat every time you walk past a club.
-            if (targetMode == PlaybackMode.Manual)
+            // would spam chat every time you walk past a club. Loop iterations
+            // pass announce=false for the same reason.
+            if (targetMode == PlaybackMode.Manual && announce)
                 ChatGui.Print($"Playing: {displayName}");
         }
         catch (OperationCanceledException)
@@ -451,11 +455,12 @@ public sealed class Plugin : IDalamudPlugin
             else
                 Log.Debug($"Stream still failing: {url} (failure #{failureCount}, last={ex.Message})");
 
-            if (targetMode == PlaybackMode.Manual)
+            if (targetMode == PlaybackMode.Manual && announce)
             {
                 // Manual play already surfaces in chat — no extra notification
                 // needed. The chat error is what the user is looking at right
-                // after clicking Play.
+                // after clicking Play. Loop iterations skip this so a transient
+                // failure mid-loop doesn't spam.
                 ChatGui.PrintError($"{ex.Message}");
             }
             else if (failureCount == NotifyAfterFailures)
@@ -648,13 +653,13 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
         Log.Info($"Stream finished, looping: {url}");
-        // PlaybackStopped fires from NAudio's audio thread; bounce to a
-        // task so we don't block it on the new yt-dlp / ffmpeg startup.
-        _ = Task.Run(async () =>
-        {
-            try { await streamPlayer.PlayAsync(url); }
-            catch (Exception ex) { Log.Warning($"Auto-loop failed: {ex.Message}"); }
-        });
+        // Route through StartStreamAsync (rather than streamPlayer.PlayAsync
+        // directly) so pendingStartUrl is set during the 1–3s decoder cold-
+        // start. Without that, ApplyAudioPolicy reads streamWillPlay=false in
+        // the gap between IsPlaying flipping off (post-EOF) and back on
+        // (post-restart), and the game's BGM briefly resumes between loops.
+        // CurrentMode is preserved so a Manual loop stays Manual, etc.
+        _ = StartStreamAsync(url, CurrentMode, url, announce: false);
     }
 
     public void RebuildRegistryClient()
