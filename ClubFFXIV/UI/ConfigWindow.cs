@@ -667,7 +667,6 @@ public sealed class ConfigWindow : Window, IDisposable
                 // Probe /health before persisting so a syntactically-valid but
                 // wrong URL doesn't reach the per-tick ward fetcher.
                 var candidate = normalized;
-                inflightStatus = "Checking registry...";
                 _ = Task.Run(async () =>
                 {
                     try
@@ -678,7 +677,9 @@ public sealed class ConfigWindow : Window, IDisposable
                         plugin.Config.RegistryUrl = candidate;
                         plugin.Config.Save();
                         plugin.RebuildRegistryClient();
-                        inflightStatus = "";
+                        // Rebuild reset the flag to null; record the result
+                        // we just verified so the indicator updates immediately.
+                        plugin.SetRegistryConnected(true);
                         plugin.Notify("ClubFFXIV",
                             "Registry connected.",
                             NotificationType.Success);
@@ -688,7 +689,6 @@ public sealed class ConfigWindow : Window, IDisposable
                         // Underlying message goes to the log for diagnosis;
                         // the user-facing notification stays uniform.
                         Plugin.Log.Error(ex, "Registry health check failed");
-                        inflightStatus = "";
                         plugin.Notify("ClubFFXIV",
                             "Not a valid registry.",
                             NotificationType.Error,
@@ -698,7 +698,11 @@ public sealed class ConfigWindow : Window, IDisposable
             }
         }
         ImGui.SameLine();
-        ImGui.TextDisabled(plugin.RegistryEnabled ? "● enabled" : "○ disabled");
+        ImGui.TextDisabled(
+            !plugin.RegistryEnabled ? "○ disabled" :
+            plugin.RegistryConnected == true ? "● connected" :
+            plugin.RegistryConnected == false ? "○ not connected" :
+            "○ checking...");
 
         ImGui.Spacing();
         if (!plugin.RegistryEnabled) ImGui.BeginDisabled();

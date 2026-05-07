@@ -124,6 +124,7 @@ public sealed class Plugin : IDalamudPlugin
         lastBinaryUpdateCheck = Config.BinariesLastChecked;
 
         RebuildRegistryClient();
+        StartBackgroundRegistryProbe();
         TryLoadDjIdentity();
 
         configWindow = new ConfigWindow(this);
@@ -463,6 +464,16 @@ public sealed class Plugin : IDalamudPlugin
     public string? DjId => djIdentity?.DjId;
     public bool RegistryEnabled => registryClient != null;
 
+    /// <summary>
+    /// Last known reachability of the configured registry. <c>null</c> = not
+    /// yet probed (e.g. fresh startup, in-flight); <c>true</c> = last probe
+    /// succeeded; <c>false</c> = last probe failed. Distinct from
+    /// <see cref="RegistryEnabled"/>, which only reports whether a URL is set.
+    /// </summary>
+    public bool? RegistryConnected { get; private set; }
+
+    public void SetRegistryConnected(bool connected) => RegistryConnected = connected;
+
     public void SaveCurrentHouse(string displayName, string url, string description)
     {
         if (!CurrentPlotKey.HasValue) return;
@@ -504,6 +515,33 @@ public sealed class Plugin : IDalamudPlugin
                 : null;
         wardCache.Clear();
         InvalidateDirectoryCache();
+        RegistryConnected = null;
+    }
+
+    /// <summary>
+    /// Fire-and-forget probe of the active registry client. Used on plugin
+    /// startup to populate <see cref="RegistryConnected"/> without blocking;
+    /// the Apply button sets that flag directly from its own probe result
+    /// rather than calling this. Result is ignored if the client has been
+    /// rebuilt by the time the probe completes (user reconfigured mid-flight).
+    /// </summary>
+    public void StartBackgroundRegistryProbe()
+    {
+        var client = registryClient;
+        if (client == null) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await client.CheckHealthAsync();
+                if (registryClient == client) RegistryConnected = true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug($"Background registry probe failed: {ex.Message}");
+                if (registryClient == client) RegistryConnected = false;
+            }
+        });
     }
 
     public DjIdentity EnsureDjIdentity()
