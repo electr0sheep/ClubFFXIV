@@ -55,6 +55,12 @@ public sealed class Plugin : IDalamudPlugin
     private readonly UrlPermissionWindow permissionWindow;
     private readonly SetupWizardWindow setupWizard;
     private readonly DirectoryWindow directoryWindow;
+    /// <summary>
+    /// Single shared form window for create / edit on both local overrides
+    /// and registry clubs. Public so the My Clubs tab and the My Houses
+    /// table can call <see cref="ClubFormWindow.OpenLocalCreate"/> etc.
+    /// </summary>
+    public ClubFormWindow ClubFormWindow { get; }
     public BinaryManager Binaries { get; }
     public UrlPermissions Permissions { get; }
     private readonly StreamPlayer streamPlayer;
@@ -136,6 +142,7 @@ public sealed class Plugin : IDalamudPlugin
         permissionWindow = new UrlPermissionWindow(Permissions);
         setupWizard = new SetupWizardWindow(this);
         directoryWindow = new DirectoryWindow(this);
+        ClubFormWindow = new ClubFormWindow(this);
         if (!Config.SetupWizardComplete) setupWizard.IsOpen = true;
 
         WindowSystem.AddWindow(configWindow);
@@ -143,6 +150,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(permissionWindow);
         WindowSystem.AddWindow(setupWizard);
         WindowSystem.AddWindow(directoryWindow);
+        WindowSystem.AddWindow(ClubFormWindow);
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
@@ -171,6 +179,7 @@ public sealed class Plugin : IDalamudPlugin
         permissionWindow.Dispose();
         setupWizard.Dispose();
         directoryWindow.Dispose();
+        ClubFormWindow.Dispose();
         streamPlayer.Dispose();
 #if DEBUG
         multiStreamPlayer?.Dispose();
@@ -523,21 +532,25 @@ public sealed class Plugin : IDalamudPlugin
     public void SetRegistryConnected(bool connected) => RegistryConnected = connected;
     public void SetRegistryChecking() => RegistryConnected = null;
 
-    public void SaveCurrentHouse(string displayName, string url, string description)
+    /// <summary>
+    /// Create or update the local-override entry for an arbitrary plot key.
+    /// "Local override" = entry in <see cref="Configuration.SavedHouses"/>;
+    /// it shadows the registry's record at indoor-entry lookup time.
+    /// </summary>
+    public void UpsertSavedHouse(string canonicalKey, string displayName, string url, string description)
     {
-        if (!CurrentPlotKey.HasValue) return;
-        var key = CurrentPlotKey.Value.Canonical;
-        if (!Config.SavedHouses.TryGetValue(key, out var existing))
+        if (!Config.SavedHouses.TryGetValue(canonicalKey, out var existing))
             existing = new ClubEntry();
         existing.DisplayName = displayName;
         existing.StreamUrl = url;
         existing.Description = description;
-        Config.SavedHouses[key] = existing;
+        Config.SavedHouses[canonicalKey] = existing;
         Config.Save();
 
-        // If the active Indoor stream for this house is now stale, switch to the new URL.
+        // If the active Indoor stream for this plot is now stale, switch.
         if (CurrentMode == PlaybackMode.Indoor
-            && CurrentPlotKey.Value.Canonical == key
+            && CurrentPlotKey.HasValue
+            && CurrentPlotKey.Value.Canonical == canonicalKey
             && streamPlayer.CurrentUrl != url)
         {
             EnterIndoor(url, new ClubContext(displayName, description));
@@ -602,42 +615,36 @@ public sealed class Plugin : IDalamudPlugin
         return djIdentity;
     }
 
-    public async Task PublishCurrentHouseAsync(
-        string displayName, string streamUrl, string description, bool listed)
+    /// <summary>
+    /// Publish (or re-publish with full URL/desc/listed override) a club to
+    /// the registry for an arbitrary plot key. The caller is responsible for
+    /// gating on ownership at button-render time — typically the My Clubs
+    /// "Publish new club" button only renders when the player owns the plot.
+    /// Door coordinates are pulled from any existing local entry so they
+    /// survive the publish.
+    /// </summary>
+    public async Task PublishHouseAsync(
+        string canonicalKey, string displayName, string streamUrl, string description, bool listed)
     {
         if (registryClient == null)
             throw new InvalidOperationException("Registry URL not set");
-        if (!CurrentPlotKey.HasValue)
-            throw new InvalidOperationException("Not currently in a house");
-
-        // Local ownership gate — read from the framework-tick-cached value since
-        // we're running off the framework thread (Task.Run from the UI button).
-        // Unknown is allowed (don't lock out users on API mismatch); only confirmed
-        // NotOwner is blocked, and even that can be overridden via config.
-        if (CurrentOwnership == HouseOwnership.NotOwner && !Config.AllowPublishWithoutOwnership)
-        {
-            throw new InvalidOperationException(
-                "You don't appear to own this house. " +
-                "Enable \"Allow publish without ownership check\" in /pclub config to override.");
-        }
 
         var dj = EnsureDjIdentity();
-        var key = CurrentPlotKey.Value.Canonical;
 
         // Pull door coords from local entry if calibrated.
         DoorPayload? door = null;
-        if (Config.PublishedHouses.TryGetValue(key, out var existing) && HasDoor(existing))
+        if (Config.PublishedHouses.TryGetValue(canonicalKey, out var existing) && HasDoor(existing))
             door = ToDoorPayload(existing);
-        else if (Config.SavedHouses.TryGetValue(key, out var saved) && HasDoor(saved))
+        else if (Config.SavedHouses.TryGetValue(canonicalKey, out var saved) && HasDoor(saved))
             door = ToDoorPayload(saved);
 
         await registryClient.PublishAsync(
-            key, streamUrl, displayName, dj, door, listed, description);
+            canonicalKey, streamUrl, displayName, dj, door, listed, description);
 
         if (existing == null)
         {
             existing = new ClubEntry();
-            Config.PublishedHouses[key] = existing;
+            Config.PublishedHouses[canonicalKey] = existing;
         }
         existing.DisplayName = displayName;
         existing.StreamUrl = streamUrl;
@@ -651,7 +658,7 @@ public sealed class Plugin : IDalamudPlugin
         // active stream is stale — switch to the new URL.
         if (CurrentMode == PlaybackMode.Indoor
             && CurrentPlotKey.HasValue
-            && CurrentPlotKey.Value.Canonical == key
+            && CurrentPlotKey.Value.Canonical == canonicalKey
             && streamPlayer.CurrentUrl != streamUrl)
         {
             EnterIndoor(streamUrl, new ClubContext(displayName, description));
@@ -662,7 +669,7 @@ public sealed class Plugin : IDalamudPlugin
     /// Update the displayName for an already-published house. Re-publishes the
     /// existing record (same streamUrl, same door coords) signed by the DJ key
     /// — the registry's djId match is what gates this; nobody else can rename
-    /// your club. Unlike <see cref="PublishCurrentHouseAsync"/>, this does NOT
+    /// your club. Unlike <see cref="PublishHouseAsync"/>, this does NOT
     /// require the DJ to be standing inside the plot.
     /// </summary>
     public async Task RenamePublishedHouseAsync(

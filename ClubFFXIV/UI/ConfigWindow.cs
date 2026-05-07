@@ -14,31 +14,12 @@ public sealed class ConfigWindow : Window, IDisposable
     private readonly Plugin plugin;
     private string urlInput;
     private string registryUrlInput;
-    private string clubNameInput = "";
-    private string clubDescriptionInput = "";
-    private bool clubListedInput = true;
-
-    // Stream URL for the My Clubs tab. Independent from urlInput (Now Playing)
-    // so saving/publishing a club doesn't accidentally use whatever stream the
-    // user happens to be auditioning. Pre-filled from the active plot's
-    // saved/published record when the player enters a new plot.
-    private string clubUrlInput = "";
-    private string? lastClubUrlPlotKey;
 
     // Inline-progress text for in-flight async operations ("Publishing...",
     // "Saving...", "Unpublishing..."). Final results go to Dalamud notifications;
     // this field only holds the during-the-network-call indicator so the user
     // sees something between click and toast.
     private string inflightStatus = "";
-
-    // Edit-form state for the unified My Houses list. Holds the canonical
-    // key of the row currently being edited plus its in-flight edits (name,
-    // description, listed flag). Only one row is editable at a time; the
-    // form renders above the table when editingKey is set.
-    private string? editingKey;
-    private string editingName = "";
-    private string editingDescription = "";
-    private bool editingListed = true;
 
     // Per-column substring filters for the My Houses table (My Clubs tab).
     // AND'd together; empty = no constraint. State and Calibrated columns are
@@ -525,151 +506,79 @@ public sealed class ConfigWindow : Window, IDisposable
         var key = plugin.CurrentPlotKey;
         var ward = plugin.CurrentWard;
 
-        // Pre-fill the club Stream URL field when the player enters a new plot
-        // that has a saved/published record. Lets the DJ re-publish without
-        // re-pasting their URL. Switching plots clobbers any unsaved input —
-        // acceptable trade-off for the much more common edit-existing flow.
-        var canonical = key?.Canonical;
-        if (canonical != lastClubUrlPlotKey)
-        {
-            lastClubUrlPlotKey = canonical;
-            clubUrlInput = LookupSavedStreamUrl(canonical) ?? "";
-        }
-
         if (key.HasValue)
         {
-            var name = plugin.HousingDetector.GetDisplayName(key.Value);
+            var plot = key.Value;
+            var canonical = plot.Canonical;
+            var name = plugin.HousingDetector.GetDisplayName(plot);
             ImGui.TextWrapped($"Inside: {name}");
 
-            // Ownership badge (local check, not server-verified).
-            // Read the cached value — populated each framework tick by Plugin.UpdateLocationState.
+            // Ownership badge (local check, not server-verified). Read the
+            // cached value — populated each framework tick by UpdateLocationState
+            // so off-thread callers don't access ObjectTable.
             var ownership = plugin.CurrentOwnership;
             switch (ownership)
             {
                 case Game.HouseOwnership.Owner:
-                    ImGui.TextColored(new Vector4(0.4f, 0.85f, 0.4f, 1f), "✓ You own this plot");
+                    ImGui.TextColored(new Vector4(0.4f, 0.85f, 0.4f, 1f),
+                        "✓ You own this plot");
                     break;
                 case Game.HouseOwnership.NotOwner:
                     ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
-                        "⚠ You don't appear to own this plot — Publish blocked.");
+                        "⚠ You don't appear to own this plot");
                     break;
                 case Game.HouseOwnership.Unknown:
-                    ImGui.TextDisabled("Ownership: unknown (not blocking publish)");
+                    ImGui.TextDisabled("Ownership: unknown");
                     break;
             }
 
             ImGui.Spacing();
-            ImGui.TextUnformatted("Club name:");
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Optional. Shown to listeners who walk past or step inside your\n" +
-                    "club. Leave blank to use the in-game location name.\n" +
-                    "Max 80 characters. You can rename later from the Published\n" +
-                    "Houses list — re-publishes signed by your DJ key.");
-            ImGui.SetNextItemWidth(-1);
-            // Buffer = 81 leaves room for the null terminator while letting the
-            // user type up to the server's 80-char displayName cap.
-            ImGui.InputText("##clubName", ref clubNameInput, 81);
 
-            var effectiveName = EffectiveClubName(name);
-
-            ImGui.Spacing();
-            ImGui.TextUnformatted("Description:");
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Optional. Shown to listeners in the Public Directory list\n" +
-                    "and in the URL permission prompt when someone first plays\n" +
-                    "your stream. Max 500 characters; line breaks supported.");
-            ImGui.SetNextItemWidth(-1);
-            // Buffer = 501 to allow the full 500-char server cap + null terminator.
-            ImGui.InputTextMultiline(
-                "##clubDescription",
-                ref clubDescriptionInput,
-                501,
-                new Vector2(-1, 70));
-
-            ImGui.Spacing();
-            ImGui.TextUnformatted("Stream URL:");
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "The audio stream URL listeners hear when they tune into\n" +
-                    "this club. Independent of the Now Playing tab — set this\n" +
-                    "once, save or publish, done. Pre-fills from the saved\n" +
-                    "record when you enter a plot you've already configured.");
-            ImGui.SetNextItemWidth(-1);
-            ImGui.InputText("##clubStreamUrl", ref clubUrlInput, 1024);
-
-            ImGui.Spacing();
-            ImGui.Checkbox("Show in public directory", ref clubListedInput);
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Adds your club to the Public Directory browse list (visible to\n" +
-                    "anyone who opens the Public Directory from the Registry tab).\n\n" +
-                    "Unchecking only hides your club from this directory list.\n" +
-                    "Listeners walking past your plot, anyone who knows your plot\n" +
-                    "key, and the spatial-audio proximity discovery still work\n" +
-                    "exactly the same.\n\n" +
-                    "If you don't want your club exposed at all, simply don't\n" +
-                    "publish it — local Save URL keeps it private.");
-
-            ImGui.Spacing();
-            var noUrl = string.IsNullOrWhiteSpace(clubUrlInput);
-            if (noUrl) ImGui.BeginDisabled();
-            if (ImGui.Button("Save URL for this house (local)"))
+            // --- Path 1: Local override (any user, any plot) -----------------
+            var hasLocal = plugin.Config.SavedHouses.TryGetValue(canonical, out var savedEntry);
+            if (hasLocal && savedEntry != null)
             {
-                plugin.SaveCurrentHouse(effectiveName, clubUrlInput, clubDescriptionInput);
-                plugin.Notify("ClubFFXIV",
-                    $"Saved '{effectiveName}' locally.",
-                    NotificationType.Success);
+                if (ImGui.Button("Edit local override"))
+                    plugin.ClubFormWindow.OpenLocalEdit(canonical, savedEntry);
+            }
+            else
+            {
+                if (ImGui.Button("Create local override"))
+                    plugin.ClubFormWindow.OpenLocalCreate(plot);
             }
             ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "A local override is a private URL stored on your client only.\n" +
+                    "When you walk into this plot, your override plays — even if the\n" +
+                    "registry has a different URL for the plot. Visible to no one\n" +
+                    "but you.");
+
+            // --- Path 2: Registry (publish if owner & new; edit if has key) -
+            var hasPublishedKey = plugin.Config.PublishedHouses.TryGetValue(canonical, out var publishedEntry);
             var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner
                                      && !plugin.Config.AllowPublishWithoutOwnership;
-            var publishDisabled = !plugin.RegistryEnabled || blockedByOwnership;
-            if (publishDisabled) ImGui.BeginDisabled();
-            if (ImGui.Button("Publish to registry"))
+
+            ImGui.SameLine();
+            if (hasPublishedKey && publishedEntry != null)
             {
-                var dn = effectiveName;
-                var desc = clubDescriptionInput;
-                var url = clubUrlInput;
-                var listed = clubListedInput;
-                inflightStatus = "Publishing...";
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await plugin.PublishCurrentHouseAsync(dn, url, desc, listed);
-                        inflightStatus = "";
-                        plugin.Notify("ClubFFXIV",
-                            listed
-                                ? $"Published '{dn}'."
-                                : $"Published '{dn}' (hidden from directory).",
-                            NotificationType.Success);
-                    }
-                    catch (Exception ex)
-                    {
-                        Plugin.Log.Error(ex, "Publish failed");
-                        inflightStatus = "";
-                        plugin.Notify("ClubFFXIV: publish failed",
-                            ex.Message,
-                            NotificationType.Error,
-                            durationSeconds: 8);
-                    }
-                });
+                if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+                if (ImGui.Button("Edit club"))
+                    plugin.ClubFormWindow.OpenRegistryEdit(canonical, publishedEntry);
+                if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             }
-            if (publishDisabled) ImGui.EndDisabled();
-            if (noUrl) ImGui.EndDisabled();
+            else
+            {
+                var publishDisabled = !plugin.RegistryEnabled || blockedByOwnership;
+                if (publishDisabled) ImGui.BeginDisabled();
+                if (ImGui.Button("Publish new club"))
+                    plugin.ClubFormWindow.OpenRegistryPublish(plot);
+                if (publishDisabled) ImGui.EndDisabled();
+            }
 
 #if DEBUG
-            if (blockedByOwnership)
+            if (blockedByOwnership && !hasPublishedKey)
             {
                 ImGui.Spacing();
                 var allow = plugin.Config.AllowPublishWithoutOwnership;
@@ -871,31 +780,6 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
-        // Edit panel renders above the table so the multiline description
-        // input has room without expanding a single row to an awkward height.
-        // The row in the table is unaffected; the panel is the single place
-        // where field-level editing happens.
-        if (editingKey != null)
-        {
-            UnifiedHouseRow? editRow = null;
-            foreach (var r in rows)
-                if (r.Key == editingKey) { editRow = r; break; }
-
-            if (editRow.HasValue)
-            {
-                DrawHouseEditPanel(editRow.Value);
-                ImGui.Spacing();
-                ImGui.Separator();
-                ImGui.Spacing();
-            }
-            else
-            {
-                // The edited row vanished mid-flight (unpublish completed,
-                // local delete, etc.) — drop the orphaned editing state.
-                CancelHouseEdit();
-            }
-        }
-
         DrawHousesTable(rows);
     }
 
@@ -960,7 +844,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (toDeleteSavedOnly != null)
         {
-            if (editingKey == toDeleteSavedOnly) CancelHouseEdit();
+            // If the form window was open editing this row, close it so the
+            // user isn't left looking at a phantom edit panel.
+            if (plugin.ClubFormWindow.IsOpen) plugin.ClubFormWindow.IsOpen = false;
             plugin.DeleteSavedHouse(toDeleteSavedOnly);
             plugin.Notify("ClubFFXIV", "Removed saved house.", NotificationType.Success);
         }
@@ -1117,14 +1003,25 @@ public sealed class ConfigWindow : Window, IDisposable
         var key = row.Key;
         var entry = row.Primary;
 
-        if (ImGui.SmallButton("Edit"))
+        // Two distinct edit paths matching the Current Location flow:
+        //   • Edit local — opens the local override form (any user, any plot)
+        //   • Edit club  — opens the registry edit form (we hold the DJ key
+        //                  for this plot, i.e. row.IsPublished)
+        // Rows with both copies show both buttons; the user picks which to edit.
+        if (row.HasSavedCopy && row.Saved != null)
         {
-            editingKey = key;
-            editingName = entry.DisplayName;
-            editingDescription = entry.Description;
-            editingListed = entry.Listed;
+            if (ImGui.SmallButton("Edit local"))
+                plugin.ClubFormWindow.OpenLocalEdit(key, row.Saved);
+            ImGui.SameLine();
         }
-        ImGui.SameLine();
+        if (row.IsPublished && row.Published != null)
+        {
+            if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+            if (ImGui.SmallButton("Edit club"))
+                plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
+            if (!plugin.RegistryEnabled) ImGui.EndDisabled();
+            ImGui.SameLine();
+        }
 
         if (!canCalibrate) ImGui.BeginDisabled();
         if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate"))
@@ -1173,126 +1070,6 @@ public sealed class ConfigWindow : Window, IDisposable
             // Local-only deletes are immediate (no network).
             if (ImGui.SmallButton("Delete")) toDeleteSavedOnly = key;
         }
-    }
-
-    private void DrawHouseEditPanel(UnifiedHouseRow row)
-    {
-        var entry = row.Primary;
-        var calibrated = entry.DoorPosition != null;
-
-        ImGui.TextUnformatted($"Editing: {(calibrated ? "✓ " : "")}{entry.DisplayName}");
-        ImGui.Spacing();
-
-        ImGui.TextUnformatted("Name:");
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputText("##editName", ref editingName, 81);
-
-        ImGui.Spacing();
-        ImGui.TextUnformatted("Description:");
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextMultiline(
-            "##editDescription",
-            ref editingDescription,
-            501,
-            new Vector2(-1, 60));
-
-        if (row.IsPublished)
-        {
-            ImGui.Spacing();
-            ImGui.Checkbox("Show in public directory", ref editingListed);
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Unchecking only hides this club from the Public\n" +
-                    "Directory list — anyone who knows your plot key or\n" +
-                    "walks past still discovers it. For full privacy,\n" +
-                    "Unpublish instead.");
-        }
-
-        ImGui.Spacing();
-        var key = row.Key;
-        if (ImGui.Button("Save"))
-        {
-            var newName = editingName.Trim();
-            if (string.IsNullOrEmpty(newName))
-            {
-                plugin.Notify("ClubFFXIV",
-                    "Name cannot be empty — edit cancelled.",
-                    NotificationType.Warning);
-            }
-            else if (row.IsPublished)
-            {
-                // Published copy: signed re-publish (network) updates the
-                // registry record AND the local PublishedHouses entry. If a
-                // saved copy also exists for this plot, sync its name/desc
-                // afterwards so the two local mirrors stay coherent.
-                var dn = newName;
-                var desc = editingDescription;
-                var listed = editingListed;
-                var hasSaved = row.HasSavedCopy;
-                inflightStatus = "Saving...";
-                _ = Task.Run(async () =>
-                {
-                    try
-                    {
-                        await plugin.RenamePublishedHouseAsync(key, dn, desc, listed);
-                        if (hasSaved) plugin.RenameSavedHouse(key, dn, desc);
-                        inflightStatus = "";
-                        plugin.Notify("ClubFFXIV",
-                            listed
-                                ? $"Updated '{dn}'."
-                                : $"Updated '{dn}' (hidden from directory).",
-                            NotificationType.Success);
-                    }
-                    catch (Exception ex)
-                    {
-                        Plugin.Log.Error(ex, "Save failed");
-                        inflightStatus = "";
-                        plugin.Notify("ClubFFXIV: save failed",
-                            ex.Message,
-                            NotificationType.Error,
-                            durationSeconds: 8);
-                    }
-                });
-            }
-            else
-            {
-                plugin.RenameSavedHouse(key, newName, editingDescription);
-                plugin.Notify("ClubFFXIV",
-                    $"Saved '{newName}' locally.",
-                    NotificationType.Success);
-            }
-            CancelHouseEdit();
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("Cancel")) CancelHouseEdit();
-    }
-
-    private void CancelHouseEdit()
-    {
-        editingKey = null;
-        editingName = "";
-        editingDescription = "";
-        editingListed = true;
-    }
-
-    /// <summary>
-    /// Resolve the club name to use when saving / publishing the current house.
-    /// Falls back to the in-game location name when the user leaves the input blank.
-    /// </summary>
-    private string EffectiveClubName(string fallback)
-    {
-        var trimmed = clubNameInput.Trim();
-        return string.IsNullOrEmpty(trimmed) ? fallback : trimmed;
-    }
-
-    private string? LookupSavedStreamUrl(string? canonical)
-    {
-        if (canonical == null) return null;
-        if (plugin.Config.PublishedHouses.TryGetValue(canonical, out var pub)) return pub.StreamUrl;
-        if (plugin.Config.SavedHouses.TryGetValue(canonical, out var saved)) return saved.StreamUrl;
-        return null;
     }
 
     private void DrawSpatialTuningSection()
