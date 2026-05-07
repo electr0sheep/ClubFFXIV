@@ -30,6 +30,10 @@ public sealed class DirectoryWindow : Window, IDisposable
     private string statusMessage = "";
     private bool fetchKickoffPending;
 
+    // Plot key of the most recently copied URL row. Drives the tooltip
+    // confirmation ("Copied" vs "Click to copy") on the Stream URL cell.
+    private string? lastCopiedPlotKey;
+
     // Column user IDs passed to TableSetupColumn and read back from
     // TableGetSortSpecs to know which column the user clicked. Values are
     // arbitrary but must be stable across frames.
@@ -38,7 +42,6 @@ public sealed class DirectoryWindow : Window, IDisposable
     private const uint ColDescription = 3;
     private const uint ColUpdated = 4;
     private const uint ColUrl = 5;
-    private const uint ColActions = 6;
 
     public DirectoryWindow(Plugin plugin)
         : base("ClubFFXIV — Public Directory##ClubFFXIVDirectory",
@@ -130,7 +133,7 @@ public sealed class DirectoryWindow : Window, IDisposable
                   | ImGuiTableFlags.ScrollY
                   | ImGuiTableFlags.SizingStretchProp;
 
-        if (!ImGui.BeginTable("##dirTable", 6, flags, new Vector2(-1, -1)))
+        if (!ImGui.BeginTable("##dirTable", 5, flags, new Vector2(-1, -1)))
             return;
 
         ImGui.TableSetupColumn("Name",
@@ -148,11 +151,6 @@ public sealed class DirectoryWindow : Window, IDisposable
         ImGui.TableSetupColumn("Stream URL",
             ImGuiTableColumnFlags.WidthStretch,
             2.0f, ColUrl);
-        ImGui.TableSetupColumn("Actions",
-            ImGuiTableColumnFlags.WidthFixed
-            | ImGuiTableColumnFlags.NoSort
-            | ImGuiTableColumnFlags.NoHide,
-            130f, ColActions);
 
         // Pin both the header row and the filter row so they remain visible
         // while the user scrolls through clubs.
@@ -160,15 +158,14 @@ public sealed class DirectoryWindow : Window, IDisposable
         ImGui.TableHeadersRow();
 
         // Filter row — manually rendered below the auto-generated headers so
-        // each column gets its own substring filter input. Updated and Actions
-        // columns have no filter cell (numeric / button-only).
+        // each column gets its own substring filter input. The Updated column
+        // has no filter cell (numeric/relative time).
         ImGui.TableNextRow();
         DrawFilterCell("##fName", ref nameFilter);
         DrawFilterCell("##fLoc", ref locationFilter);
         DrawFilterCell("##fDesc", ref descriptionFilter);
         ImGui.TableNextColumn(); // Updated — no filter
         DrawFilterCell("##fUrl", ref urlFilter);
-        ImGui.TableNextColumn(); // Actions — no filter
 
         // Filter then sort. Dataset is small (registry directory rarely tops
         // a few hundred entries) — re-running every frame is cheap and keeps
@@ -274,37 +271,31 @@ public sealed class DirectoryWindow : Window, IDisposable
         ImGui.TextUnformatted(FormatAgo(ago));
 
         ImGui.TableNextColumn();
-        // Show a head-of-URL preview that fits the column; full URL on hover.
-        var urlPreview = club.StreamUrl.Length > 60
-            ? club.StreamUrl[..57] + "..."
-            : club.StreamUrl;
-        ImGui.TextUnformatted(urlPreview);
-        if (ImGui.IsItemHovered() && club.StreamUrl.Length > 0)
-            ImGui.SetTooltip(club.StreamUrl);
-
-        ImGui.TableNextColumn();
-        if (ImGui.SmallButton("Play"))
+        if (club.StreamUrl.Length > 0)
         {
-            try
+            // Click anywhere in the cell copies the URL. Tooltip on hover
+            // doubles as the affordance ("Click to copy") and the success
+            // confirmation ("Copied") for the most recently copied row.
+            var urlPreview = club.StreamUrl.Length > 60
+                ? club.StreamUrl[..57] + "..."
+                : club.StreamUrl;
+            if (ImGui.Selectable(urlPreview))
             {
-                plugin.Config.LastStreamUrl = club.StreamUrl;
-                plugin.Config.Save();
-                plugin.PlayStream(
-                    club.StreamUrl,
-                    new ClubContext(club.DisplayName, club.Description));
-                statusMessage = $"Playing: {club.DisplayName}";
+                ImGui.SetClipboardText(club.StreamUrl);
+                lastCopiedPlotKey = club.PlotKey;
+                statusMessage = "URL copied.";
             }
-            catch (Exception ex)
+            if (ImGui.IsItemHovered())
             {
-                Plugin.Log.Error(ex, "Directory Play failed");
-                statusMessage = $"Error: {ex.Message}";
+                var verb = lastCopiedPlotKey == club.PlotKey
+                    ? "Copied"
+                    : "Click to copy";
+                ImGui.SetTooltip($"{verb}\n{club.StreamUrl}");
             }
         }
-        ImGui.SameLine();
-        if (ImGui.SmallButton("Copy"))
+        else
         {
-            ImGui.SetClipboardText(club.StreamUrl);
-            statusMessage = "URL copied.";
+            ImGui.TextDisabled("—");
         }
 
         ImGui.PopID();
