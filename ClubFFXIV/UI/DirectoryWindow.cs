@@ -283,14 +283,12 @@ public sealed class DirectoryWindow : Window, IDisposable
             {
                 ImGui.SetClipboardText(club.StreamUrl);
                 lastCopiedPlotKey = club.PlotKey;
-                statusMessage = "URL copied.";
             }
             if (ImGui.IsItemHovered())
             {
-                var verb = lastCopiedPlotKey == club.PlotKey
+                ImGui.SetTooltip(lastCopiedPlotKey == club.PlotKey
                     ? "Copied"
-                    : "Click to copy";
-                ImGui.SetTooltip($"{verb}\n{club.StreamUrl}");
+                    : "Click to copy");
             }
         }
         else
