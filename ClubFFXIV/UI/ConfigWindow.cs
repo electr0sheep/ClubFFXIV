@@ -125,11 +125,36 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSettingsTab()
     {
+        DrawPlaybackSection();
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
         DrawSpatialTuningSection();
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
         DrawPermissionsSection();
+    }
+
+    private void DrawPlaybackSection()
+    {
+        ImGui.TextUnformatted("Playback");
+        ImGui.Spacing();
+
+        var loop = plugin.Config.LoopFinishedVideos;
+        if (ImGui.Checkbox("Loop videos when they finish", ref loop))
+        {
+            plugin.Config.LoopFinishedVideos = loop;
+            plugin.Config.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "When a finite source (e.g. a single YouTube video) reaches\n" +
+                "its end, automatically restart it from the beginning.\n" +
+                "Indefinite streams (Twitch, Icecast) never reach a natural\n" +
+                "end, so this setting is a no-op for them.");
     }
 
     private void DrawAdvancedTab()

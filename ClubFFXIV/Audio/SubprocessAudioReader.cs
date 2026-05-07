@@ -177,6 +177,30 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         try { ffmpeg.Dispose(); } catch { /* ignore */ }
     }
 
+    /// <summary>
+    /// True if ffmpeg ran to completion on its own (exit code 0) — i.e. the
+    /// input stream reached a real EOF. Used by <see cref="StreamPlayer"/> to
+    /// decide whether to auto-loop a finite source. Returns false if we killed
+    /// the process (normal stream switch / shutdown), if it's still running,
+    /// or if it crashed with a non-zero exit code (network error, decoder
+    /// failure — those shouldn't loop, they should surface as a real failure).
+    /// Briefly waits on the process so the caller doesn't race the OS-level
+    /// exit-code propagation when called immediately after stdout EOF.
+    /// </summary>
+    public bool DidExitCleanly()
+    {
+        if (killedByUs) return false;
+        try
+        {
+            if (!ffmpeg.HasExited) ffmpeg.WaitForExit(500);
+            return ffmpeg.HasExited && ffmpeg.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private static async Task<string> ResolveUrlAsync(
         string url, BinaryManager binaries, CancellationToken ct)
     {

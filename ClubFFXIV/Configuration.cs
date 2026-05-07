@@ -99,6 +99,14 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool AutoUpdateBinaries { get; set; } = true;
 
+    /// <summary>
+    /// When a finite source (e.g. a single YouTube video) reaches its end,
+    /// automatically restart it from the beginning. Live/indefinite streams
+    /// (Twitch, Icecast) never reach a natural EOF, so this flag is a no-op
+    /// for them.
+    /// </summary>
+    public bool LoopFinishedVideos { get; set; } = false;
+
     /// <summary>Last time we checked for binary updates (UTC).</summary>
     public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
 

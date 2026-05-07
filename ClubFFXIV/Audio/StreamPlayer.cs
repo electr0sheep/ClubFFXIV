@@ -31,6 +31,12 @@ public sealed class StreamPlayer : IDisposable
     private float spatialCutoff = BypassCutoffHz;
     private bool muted;
     private string? currentUrl;
+    // Set true at Stop() entry, cleared once a new chain is wired up. The
+    // PlaybackStopped handler (which can fire synchronously from Output.Stop
+    // on the audio thread) checks this so a user/replacement stop doesn't
+    // get mistaken for a natural EOF and trigger an unwanted auto-loop.
+    // Volatile because writes happen on UI thread, reads on the audio thread.
+    private volatile bool stopInvoked;
 
     public StreamPlayer(BinaryManager binaryManager)
     {
@@ -39,6 +45,16 @@ public sealed class StreamPlayer : IDisposable
 
     public bool IsPlaying => output?.PlaybackState == PlaybackState.Playing;
     public string? CurrentUrl => currentUrl;
+
+    /// <summary>
+    /// Fires when a finite source (currently only yt-dlp / ffmpeg-backed
+    /// streams) reaches a clean EOF — i.e. the video finished playing
+    /// rather than failing on a network/decoder error. Argument is the URL
+    /// that just ended. Subscribers decide whether to re-play it (loop)
+    /// or let the playback stay stopped. Does not fire for indefinite
+    /// sources (Twitch live, Icecast) or for user-initiated stops.
+    /// </summary>
+    public event Action<string>? StreamNaturallyEnded;
 
     public float MasterVolume
     {
@@ -154,6 +170,27 @@ public sealed class StreamPlayer : IDisposable
             return new BuiltChain(newSource, newDisposable, lp, v, o);
         }, ct).ConfigureAwait(false);
 
+        // Capture the URL + source for the natural-end check. Closure refs
+        // per-call locals (not class fields) so the right URL fires even if
+        // a later Play() reassigns this.currentUrl. The stopInvoked guard
+        // suppresses the event when our own Stop() triggered the callback.
+        var endedUrl = url;
+        var endedSource = newSource;
+        built.Output.PlaybackStopped += (_, _) =>
+        {
+            if (stopInvoked) return;
+            // DidExitCleanly waits up to ~500ms for the OS to publish the
+            // exit code, which we don't want to do on NAudio's audio thread.
+            // Bounce to a thread-pool task before checking + firing.
+            var src = endedSource;
+            var u = endedUrl;
+            _ = Task.Run(() =>
+            {
+                if (src is SubprocessAudioReader sub && sub.DidExitCleanly())
+                    StreamNaturallyEnded?.Invoke(u);
+            });
+        };
+
         if (ct.IsCancellationRequested)
         {
             built.Dispose();
@@ -161,6 +198,10 @@ public sealed class StreamPlayer : IDisposable
         }
 
         Stop();
+        // Stop() set stopInvoked = true to suppress the dying chain's
+        // PlaybackStopped from firing the natural-end event. Clear it now
+        // so the new chain is eligible for natural-end detection.
+        stopInvoked = false;
 
         source = built.Source;
         sourceDisposable = built.SourceDisposable;
@@ -193,6 +234,7 @@ public sealed class StreamPlayer : IDisposable
 
     public void Stop()
     {
+        stopInvoked = true;
         try { output?.Stop(); } catch { /* swallow during teardown */ }
         output?.Dispose();
         sourceDisposable?.Dispose();

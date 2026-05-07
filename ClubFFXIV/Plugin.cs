@@ -132,6 +132,7 @@ public sealed class Plugin : IDalamudPlugin
         Permissions = new UrlPermissions(Config);
         streamPlayer = new StreamPlayer(Binaries);
         streamPlayer.MasterVolume = Config.Volume;
+        streamPlayer.StreamNaturallyEnded += OnStreamNaturallyEnded;
         lastBinaryUpdateCheck = Config.BinariesLastChecked;
 
         RebuildRegistryClient();
@@ -168,6 +169,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         ClientState.TerritoryChanged -= OnTerritoryChanged;
         Framework.Update -= OnFrameworkUpdate;
+        streamPlayer.StreamNaturallyEnded -= OnStreamNaturallyEnded;
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
         PluginInterface.UiBuilder.OpenMainUi -= OpenConfig;
@@ -561,6 +563,24 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (Config.SavedHouses.Remove(canonicalKey))
             Config.Save();
+    }
+
+    /// <summary>
+    /// StreamPlayer fires this when a finite source (e.g. a YouTube video)
+    /// reaches a clean EOF. If the user has the loop toggle on, restart the
+    /// same URL. Indefinite streams (Twitch, Icecast) never trigger this.
+    /// </summary>
+    private void OnStreamNaturallyEnded(string url)
+    {
+        if (!Config.LoopFinishedVideos) return;
+        Log.Info($"Stream finished, looping: {url}");
+        // PlaybackStopped fires from NAudio's audio thread; bounce to a
+        // task so we don't block it on the new yt-dlp / ffmpeg startup.
+        _ = Task.Run(async () =>
+        {
+            try { await streamPlayer.PlayAsync(url); }
+            catch (Exception ex) { Log.Warning($"Auto-loop failed: {ex.Message}"); }
+        });
     }
 
     public void RebuildRegistryClient()
