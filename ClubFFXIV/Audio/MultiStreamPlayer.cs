@@ -45,6 +45,12 @@ internal sealed class MultiStreamPlayer : IDisposable
     // voicesLock so SetSpatial reads consistently.
     private readonly HashSet<string> mutedKeys = new();
 
+    /// <summary>
+    /// Forwarded to yt-dlp as --playlist-random when adding a new voice.
+    /// Plugin syncs this from <see cref="Configuration.PlaylistRandom"/>.
+    /// </summary>
+    public bool PlaylistRandom { get; set; }
+
     public MultiStreamPlayer(BinaryManager binaryManager)
     {
         this.binaryManager = binaryManager;
@@ -180,7 +186,7 @@ internal sealed class MultiStreamPlayer : IDisposable
                         $"MultiStreamPlayer: skipping {url} — yt-dlp/ffmpeg not installed.");
                     return false;
                 }
-                var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, cts.Token).ConfigureAwait(false);
+                var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, PlaylistRandom, cts.Token).ConfigureAwait(false);
                 source = sub;
                 disposable = sub;
             }

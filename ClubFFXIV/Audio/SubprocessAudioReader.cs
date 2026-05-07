@@ -44,16 +44,19 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     /// <summary>
     /// Resolves the URL via yt-dlp, then spawns ffmpeg to decode the resolved
     /// stream into raw PCM. Throws on yt-dlp failure (offline channel, bad URL).
+    /// <paramref name="playlistRandom"/> shuffles the playlist before yt-dlp
+    /// picks its single item — only meaningful when the URL is a playlist.
     /// </summary>
     public static async Task<SubprocessAudioReader> CreateAsync(
-        string url, BinaryManager binaries, CancellationToken ct = default)
+        string url, BinaryManager binaries, bool playlistRandom = false,
+        CancellationToken ct = default)
     {
         if (!binaries.Ready)
             throw new InvalidOperationException("ffmpeg/yt-dlp not yet installed");
 
         // Step 1 — let yt-dlp pick the best audio-only or low-bitrate variant
         // and print the underlying media URL.
-        var resolvedUrl = await ResolveUrlAsync(url, binaries, ct);
+        var resolvedUrl = await ResolveUrlAsync(url, binaries, playlistRandom, ct);
 
         // Step 2 — spawn ffmpeg, pipe PCM to stdout.
         var psi = new ProcessStartInfo
@@ -207,7 +210,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     }
 
     private static async Task<string> ResolveUrlAsync(
-        string url, BinaryManager binaries, CancellationToken ct)
+        string url, BinaryManager binaries, bool playlistRandom, CancellationToken ct)
     {
         var psi = new ProcessStartInfo
         {
@@ -219,7 +222,21 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
         };
         psi.ArgumentList.Add("-g");                   // print direct media URL only
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
+        // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
+        // --no-playlist tells yt-dlp to download the video, not the playlist.
         psi.ArgumentList.Add("--no-playlist");
+        // For pure playlist URLs, --no-playlist is moot; --playlist-items 1
+        // limits resolution to a single item so yt-dlp doesn't walk the whole
+        // playlist (which is slow for large lists). The Loop feature combines
+        // with this to advance through the playlist one song per loop cycle.
+        psi.ArgumentList.Add("--playlist-items"); psi.ArgumentList.Add("1");
+        if (playlistRandom)
+        {
+            // Shuffle the playlist before --playlist-items picks "the first
+            // one", so each invocation gets a random song. Only meaningful for
+            // playlist URLs; harmless on single videos.
+            psi.ArgumentList.Add("--playlist-random");
+        }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);
 

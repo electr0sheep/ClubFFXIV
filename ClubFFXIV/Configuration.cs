@@ -88,6 +88,14 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool LoopFinishedVideos { get; set; } = false;
 
+    /// <summary>
+    /// When the URL is a playlist, shuffle it before yt-dlp picks the single
+    /// item to play. Combined with <see cref="LoopFinishedVideos"/> this gives
+    /// a never-ending random rotation through the playlist. Off = playlist
+    /// item 1 plays every time (and every loop iteration replays it).
+    /// </summary>
+    public bool PlaylistRandom { get; set; } = false;
+
     /// <summary>Last time we checked for binary updates (UTC).</summary>
     public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
 

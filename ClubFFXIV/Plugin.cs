@@ -996,6 +996,13 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.AutoMuted = shouldMute;
         if (multiStreamPlayer != null) multiStreamPlayer.AutoMuted = shouldMute;
 
+        // Keep yt-dlp playlist-random in sync each tick. The flag is read at
+        // the next CreateAsync call (i.e. next stream start / next loop), so
+        // toggling it in the UI applies on the following start without any
+        // explicit "apply" wiring.
+        streamPlayer.PlaylistRandom = Config.PlaylistRandom;
+        if (multiStreamPlayer != null) multiStreamPlayer.PlaylistRandom = Config.PlaylistRandom;
+
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         // Mute while a load is pending too — otherwise the game's BGM blares for the

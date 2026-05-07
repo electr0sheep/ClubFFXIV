@@ -3,6 +3,7 @@ using System.Numerics;
 using System.Threading.Tasks;
 using ClubFFXIV.Game;
 using ClubFFXIV.Network;
+using Dalamud.Interface;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
@@ -155,6 +156,22 @@ public sealed class ConfigWindow : Window, IDisposable
                 "its end, automatically restart it from the beginning.\n" +
                 "Indefinite streams (Twitch, Icecast) never reach a natural\n" +
                 "end, so this setting is a no-op for them.");
+
+        var random = plugin.Config.PlaylistRandom;
+        if (ImGui.Checkbox("Random playlist order", ref random))
+        {
+            plugin.Config.PlaylistRandom = random;
+            plugin.Config.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "When the URL is a playlist, shuffle it before yt-dlp picks\n" +
+                "the single song to play. Combined with Loop, this gives a\n" +
+                "never-ending random rotation through the playlist. Off =\n" +
+                "playlist item 1 plays every time. No effect on single videos\n" +
+                "or live streams.");
     }
 
     private void DrawAdvancedTab()
@@ -386,7 +403,9 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             // Static placeholder — no playback to act on.
             ImGui.AlignTextToFramePadding();
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1f), "⏸");
+            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.IconFont);
+            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1f), FontAwesomeIcon.Pause.ToIconString());
+            ImGui.PopFont();
             ImGui.SameLine();
             ImGui.TextUnformatted("Not playing");
         }
@@ -408,13 +427,15 @@ public sealed class ConfigWindow : Window, IDisposable
         // affordance: when audible, show a mute symbol (clicking silences);
         // when muted, show the green play button (clicking resumes).
         var muted = entry.Muted;
-        var icon = muted ? "▶" : "⏸";
+        var icon = muted ? FontAwesomeIcon.Play : FontAwesomeIcon.Pause;
         var iconColor = muted
             ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
             : new Vector4(0.85f, 0.85f, 0.85f, 1f);
 
         ImGui.AlignTextToFramePadding();
-        ImGui.TextColored(iconColor, icon);
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.IconFont);
+        ImGui.TextColored(iconColor, icon.ToIconString());
+        ImGui.PopFont();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(muted ? "Click to play" : "Click to mute");
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))

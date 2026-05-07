@@ -36,6 +36,13 @@ public sealed class StreamPlayer : IDisposable
     private bool userMuted;
     private string? currentUrl;
 
+    /// <summary>
+    /// Forwarded to yt-dlp as --playlist-random. Plugin keeps this in sync
+    /// with <see cref="Configuration.PlaylistRandom"/> on each framework tick;
+    /// the value is read at the next <see cref="PlayAsync"/> call.
+    /// </summary>
+    public bool PlaylistRandom { get; set; }
+
     public StreamPlayer(BinaryManager binaryManager)
     {
         this.binaryManager = binaryManager;
@@ -160,7 +167,7 @@ public sealed class StreamPlayer : IDisposable
                     $"This stream type needs {missing}, which hasn't been downloaded. " +
                     $"Open /pclub config → External binaries to install (~83 MB total).");
             }
-            var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, ct).ConfigureAwait(false);
+            var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, PlaylistRandom, ct).ConfigureAwait(false);
             newSource = sub;
             newDisposable = sub;
         }
