@@ -202,7 +202,12 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     {
         if (disposed) return;
         disposed = true;
-        killedByUs = true;
+        // Only flag "killed by us" if we're tearing down mid-stream. If the
+        // playlist already exhausted naturally, a late teardown (e.g. the
+        // framework auto-restart racing PlaybackStopped's deferred handler)
+        // must not retroactively flip DidExitCleanly to false — that's the
+        // signal the loop logic depends on.
+        if (!exhausted) killedByUs = true;
         try { cts.Cancel(); } catch { }
         try { currentInner?.Dispose(); } catch { }
         try
