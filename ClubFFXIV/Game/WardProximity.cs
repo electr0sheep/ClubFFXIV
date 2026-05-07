@@ -82,7 +82,7 @@ public static class WardProximity
             var d = Vector3.Distance(playerPos, c.DoorPosition);
             if (d > streamRange) continue;
             var nearness = Normalize(d, audibleRange, fullRange);
-            results.Add(new Result(c, d, nearness, audible: d <= audibleRange, streaming: true));
+            results.Add(new Result(c, d, nearness, d <= audibleRange, true));
         }
         results.Sort((a, b) => a.Distance.CompareTo(b.Distance));
         return results;
