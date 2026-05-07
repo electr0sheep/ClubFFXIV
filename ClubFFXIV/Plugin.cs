@@ -765,33 +765,38 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// Update the displayName for an already-published house. Re-publishes the
-    /// existing record (same streamUrl, same door coords) signed by the DJ key
-    /// — the registry's djId match is what gates this; nobody else can rename
-    /// your club. Unlike <see cref="PublishHouseAsync"/>, this does NOT
-    /// require the DJ to be standing inside the plot.
+    /// Update name, stream URL, description, and listed flag for an already-
+    /// published house. Re-publishes the record (preserving the existing door
+    /// coords) signed by the DJ key — the registry's djId match is what gates
+    /// this; nobody else can edit your club. Unlike <see cref="PublishHouseAsync"/>,
+    /// this does NOT require the DJ to be standing inside the plot, because
+    /// door coords are pulled from the existing entry rather than re-derived
+    /// from current location.
     /// </summary>
     public async Task RenamePublishedHouseAsync(
-        string canonicalKey, string newDisplayName, string newDescription, bool newListed)
+        string canonicalKey, string newDisplayName, string newStreamUrl, string newDescription, bool newListed)
     {
         if (registryClient == null)
             throw new InvalidOperationException("Registry URL not set");
         if (djIdentity == null)
-            throw new InvalidOperationException("No DJ identity — cannot rename");
+            throw new InvalidOperationException("No DJ identity — cannot edit");
         if (!Config.PublishedHouses.TryGetValue(canonicalKey, out var entry))
             throw new InvalidOperationException("House not in published list");
         if (string.IsNullOrWhiteSpace(newDisplayName))
             throw new InvalidOperationException("Name cannot be empty");
         if (newDisplayName.Length > 80)
             throw new InvalidOperationException("Name too long (max 80 chars)");
+        if (string.IsNullOrWhiteSpace(newStreamUrl))
+            throw new InvalidOperationException("Stream URL cannot be empty");
         if (newDescription.Length > 500)
             throw new InvalidOperationException("Description too long (max 500 chars)");
 
         var door = HasDoor(entry) ? ToDoorPayload(entry) : null;
         await registryClient.PublishAsync(
-            canonicalKey, entry.StreamUrl, newDisplayName, djIdentity, door, newListed, newDescription);
+            canonicalKey, newStreamUrl, newDisplayName, djIdentity, door, newListed, newDescription);
 
         entry.DisplayName = newDisplayName;
+        entry.StreamUrl = newStreamUrl;
         entry.Description = newDescription;
         entry.Listed = newListed;
         Config.Save();
@@ -800,19 +805,17 @@ public sealed class Plugin : IDalamudPlugin
         // updated displayName for outdoor proximity (rather than serving the
         // stale name from the previous fetch for up to 60s).
         InvalidateWardCacheForDoor(door);
-    }
 
-    /// <summary>
-    /// Update the displayName + description for a locally-saved house.
-    /// Local-only; no network.
-    /// </summary>
-    public void RenameSavedHouse(string canonicalKey, string newDisplayName, string newDescription)
-    {
-        if (string.IsNullOrWhiteSpace(newDisplayName)) return;
-        if (!Config.SavedHouses.TryGetValue(canonicalKey, out var entry)) return;
-        entry.DisplayName = newDisplayName.Length > 80 ? newDisplayName[..80] : newDisplayName;
-        entry.Description = newDescription.Length > 500 ? newDescription[..500] : newDescription;
-        Config.Save();
+        // If the DJ is themselves listening in Indoor mode for this plot and
+        // we just changed the URL, the active stream is stale — switch.
+        // Mirrors the equivalent block in PublishHouseAsync.
+        if (CurrentMode == PlaybackMode.Indoor
+            && CurrentPlotKey.HasValue
+            && CurrentPlotKey.Value.Canonical == canonicalKey
+            && streamPlayer.CurrentUrl != newStreamUrl)
+        {
+            EnterIndoor(newStreamUrl, new ClubContext(newDisplayName, newDescription));
+        }
     }
 
     public async Task UnpublishHouseAsync(string canonicalKey)

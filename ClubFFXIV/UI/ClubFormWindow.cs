@@ -231,11 +231,15 @@ public sealed class ClubFormWindow : Window, IDisposable
                 {
                     try
                     {
-                        await plugin.RenamePublishedHouseAsync(key, name, desc, listed);
-                        // If a local-only mirror also exists, sync its name+desc
-                        // so the two copies don't drift apart.
+                        await plugin.RenamePublishedHouseAsync(key, name, url, desc, listed);
+                        // If a local-only mirror also exists, sync the full
+                        // editable set (name + URL + description) so the two
+                        // copies don't drift. Indoor mode reads SavedHouses
+                        // first, so failing to sync the URL here would mean
+                        // the user's edit silently doesn't take effect inside
+                        // their own house.
                         if (plugin.Config.SavedHouses.ContainsKey(key))
-                            plugin.RenameSavedHouse(key, name, desc);
+                            plugin.UpsertSavedHouse(key, name, url, desc);
                         plugin.Notify("ClubFFXIV",
                             listed
                                 ? $"Updated '{name}'."
