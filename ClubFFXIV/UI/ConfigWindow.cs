@@ -31,17 +31,35 @@ public sealed class ConfigWindow : Window, IDisposable
     // sees something between click and toast.
     private string inflightStatus = "";
 
-    // Inline-rename state for the unified houses list. Holds the canonical key
-    // of the row currently being edited, plus the in-flight edits (name +
-    // description + listed flag). Only one row is editable at a time.
+    // Edit-form state for the unified My Houses list. Holds the canonical
+    // key of the row currently being edited plus its in-flight edits (name,
+    // description, listed flag). Only one row is editable at a time; the
+    // form renders above the table when editingKey is set.
     private string? editingKey;
     private string editingName = "";
     private string editingDescription = "";
     private bool editingListed = true;
 
-    // Filter input for the My Clubs houses list. Substring-matches against the
-    // entry's display name, case-insensitive.
-    private string houseFilterInput = "";
+    // Per-column substring filters for the My Houses table (My Clubs tab).
+    // AND'd together; empty = no constraint. State and Calibrated columns are
+    // sort-only — small enumerated value sets that don't benefit from typing.
+    private string houseNameFilter = "";
+    private string houseDescriptionFilter = "";
+    private string houseUrlFilter = "";
+
+    // Plot key of the most recently copied URL row. Drives the "Click to copy"
+    // ↔ "Copied" tooltip toggle on the My Houses Stream URL cell, mirroring
+    // the directory window's behavior.
+    private string? lastCopiedHouseKey;
+
+    // Column user IDs for the My Houses table — passed to TableSetupColumn
+    // and read back via TableGetSortSpecs. Values are arbitrary but stable.
+    private const uint HCalib = 1;
+    private const uint HName = 2;
+    private const uint HState = 3;
+    private const uint HDescription = 4;
+    private const uint HUrl = 5;
+    private const uint HActions = 6;
 
     public ConfigWindow(Plugin plugin)
         : base("ClubFFXIV##ClubFFXIVConfig", ImGuiWindowFlags.NoCollapse)
@@ -841,20 +859,8 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawMyHousesSection()
     {
         var rows = new System.Collections.Generic.List<UnifiedHouseRow>(EnumerateMyHouses());
-        rows.Sort((a, b) => string.Compare(a.Primary.DisplayName, b.Primary.DisplayName,
-            StringComparison.OrdinalIgnoreCase));
 
         ImGui.TextUnformatted($"My Houses — {rows.Count}");
-        ImGui.Spacing();
-
-        // Filter input — substring on display name, case-insensitive.
-        ImGui.TextUnformatted("Filter:");
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(-80);
-        ImGui.InputText("##houseFilter", ref houseFilterInput, 128);
-        ImGui.SameLine();
-        if (ImGui.Button("Clear", new Vector2(70, 0)))
-            houseFilterInput = "";
         ImGui.Spacing();
 
         if (rows.Count == 0)
@@ -865,41 +871,172 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
-        var filter = houseFilterInput.Trim();
-        var hasFilter = filter.Length > 0;
-        var filterLower = hasFilter ? filter.ToLowerInvariant() : "";
+        // Edit panel renders above the table so the multiline description
+        // input has room without expanding a single row to an awkward height.
+        // The row in the table is unaffected; the panel is the single place
+        // where field-level editing happens.
+        if (editingKey != null)
+        {
+            UnifiedHouseRow? editRow = null;
+            foreach (var r in rows)
+                if (r.Key == editingKey) { editRow = r; break; }
+
+            if (editRow.HasValue)
+            {
+                DrawHouseEditPanel(editRow.Value);
+                ImGui.Spacing();
+                ImGui.Separator();
+                ImGui.Spacing();
+            }
+            else
+            {
+                // The edited row vanished mid-flight (unpublish completed,
+                // local delete, etc.) — drop the orphaned editing state.
+                CancelHouseEdit();
+            }
+        }
+
+        DrawHousesTable(rows);
+    }
+
+    private void DrawHousesTable(System.Collections.Generic.List<UnifiedHouseRow> allRows)
+    {
+        var flags = ImGuiTableFlags.Resizable
+                  | ImGuiTableFlags.Reorderable
+                  | ImGuiTableFlags.Hideable
+                  | ImGuiTableFlags.Sortable
+                  | ImGuiTableFlags.RowBg
+                  | ImGuiTableFlags.BordersOuter
+                  | ImGuiTableFlags.BordersV
+                  | ImGuiTableFlags.ScrollY
+                  | ImGuiTableFlags.SizingStretchProp;
+
+        if (!ImGui.BeginTable("##myHousesTable", 6, flags, new Vector2(-1, -1)))
+            return;
+
+        ImGui.TableSetupColumn("✓",
+            ImGuiTableColumnFlags.WidthFixed, 28f, HCalib);
+        ImGui.TableSetupColumn("Name",
+            ImGuiTableColumnFlags.WidthStretch | ImGuiTableColumnFlags.DefaultSort,
+            1.5f, HName);
+        ImGui.TableSetupColumn("State",
+            ImGuiTableColumnFlags.WidthFixed, 110f, HState);
+        ImGui.TableSetupColumn("Description",
+            ImGuiTableColumnFlags.WidthStretch, 2.0f, HDescription);
+        ImGui.TableSetupColumn("Stream URL",
+            ImGuiTableColumnFlags.WidthStretch, 1.8f, HUrl);
+        ImGui.TableSetupColumn("Actions",
+            ImGuiTableColumnFlags.WidthFixed
+            | ImGuiTableColumnFlags.NoSort
+            | ImGuiTableColumnFlags.NoHide,
+            180f, HActions);
+
+        ImGui.TableSetupScrollFreeze(0, 2);
+        ImGui.TableHeadersRow();
+
+        // Filter row pinned with the headers. Calibrated and State columns
+        // skip the filter input — they're small enumerated value sets where
+        // sorting beats typing.
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn(); // Calibrated — no filter
+        DrawHouseFilterCell("##fhName", ref houseNameFilter);
+        ImGui.TableNextColumn(); // State — no filter
+        DrawHouseFilterCell("##fhDesc", ref houseDescriptionFilter);
+        DrawHouseFilterCell("##fhUrl", ref houseUrlFilter);
+        ImGui.TableNextColumn(); // Actions — no filter
+
+        var filtered = new System.Collections.Generic.List<UnifiedHouseRow>(allRows.Count);
+        foreach (var r in allRows)
+            if (HouseMatchesFilters(r)) filtered.Add(r);
+
+        SortHouseRows(filtered);
 
         var canCalibrate = plugin.CurrentWard.HasValue;
         string? toDeleteSavedOnly = null;
-        var matchCount = 0;
+        foreach (var row in filtered)
+            DrawHouseTableRow(row, canCalibrate, ref toDeleteSavedOnly);
 
-        foreach (var row in rows)
-        {
-            if (hasFilter
-                && !row.Primary.DisplayName.ToLowerInvariant().Contains(filterLower))
-                continue;
-            matchCount++;
-            DrawHouseRow(row, canCalibrate, ref toDeleteSavedOnly);
-        }
-
-        if (hasFilter && matchCount == 0)
-            ImGui.TextDisabled($"No houses matched \"{filter}\".");
+        ImGui.EndTable();
 
         if (toDeleteSavedOnly != null)
         {
-            // Cancel any active inline edit on the row we just deleted.
-            if (editingKey == toDeleteSavedOnly)
-            {
-                editingKey = null;
-                editingName = "";
-                editingDescription = "";
-            }
+            if (editingKey == toDeleteSavedOnly) CancelHouseEdit();
             plugin.DeleteSavedHouse(toDeleteSavedOnly);
             plugin.Notify("ClubFFXIV", "Removed saved house.", NotificationType.Success);
         }
     }
 
-    private void DrawHouseRow(
+    private static void DrawHouseFilterCell(string id, ref string value)
+    {
+        ImGui.TableNextColumn();
+        ImGui.SetNextItemWidth(-1);
+        ImGui.InputText(id, ref value, 64);
+    }
+
+    private bool HouseMatchesFilters(UnifiedHouseRow row)
+    {
+        var entry = row.Primary;
+        if (houseNameFilter.Length > 0
+            && !entry.DisplayName.Contains(houseNameFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (houseDescriptionFilter.Length > 0
+            && !entry.Description.Contains(houseDescriptionFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (houseUrlFilter.Length > 0
+            && !entry.StreamUrl.Contains(houseUrlFilter, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
+    }
+
+    private static void SortHouseRows(System.Collections.Generic.List<UnifiedHouseRow> rows)
+    {
+        var specs = ImGui.TableGetSortSpecs();
+        uint key = HName;
+        var ascending = true;
+        if (specs.SpecsCount > 0)
+        {
+            var spec = specs.Specs;
+            key = spec.ColumnUserID;
+            ascending = spec.SortDirection == ImGuiSortDirection.Ascending;
+        }
+
+        rows.Sort((a, b) =>
+        {
+            var ea = a.Primary;
+            var eb = b.Primary;
+            var cmp = key switch
+            {
+                HCalib => CalibratedSortKey(ea).CompareTo(CalibratedSortKey(eb)),
+                HName => string.Compare(ea.DisplayName, eb.DisplayName,
+                                        StringComparison.OrdinalIgnoreCase),
+                HState => StateSortKey(a).CompareTo(StateSortKey(b)),
+                HDescription => string.Compare(ea.Description, eb.Description,
+                                               StringComparison.OrdinalIgnoreCase),
+                HUrl => string.Compare(ea.StreamUrl, eb.StreamUrl,
+                                       StringComparison.OrdinalIgnoreCase),
+                _ => 0,
+            };
+            return ascending ? cmp : -cmp;
+        });
+    }
+
+    private static int CalibratedSortKey(ClubEntry e) => e.DoorPosition != null ? 0 : 1;
+
+    private static int StateSortKey(UnifiedHouseRow row)
+    {
+        // Order: published+listed → published+hidden → local. Keeps the rows
+        // the user is most likely actively managing at the top.
+        if (row.IsPublished) return row.Primary.Listed ? 0 : 1;
+        return 2;
+    }
+
+    private static string StateBadge(UnifiedHouseRow row)
+    {
+        if (row.IsPublished) return row.Primary.Listed ? "published" : "hidden";
+        return "local";
+    }
+
+    private void DrawHouseTableRow(
         UnifiedHouseRow row,
         bool canCalibrate,
         ref string? toDeleteSavedOnly)
@@ -907,24 +1044,71 @@ public sealed class ConfigWindow : Window, IDisposable
         var key = row.Key;
         var entry = row.Primary;
         var calibrated = entry.DoorPosition != null;
-        ImGui.PushID("myhouses-" + key);
 
-        if (editingKey == key)
-            DrawHouseRowEditing(row);
-        else
-            DrawHouseRowReadonly(row, calibrated, canCalibrate, ref toDeleteSavedOnly);
+        ImGui.TableNextRow();
+        ImGui.PushID("myhouse-" + key);
 
-        ImGui.TextDisabled("  " + entry.StreamUrl);
-        if (calibrated)
+        ImGui.TableNextColumn();
+        ImGui.TextUnformatted(calibrated ? "✓" : "—");
+        if (calibrated && ImGui.IsItemHovered())
         {
             var p = entry.DoorPosition!;
-            ImGui.TextDisabled(
-                $"  door: ({p.X:F1}, {p.Y:F1}, {p.Z:F1})  ward {entry.DoorWard + 1}  territory {entry.DoorTerritoryType}");
+            ImGui.SetTooltip(
+                $"Door: ({p.X:F1}, {p.Y:F1}, {p.Z:F1})\n" +
+                $"Ward {entry.DoorWard + 1} · territory {entry.DoorTerritoryType}");
         }
+
+        ImGui.TableNextColumn();
+        ImGui.TextUnformatted(entry.DisplayName);
+
+        ImGui.TableNextColumn();
+        ImGui.TextUnformatted(StateBadge(row));
+
+        ImGui.TableNextColumn();
+        if (!string.IsNullOrWhiteSpace(entry.Description))
+        {
+            var desc = entry.Description.Length > 200
+                ? entry.Description[..197] + "..."
+                : entry.Description;
+            ImGui.TextWrapped(desc);
+        }
+        else
+        {
+            ImGui.TextDisabled("—");
+        }
+
+        ImGui.TableNextColumn();
+        if (entry.StreamUrl.Length > 0)
+        {
+            // Click anywhere in the URL cell copies the stream URL — same
+            // pattern as the Public Directory window.
+            var preview = entry.StreamUrl.Length > 60
+                ? entry.StreamUrl[..57] + "..."
+                : entry.StreamUrl;
+            if (ImGui.Selectable(preview))
+            {
+                ImGui.SetClipboardText(entry.StreamUrl);
+                lastCopiedHouseKey = key;
+            }
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetTooltip(lastCopiedHouseKey == key
+                    ? "Copied"
+                    : "Click to copy");
+            }
+        }
+        else
+        {
+            ImGui.TextDisabled("—");
+        }
+
+        ImGui.TableNextColumn();
+        DrawHouseActions(row, calibrated, canCalibrate, ref toDeleteSavedOnly);
+
         ImGui.PopID();
     }
 
-    private void DrawHouseRowReadonly(
+    private void DrawHouseActions(
         UnifiedHouseRow row,
         bool calibrated,
         bool canCalibrate,
@@ -932,25 +1116,8 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var key = row.Key;
         var entry = row.Primary;
-        var calBadge = calibrated ? "[+]" : "[ ]";
 
-        // Subtle status badge ("local" / "published" / "published, hidden").
-        // The published-vs-local distinction governs what actions appear.
-        string stateBadge;
-        if (row.IsPublished)
-            stateBadge = entry.Listed ? "published" : "published, hidden";
-        else
-            stateBadge = "local";
-
-        ImGui.TextUnformatted($"{calBadge} {entry.DisplayName}");
-        ImGui.SameLine();
-        ImGui.TextDisabled($"· {stateBadge}");
-
-        if (ImGui.SmallButton("Load"))
-            urlInput = entry.StreamUrl;
-        ImGui.SameLine();
-
-        if (ImGui.SmallButton(row.IsPublished ? "Edit" : "Rename"))
+        if (ImGui.SmallButton("Edit"))
         {
             editingKey = key;
             editingName = entry.DisplayName;
@@ -960,7 +1127,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SameLine();
 
         if (!canCalibrate) ImGui.BeginDisabled();
-        if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate door"))
+        if (ImGui.SmallButton(calibrated ? "Re-calibrate" : "Calibrate"))
         {
             if (plugin.CalibrateDoor(key))
                 plugin.Notify("ClubFFXIV",
@@ -1003,22 +1170,24 @@ public sealed class ConfigWindow : Window, IDisposable
         }
         else if (row.IsLocalOnly)
         {
-            // Local-only deletes are immediate (no network) — Delete is the
-            // only way to remove a saved-only entry.
+            // Local-only deletes are immediate (no network).
             if (ImGui.SmallButton("Delete")) toDeleteSavedOnly = key;
         }
     }
 
-    private void DrawHouseRowEditing(UnifiedHouseRow row)
+    private void DrawHouseEditPanel(UnifiedHouseRow row)
     {
         var entry = row.Primary;
-        var calBadge = entry.DoorPosition != null ? "[+]" : "[ ]";
+        var calibrated = entry.DoorPosition != null;
 
-        ImGui.TextUnformatted(calBadge);
-        ImGui.SameLine();
+        ImGui.TextUnformatted($"Editing: {(calibrated ? "✓ " : "")}{entry.DisplayName}");
+        ImGui.Spacing();
+
+        ImGui.TextUnformatted("Name:");
         ImGui.SetNextItemWidth(-1);
-        ImGui.InputText("##rename", ref editingName, 81);
+        ImGui.InputText("##editName", ref editingName, 81);
 
+        ImGui.Spacing();
         ImGui.TextUnformatted("Description:");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextMultiline(
@@ -1027,9 +1196,23 @@ public sealed class ConfigWindow : Window, IDisposable
             501,
             new Vector2(-1, 60));
 
-        var key = row.Key;
+        if (row.IsPublished)
+        {
+            ImGui.Spacing();
+            ImGui.Checkbox("Show in public directory", ref editingListed);
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Unchecking only hides this club from the Public\n" +
+                    "Directory list — anyone who knows your plot key or\n" +
+                    "walks past still discovers it. For full privacy,\n" +
+                    "Unpublish instead.");
+        }
 
-        if (ImGui.SmallButton("Save"))
+        ImGui.Spacing();
+        var key = row.Key;
+        if (ImGui.Button("Save"))
         {
             var newName = editingName.Trim();
             if (string.IsNullOrEmpty(newName))
@@ -1080,33 +1263,18 @@ public sealed class ConfigWindow : Window, IDisposable
                     $"Saved '{newName}' locally.",
                     NotificationType.Success);
             }
-            editingKey = null;
-            editingName = "";
-            editingDescription = "";
+            CancelHouseEdit();
         }
         ImGui.SameLine();
-        if (ImGui.SmallButton("Cancel"))
-        {
-            editingKey = null;
-            editingName = "";
-            editingDescription = "";
-        }
+        if (ImGui.Button("Cancel")) CancelHouseEdit();
+    }
 
-        // Listed toggle is only meaningful for published houses (the directory
-        // is server-side; saved-only entries aren't in the registry).
-        if (row.IsPublished)
-        {
-            ImGui.SameLine();
-            ImGui.Checkbox("Show in public directory", ref editingListed);
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Unchecking only hides this club from the Public\n" +
-                    "Directory list — anyone who knows your plot key or\n" +
-                    "walks past still discovers it. For full privacy,\n" +
-                    "Unpublish instead.");
-        }
+    private void CancelHouseEdit()
+    {
+        editingKey = null;
+        editingName = "";
+        editingDescription = "";
+        editingListed = true;
     }
 
     /// <summary>
