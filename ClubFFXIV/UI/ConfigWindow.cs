@@ -15,6 +15,11 @@ public sealed class ConfigWindow : Window, IDisposable
     private readonly Plugin plugin;
     private string urlInput;
     private string registryUrlInput;
+    // Local edit buffer for the yt-dlp cookies-from-browser knob. Synced
+    // from Config on construction and committed back on lose-focus
+    // (IsItemDeactivatedAfterEdit) so we don't write the config file on
+    // every keystroke.
+    private string ytDlpCookiesInput;
 
     // Inline-progress text for in-flight async operations ("Publishing...",
     // "Saving...", "Unpublishing..."). Final results go to Dalamud notifications;
@@ -51,6 +56,7 @@ public sealed class ConfigWindow : Window, IDisposable
         SizeCondition = ImGuiCond.FirstUseEver;
         urlInput = plugin.Config.LastStreamUrl;
         registryUrlInput = plugin.Config.RegistryUrl;
+        ytDlpCookiesInput = plugin.Config.YtDlpCookiesBrowser;
     }
 
     public void Dispose() { }
@@ -181,6 +187,42 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawBinariesSection();
         ImGui.Spacing();
         DrawMultiStreamSection();
+        ImGui.Spacing();
+        DrawYtDlpSection();
+    }
+
+    private void DrawYtDlpSection()
+    {
+        ImGui.TextUnformatted("yt-dlp");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextWrapped(
+            "If YouTube starts showing \"Sign in to confirm you're not a bot\" errors, " +
+            "set this to your browser name (firefox, chrome, edge, brave, opera, " +
+            "vivaldi, chromium, safari). yt-dlp will read your logged-in session " +
+            "cookies from that browser. Leave empty to stay anonymous.");
+        ImGui.Spacing();
+
+        ImGui.TextUnformatted("Cookies from browser:");
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Browsers yt-dlp can read cookies from:\n" +
+                "  brave, chrome, chromium, edge, firefox,\n" +
+                "  opera, safari, vivaldi.\n\n" +
+                "You must be logged into YouTube (or whichever\n" +
+                "site is gating you) in that browser. Saved\n" +
+                "on lose-focus.");
+
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputText("##ytDlpCookies", ref ytDlpCookiesInput, 32);
+        if (ImGui.IsItemDeactivatedAfterEdit())
+        {
+            plugin.Config.YtDlpCookiesBrowser = ytDlpCookiesInput.Trim();
+            plugin.Config.Save();
+        }
     }
 
     private void DrawMultiStreamSection()

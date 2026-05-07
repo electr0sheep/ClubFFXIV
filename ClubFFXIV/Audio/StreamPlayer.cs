@@ -44,6 +44,13 @@ public sealed class StreamPlayer : IDisposable
     /// </summary>
     public bool PlaylistRandom { get; set; }
 
+    /// <summary>
+    /// Browser name passed to yt-dlp's --cookies-from-browser, or empty to
+    /// disable. Plugin syncs this from <see cref="Configuration.YtDlpCookiesBrowser"/>
+    /// each framework tick; the value is read at the next <see cref="PlayAsync"/> call.
+    /// </summary>
+    public string YtDlpCookiesBrowser { get; set; } = "";
+
     public StreamPlayer(BinaryManager binaryManager)
     {
         this.binaryManager = binaryManager;
@@ -173,7 +180,7 @@ public sealed class StreamPlayer : IDisposable
             // degenerates to one ffmpeg + a clean EOF, just like the old
             // single-shot path.
             var sub = await PlaylistAudioReader.CreateAsync(
-                url, binaryManager, PlaylistRandom, ct).ConfigureAwait(false);
+                url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, ct).ConfigureAwait(false);
             newSource = sub;
             newDisposable = sub;
         }

@@ -52,6 +52,13 @@ internal sealed class MultiStreamPlayer : IDisposable
     public bool PlaylistRandom { get; set; }
 
     /// <summary>
+    /// Browser name passed to yt-dlp's --cookies-from-browser, or empty to
+    /// disable. Plugin syncs this from <see cref="Configuration.YtDlpCookiesBrowser"/>;
+    /// read at each <see cref="AddVoiceAsync"/> call.
+    /// </summary>
+    public string YtDlpCookiesBrowser { get; set; } = "";
+
+    /// <summary>
     /// Fires when an individual voice's source reached a natural EOF
     /// (eligible for auto-loop). Args: (canonicalKey, url). Plugin's
     /// loop handler decides whether to <see cref="AddVoiceAsync"/> the same
@@ -247,7 +254,7 @@ internal sealed class MultiStreamPlayer : IDisposable
                     return false;
                 }
                 var sub = await SubprocessAudioReader.CreateAsync(
-                    url, binaryManager, PlaylistRandom, cts.Token).ConfigureAwait(false);
+                    url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, cts.Token).ConfigureAwait(false);
                 source = sub;
                 disposable = sub;
             }

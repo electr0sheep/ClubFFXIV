@@ -50,6 +50,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     /// </summary>
     public static async Task<SubprocessAudioReader> CreateAsync(
         string url, BinaryManager binaries, bool playlistRandom = false,
+        string? cookiesFromBrowser = null,
         CancellationToken ct = default)
     {
         if (!binaries.Ready)
@@ -57,7 +58,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
 
         // Step 1 — let yt-dlp pick the best audio-only or low-bitrate variant
         // and print the underlying media URL.
-        var resolvedUrl = await ResolveUrlAsync(url, binaries, playlistRandom, ct);
+        var resolvedUrl = await ResolveUrlAsync(url, binaries, playlistRandom, cookiesFromBrowser, ct);
 
         // Step 2 — ffmpeg spawn factored into FromResolvedUrl so the playlist
         // wrapper can build inner readers without re-running yt-dlp.
@@ -224,6 +225,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
 
     private static async Task<string> ResolveUrlAsync(
         string url, BinaryManager binaries, bool playlistRandom,
+        string? cookiesFromBrowser,
         CancellationToken ct)
     {
         var psi = new ProcessStartInfo
@@ -246,6 +248,15 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // consumes every emitted URL across multiple ffmpegs.)
         if (playlistRandom)
             psi.ArgumentList.Add("--playlist-random");
+        // Authenticate as the user's logged-in browser session — the
+        // standard fix for YouTube's "Sign in to confirm you're not a bot"
+        // screen. Empty/null leaves yt-dlp anonymous (works for most
+        // public videos until YouTube tightens further).
+        if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
+        {
+            psi.ArgumentList.Add("--cookies-from-browser");
+            psi.ArgumentList.Add(cookiesFromBrowser);
+        }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);
 

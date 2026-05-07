@@ -1039,6 +1039,9 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.PlaylistRandom = Config.PlaylistRandom;
         if (multiStreamPlayer != null) multiStreamPlayer.PlaylistRandom = Config.PlaylistRandom;
 
+        streamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
+        if (multiStreamPlayer != null) multiStreamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
+
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         // Mute while a load is pending too — otherwise the game's BGM blares for the

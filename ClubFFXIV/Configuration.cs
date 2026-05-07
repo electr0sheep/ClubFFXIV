@@ -96,6 +96,17 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public bool PlaylistRandom { get; set; } = false;
 
+    /// <summary>
+    /// Browser to read cookies from for yt-dlp invocations. Empty = no cookies
+    /// (default). Setting "firefox", "chrome", "edge", "brave", "opera", "vivaldi",
+    /// "chromium", or "safari" has yt-dlp authenticate as your logged-in browser
+    /// session — the standard fix for YouTube's "Sign in to confirm you're not a bot"
+    /// screen. You must be logged into the relevant site in that browser.
+    /// Forwarded to both <see cref="StreamPlayer"/> and <see cref="MultiStreamPlayer"/>
+    /// on each framework tick, so changes take effect on the next stream start.
+    /// </summary>
+    public string YtDlpCookiesBrowser { get; set; } = "";
+
     /// <summary>Last time we checked for binary updates (UTC).</summary>
     public DateTime BinariesLastChecked { get; set; } = DateTime.MinValue;
 
