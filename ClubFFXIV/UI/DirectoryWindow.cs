@@ -182,13 +182,6 @@ public sealed class DirectoryWindow : Window, IDisposable
         foreach (var club in rows)
             DrawRow(club);
 
-        if (rows.Count == 0)
-        {
-            ImGui.TableNextRow();
-            ImGui.TableNextColumn();
-            ImGui.TextDisabled("No clubs match the active filters.");
-        }
-
         ImGui.EndTable();
     }
 
@@ -196,7 +189,7 @@ public sealed class DirectoryWindow : Window, IDisposable
     {
         ImGui.TableNextColumn();
         ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint(id, "filter…", ref value, 64);
+        ImGui.InputText(id, ref value, 64);
     }
 
     private bool MatchesFilters(DirectoryListingEntry e)

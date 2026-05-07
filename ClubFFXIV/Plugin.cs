@@ -598,7 +598,6 @@ public sealed class Plugin : IDalamudPlugin
         Config.Save();
 
         InvalidateWardCacheForDoor(door);
-        InvalidateDirectoryCache();
 
         // If the DJ is themselves listening in Indoor mode for this plot, the
         // active stream is stale — switch to the new URL.
@@ -647,7 +646,6 @@ public sealed class Plugin : IDalamudPlugin
         // updated displayName for outdoor proximity (rather than serving the
         // stale name from the previous fetch for up to 60s).
         InvalidateWardCacheForDoor(door);
-        InvalidateDirectoryCache();
     }
 
     /// <summary>
@@ -678,7 +676,6 @@ public sealed class Plugin : IDalamudPlugin
             Config.PublishedHouses.Remove(canonicalKey);
             Config.Save();
         }
-        InvalidateDirectoryCache();
     }
 
     public bool CalibrateDoor(string canonicalKey)
@@ -721,7 +718,6 @@ public sealed class Plugin : IDalamudPlugin
                         await registryClient.PublishAsync(
                             canonicalKey, url, dn, djIdentity, doorPayload, listed, desc);
                         InvalidateWardCacheForDoor(doorPayload);
-                        InvalidateDirectoryCache();
                     }
                     catch (Exception ex)
                     {
@@ -1217,6 +1213,11 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    /// <summary>
+    /// Drop cached directory data entirely. Use only when the data source
+    /// itself changed (e.g. registry URL reconfiguration); the old rows are
+    /// no longer meaningful in the new context.
+    /// </summary>
     private void InvalidateDirectoryCache()
     {
         directoryCache = null;
