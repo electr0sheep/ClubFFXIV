@@ -165,9 +165,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var cap = plugin.Config.MaxConcurrentStreams;
         ImGui.SetNextItemWidth(160);
-        if (ImGui.SliderInt("Max concurrent voices", ref cap, 1, 5))
+        if (ImGui.SliderInt("Max concurrent streams", ref cap, 1, 10))
         {
-            plugin.Config.MaxConcurrentStreams = Math.Clamp(cap, 1, 5);
+            plugin.Config.MaxConcurrentStreams = Math.Clamp(cap, 1, 10);
             plugin.Config.Save();
         }
     }

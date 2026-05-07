@@ -70,6 +70,16 @@ internal sealed class MultiStreamPlayer : IDisposable
         lock (voicesLock) return pendingStarts.ContainsKey(canonicalKey);
     }
 
+    /// <summary>
+    /// True if any voice is playing or mid-startup. Used by the BGM-muter
+    /// policy: an indoor multi-stream voice still buffering should mute the
+    /// game's own music, just like a single-stream pendingStartUrl does.
+    /// </summary>
+    public bool HasAnyActivity
+    {
+        get { lock (voicesLock) return voices.Count > 0 || pendingStarts.Count > 0; }
+    }
+
     /// <summary>Snapshot of currently-playing canonical keys.</summary>
     public List<string> ActiveKeys()
     {

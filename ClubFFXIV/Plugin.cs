@@ -902,6 +902,10 @@ public sealed class Plugin : IDalamudPlugin
         // Mute while a load is pending too — otherwise the game's BGM blares for the
         // 1–3s the stream takes to connect after entering a house.
         var streamWillPlay = streamPlayer.IsPlaying || pendingStartUrl != null;
+#if DEBUG
+        if (!streamWillPlay && MultiStreamActive && multiStreamPlayer?.HasAnyActivity == true)
+            streamWillPlay = true;
+#endif
         var streamIsPrimary = streamWillPlay
             && CurrentMode is PlaybackMode.Indoor or PlaybackMode.Manual;
         if (streamIsPrimary)
@@ -999,7 +1003,30 @@ public sealed class Plugin : IDalamudPlugin
 
     private void HandleIndoorMode(PlotKey key)
     {
-        if (CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying)
+        bool alreadySettled;
+#if DEBUG
+        if (MultiStreamActive)
+        {
+            // Multi-stream Indoor: voice exists for this plot ⇒ already settled.
+            // Re-apply bypass each tick to cover the case where AddVoiceAsync
+            // just completed at an outdoor cutoff (transition is multi-tick).
+            alreadySettled = CurrentMode == PlaybackMode.Indoor
+                && multiStreamPlayer != null
+                && multiStreamPlayer.HasVoice(key.Canonical);
+            if (alreadySettled)
+            {
+                multiStreamPlayer!.SetSpatial(key.Canonical, 1.0f, MultiStreamPlayer.BypassCutoffHz);
+            }
+        }
+        else
+        {
+            alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying;
+        }
+#else
+        alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying;
+#endif
+
+        if (alreadySettled)
         {
             CurrentProximity = null;
             return;
@@ -1040,12 +1067,12 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void EnterIndoor(string url, ClubContext context)
     {
-        // Indoor is solo by contract: tear down any outdoor multi-voice mix
-        // before starting the single-voice indoor stream. The seamless-reuse
-        // optimization below still applies to the single-stream path; multi-
-        // stream sources can't be reused that way (they're inside a mixer).
 #if DEBUG
-        TearDownMultiStream();
+        if (MultiStreamActive)
+        {
+            EnterIndoorMulti(url, context);
+            return;
+        }
 #endif
 
         // Seamless: same URL was already streaming outdoors.
@@ -1071,6 +1098,62 @@ public sealed class Plugin : IDalamudPlugin
         CurrentMode = PlaybackMode.Indoor;
         _ = StartStreamAsync(url, PlaybackMode.Indoor, context.ClubName);
     }
+
+#if DEBUG
+    /// <summary>
+    /// Indoor entry in multi-stream mode. Indoor is solo: keep only the voice
+    /// for the current plot (so the user hears one club distinctly), and bypass
+    /// its spatial filter (full volume, full bandwidth). If the voice was
+    /// already streaming outdoors, this is a true seamless transition — no
+    /// reconnect, no rebuffering. If not, kick off a fresh AddVoiceAsync with
+    /// bypass params; HandleIndoorMode's per-tick re-apply keeps the bypass in
+    /// place as the voice finishes loading.
+    /// </summary>
+    private void EnterIndoorMulti(string url, ClubContext context)
+    {
+        // Single-voice player is unused while multi-stream owns the output.
+        if (streamPlayer.IsPlaying) streamPlayer.Stop();
+
+        var canonical = CurrentPlotKey?.Canonical;
+        if (canonical == null) return;
+
+        var player = EnsureMultiStreamPlayer();
+
+        // Solo: drop every voice that isn't this plot's.
+        foreach (var key in player.ActiveKeys())
+        {
+            if (key != canonical) player.RemoveVoice(key);
+        }
+
+        if (player.HasVoice(canonical))
+        {
+            // Seamless reuse — the outdoor voice stays alive, just unmuffled.
+            player.SetSpatial(canonical, 1.0f, MultiStreamPlayer.BypassCutoffHz);
+            CurrentMode = PlaybackMode.Indoor;
+            CurrentProximity = null;
+            return;
+        }
+
+        if (player.IsStarting(canonical))
+        {
+            // Voice is already mid-startup from the outdoor path. Don't restart;
+            // HandleIndoorMode's idempotent re-apply will swap it to bypass on
+            // the tick after AddVoiceAsync completes.
+            CurrentMode = PlaybackMode.Indoor;
+            CurrentProximity = null;
+            return;
+        }
+
+        if (!TryAutoPlayPermission(url, context)) return;
+        if (BinariesMissingForUrl(url)) return;
+        if (IsStreamInCooldown(url)) return;
+
+        // Optimistic mode flip — same rationale as the single-stream path.
+        CurrentMode = PlaybackMode.Indoor;
+        CurrentProximity = null;
+        _ = player.AddVoiceAsync(canonical, url, MultiStreamPlayer.BypassCutoffHz);
+    }
+#endif
 
     private void HandleOutdoorMode(WardLocation ward)
     {
@@ -1183,7 +1266,7 @@ public sealed class Plugin : IDalamudPlugin
 
         // Build desired set under the cap. yt-dlp = 2 voice-units (each spawns
         // yt-dlp + ffmpeg subprocesses), direct HTTP = 1.
-        var max = Math.Clamp(Config.MaxConcurrentStreams, 1, 5);
+        var max = Math.Clamp(Config.MaxConcurrentStreams, 1, 10);
         var desired = new List<WardProximity.Result>();
         var desiredKeys = new HashSet<string>();
         var cost = 0;
