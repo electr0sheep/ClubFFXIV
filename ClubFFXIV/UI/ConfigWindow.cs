@@ -667,6 +667,11 @@ public sealed class ConfigWindow : Window, IDisposable
                 // Probe /health before persisting so a syntactically-valid but
                 // wrong URL doesn't reach the per-tick ward fetcher.
                 var candidate = normalized;
+                // Flip the indicator to "checking..." on the UI thread, before
+                // backgrounding — otherwise the previous "connected" lingers
+                // through the entire probe and the user has no idea anything's
+                // happening.
+                plugin.SetRegistryChecking();
                 _ = Task.Run(async () =>
                 {
                     try
@@ -677,8 +682,6 @@ public sealed class ConfigWindow : Window, IDisposable
                         plugin.Config.RegistryUrl = candidate;
                         plugin.Config.Save();
                         plugin.RebuildRegistryClient();
-                        // Rebuild reset the flag to null; record the result
-                        // we just verified so the indicator updates immediately.
                         plugin.SetRegistryConnected(true);
                         plugin.Notify("ClubFFXIV",
                             "Registry connected.",
@@ -689,6 +692,7 @@ public sealed class ConfigWindow : Window, IDisposable
                         // Underlying message goes to the log for diagnosis;
                         // the user-facing notification stays uniform.
                         Plugin.Log.Error(ex, "Registry health check failed");
+                        plugin.SetRegistryConnected(false);
                         plugin.Notify("ClubFFXIV",
                             "Not a valid registry.",
                             NotificationType.Error,
@@ -704,13 +708,17 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.RegistryConnected == false ? "○ not connected" :
             "○ checking...");
 
-        ImGui.Spacing();
-        if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-        if (ImGui.Button("Browse Public Directory"))
-            plugin.ToggleDirectory();
-        if (!plugin.RegistryEnabled) ImGui.EndDisabled();
-        ImGui.SameLine();
-        ImGui.TextDisabled("(or /club directory)");
+        // Only offer Browse when the probe says the registry is actually
+        // reachable. Disabled / unverified / failed states all hide the entry
+        // point — there's nothing to browse if the call would just error.
+        if (plugin.RegistryConnected == true)
+        {
+            ImGui.Spacing();
+            if (ImGui.Button("Browse Public Directory"))
+                plugin.ToggleDirectory();
+            ImGui.SameLine();
+            ImGui.TextDisabled("(or /club directory)");
+        }
 
         ImGui.Spacing();
         var djId = plugin.DjId;

@@ -473,6 +473,7 @@ public sealed class Plugin : IDalamudPlugin
     public bool? RegistryConnected { get; private set; }
 
     public void SetRegistryConnected(bool connected) => RegistryConnected = connected;
+    public void SetRegistryChecking() => RegistryConnected = null;
 
     public void SaveCurrentHouse(string displayName, string url, string description)
     {
