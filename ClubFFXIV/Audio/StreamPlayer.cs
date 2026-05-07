@@ -113,7 +113,7 @@ public sealed class StreamPlayer : IDisposable
         if (kind == AudioSourceKind.YtDlp)
         {
             // Binaries are no longer auto-downloaded — installing them is an
-            // explicit step in the setup wizard / /club config. Surface a
+            // explicit step in the setup wizard / /pclub config. Surface a
             // clear, actionable error if the user hits a yt-dlp URL without
             // installing first.
             if (!binaryManager.Ready)
@@ -125,7 +125,7 @@ public sealed class StreamPlayer : IDisposable
                         : "ffmpeg";
                 throw new InvalidOperationException(
                     $"This stream type needs {missing}, which hasn't been downloaded. " +
-                    $"Open /club config → External binaries to install (~83 MB total).");
+                    $"Open /pclub config → External binaries to install (~83 MB total).");
             }
             var sub = await SubprocessAudioReader.CreateAsync(url, binaryManager, ct).ConfigureAwait(false);
             newSource = sub;

@@ -63,7 +63,7 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
 
         SectionHeader("Got a stream URL from a friend?");
-        ImGui.BulletText("Paste it into the \"Stream URL\" field in /club config");
+        ImGui.BulletText("Paste it into the \"Stream URL\" field in /pclub config");
         ImGui.BulletText("Click Play");
         ImGui.Spacing();
 
@@ -180,7 +180,7 @@ public sealed class HelpWindow : Window, IDisposable
 
         SectionHeader("Once you have a stream URL");
         ImGui.BulletText("Stand inside your house");
-        ImGui.BulletText("Open /club config → paste URL into Stream URL field");
+        ImGui.BulletText("Open /pclub config → paste URL into Stream URL field");
         ImGui.BulletText("Click \"Save URL for this house (local)\" to auto-play it for yourself");
         ImGui.BulletText("Click \"Publish to registry\" to let other plugin users discover it");
         ImGui.BulletText("Walk outside to your front door, click \"Calibrate door\"");

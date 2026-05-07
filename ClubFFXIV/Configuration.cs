@@ -17,7 +17,7 @@ public class Configuration : IPluginConfiguration
     public Dictionary<string, ClubEntry> PublishedHouses { get; set; } = new();
 
     // Defaults to the public ClubFFXIV registry so the plugin works out of the box.
-    // Users can point at their own backend by changing this in /club config; clearing
+    // Users can point at their own backend by changing this in /pclub config; clearing
     // it disables registry features (local SavedHouses still work).
     public string RegistryUrl { get; set; } = "https://registry.clubffxiv.workers.dev";
     public string DjPrivateKeyBase64 { get; set; } = "";

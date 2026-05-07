@@ -13,7 +13,7 @@ namespace ClubFFXIV.UI;
 ///      with permission prompts later.
 ///   2. Explain why ClubFFXIV needs yt-dlp + ffmpeg and let the user explicitly
 ///      download them. We do NOT silently auto-download — the user clicks here
-///      or in /club config.
+///      or in /pclub config.
 ///   3. Explain why auto-update is a good idea and let the user opt out.
 /// </summary>
 public sealed class SetupWizardWindow : Window, IDisposable
@@ -61,7 +61,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
     {
         ImGui.TextWrapped(
             "Welcome to ClubFFXIV! A short walk-through to get you set up — " +
-            "you can change everything below later in /club config.");
+            "you can change everything below later in /pclub config.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
@@ -150,7 +150,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.TextDisabled(
-            "You can also install (or check / update) later in /club config → " +
+            "You can also install (or check / update) later in /pclub config → " +
             "External binaries.");
     }
 
@@ -215,7 +215,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
                 "  ⚠ With auto-update off, expect Twitch / YouTube playback to " +
                 "break periodically.");
             ImGui.TextDisabled(
-                "  Manually update from /club config → External binaries → Check / update.");
+                "  Manually update from /pclub config → External binaries → Check / update.");
         }
     }
 

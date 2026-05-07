@@ -36,7 +36,7 @@ The plugin isn't in the official Dalamud repository yet. For now:
 
 ### Listener
 
-1. `/club config` opens the panel
+1. `/pclub config` opens the panel
 2. Paste a stream URL — try `https://www.youtube.com/watch?v=9Tzc3ybp8vA` to test
 3. Click Play
 
@@ -48,7 +48,7 @@ Auto-discovery works as soon as you walk into a registered house or near a calib
 
 **Want to publish your house** so visitors auto-tune when they enter:
 
-1. Stand inside your house, open `/club config`
+1. Stand inside your house, open `/pclub config`
 2. Paste your stream URL
 3. Click **Publish to registry**
 4. Walk outside to your front door, find your house in the Published Houses list, click **Calibrate door**
@@ -131,7 +131,7 @@ npx wrangler deploy
 simulation, so a preview namespace isn't needed unless you explicitly run
 `wrangler dev --remote`.
 
-Wrangler prints the public URL (e.g. `https://clubffxiv-registry.<account>.workers.dev`). Set this as the Registry URL in `/club config` to point the plugin at your instance instead of the default.
+Wrangler prints the public URL (e.g. `https://clubffxiv-registry.<account>.workers.dev`). Set this as the Registry URL in `/pclub config` to point the plugin at your instance instead of the default.
 
 **Cost**
 - Workers free tier: 100k requests/day

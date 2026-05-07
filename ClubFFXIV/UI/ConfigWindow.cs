@@ -717,7 +717,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (ImGui.Button("Browse Public Directory"))
                 plugin.ToggleDirectory();
             ImGui.SameLine();
-            ImGui.TextDisabled("(or /club directory)");
+            ImGui.TextDisabled("(or /pclub directory)");
         }
 
         ImGui.Spacing();

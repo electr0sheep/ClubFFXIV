@@ -19,7 +19,7 @@ public sealed class Plugin : IDalamudPlugin
 {
     public string Name => "ClubFFXIV";
 
-    private const string CommandName = "/club";
+    private const string CommandName = "/pclub";
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -141,7 +141,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/club play <url> | /club stop | /club calibrate <key> | /club config | /club directory",
+            HelpMessage = "/pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory",
         });
 
         PluginInterface.UiBuilder.Draw += DrawUI;
@@ -325,7 +325,7 @@ public sealed class Plugin : IDalamudPlugin
             warnedAboutMissingBinaries = true;
             ChatGui.PrintError(
                 "[ClubFFXIV] A nearby club's stream needs yt-dlp + ffmpeg, which haven't " +
-                "been installed yet. Open /club config → External binaries to download (~83 MB).");
+                "been installed yet. Open /pclub config → External binaries to download (~83 MB).");
         }
         return true;
     }
@@ -570,7 +570,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             throw new InvalidOperationException(
                 "You don't appear to own this house. " +
-                "Enable \"Allow publish without ownership check\" in /club config to override.");
+                "Enable \"Allow publish without ownership check\" in /pclub config to override.");
         }
 
         var dj = EnsureDjIdentity();
@@ -806,7 +806,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!Config.AutoUpdateBinaries) return;
         // No binaries installed = nothing to update. The user has to opt into
-        // installation explicitly (setup wizard or /club config); we don't
+        // installation explicitly (setup wizard or /pclub config); we don't
         // download in the background.
         if (!Binaries.Ready) return;
         if (DateTime.UtcNow - lastBinaryUpdateCheck < BinaryUpdateInterval) return;
@@ -1253,7 +1253,7 @@ public sealed class Plugin : IDalamudPlugin
             case "play":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("Usage: /club play <stream-url>");
+                    ChatGui.Print("Usage: /pclub play <stream-url>");
                     return;
                 }
                 try
@@ -1278,7 +1278,7 @@ public sealed class Plugin : IDalamudPlugin
             case "calibrate":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("Usage: /club calibrate <plotKey>");
+                    ChatGui.Print("Usage: /pclub calibrate <plotKey>");
                     return;
                 }
                 CalibrateDoor(rest);
@@ -1294,7 +1294,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                ChatGui.Print("Usage: /club play <url> | /club stop | /club calibrate <key> | /club config | /club directory");
+                ChatGui.Print("Usage: /pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory");
                 break;
         }
     }

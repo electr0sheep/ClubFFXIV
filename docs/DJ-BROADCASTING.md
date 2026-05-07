@@ -279,7 +279,7 @@ Verify it's working: open the stream URL in VLC or a browser tab — should hear
 
 ## 4. Plug into ClubFFXIV
 
-In your house in-game, open `/club config`:
+In your house in-game, open `/pclub config`:
 
 1. **Stream URL** field: `https://stream.example.com/clubffxiv.mp3`
 2. Click **Save URL for this house (local)** — auto-plays for you when you enter
@@ -338,7 +338,7 @@ Streaming copyrighted music to listeners is legally a *broadcast*, not personal 
 - [ ] Mixxx installed and library scanned
 - [ ] Mixxx broadcast configured, status shows "Connected"
 - [ ] Stream URL plays in VLC
-- [ ] Stream URL pasted into ClubFFXIV `/club config`
+- [ ] Stream URL pasted into ClubFFXIV `/pclub config`
 - [ ] Saved to your house and/or published to registry
 - [ ] Door calibrated for outdoor proximity
 - [ ] Tested with a friend or alt character

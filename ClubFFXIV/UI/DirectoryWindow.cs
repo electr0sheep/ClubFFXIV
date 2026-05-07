@@ -12,7 +12,7 @@ namespace ClubFFXIV.UI;
 
 /// <summary>
 /// Browse the public directory of registered clubs. Opens via the
-/// "Browse Public Directory" button in /club config or via /club directory.
+/// "Browse Public Directory" button in /pclub config or via /pclub directory.
 /// Lives in its own window so the main config window stays focused on the
 /// user's own setup. Lazily fetches on first open and caches via
 /// <see cref="Plugin.FetchDirectoryAsync"/>; the user can manually refresh.
@@ -63,7 +63,7 @@ public sealed class DirectoryWindow : Window, IDisposable
         if (!plugin.RegistryEnabled)
         {
             ImGui.TextWrapped(
-                "Registry URL is not set. Configure one in /club config → Registry " +
+                "Registry URL is not set. Configure one in /pclub config → Registry " +
                 "to browse the public directory.");
             return;
         }
