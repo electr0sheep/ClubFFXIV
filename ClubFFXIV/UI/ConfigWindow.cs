@@ -368,25 +368,78 @@ public sealed class ConfigWindow : Window, IDisposable
     /// </summary>
     private void DrawNowPlayingHeader()
     {
-        // IsStreamPlaying covers both the single-stream player and any active
-        // multi-stream voices, so the header reflects multi-stream mode too.
-        var playing = plugin.IsStreamPlaying;
+        var entries = plugin.GetNowPlayingEntries();
 
-        var icon = playing ? "▶" : "⏸";
-        var iconColor = playing
-            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
-            : new Vector4(0.6f, 0.6f, 0.6f, 1f);
-        var label = plugin.GetNowPlayingLabel();
+        // Auto-size the dark strip to fit one row per active stream (or a
+        // single placeholder row when nothing is playing). NoScrollbar keeps
+        // it from showing a sidebar — if for some reason the content overflows
+        // the parent, rows just clip rather than introduce a scroll affordance.
+        var rowCount = Math.Max(1, entries.Count);
+        var rowH = ImGui.GetFrameHeightWithSpacing();
+        var height = rowCount * rowH + 12f;
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
-        ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, 32), true);
-        ImGui.Spacing();
+        ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, height), true,
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+
+        if (entries.Count == 0)
+        {
+            DrawNowPlayingRow(
+                icon: "⏸",
+                iconColor: new Vector4(0.6f, 0.6f, 0.6f, 1f),
+                label: "Not playing",
+                showButtons: false,
+                entry: default);
+        }
+        else
+        {
+            foreach (var entry in entries)
+            {
+                var icon = entry.Muted ? "♪" : "▶";
+                var iconColor = entry.Muted
+                    ? new Vector4(0.6f, 0.6f, 0.6f, 1f)
+                    : new Vector4(0.4f, 0.85f, 0.4f, 1f);
+                DrawNowPlayingRow(icon, iconColor, entry.Label, showButtons: true, entry);
+            }
+        }
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private void DrawNowPlayingRow(
+        string icon,
+        Vector4 iconColor,
+        string label,
+        bool showButtons,
+        Plugin.NowPlayingEntry entry)
+    {
+        ImGui.PushID(entry.Url.Length > 0 ? "np-" + entry.Url : "np-empty");
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(iconColor, icon);
         ImGui.SameLine();
         ImGui.TextUnformatted(label);
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
+
+        if (showButtons)
+        {
+            // Right-align the buttons against the row's right edge. Same
+            // visual idiom as the "? Help" affordance in the help bar.
+            var muteLabel = entry.Muted ? "Unmute" : "Mute";
+            const string blacklistLabel = "Blacklist";
+            var pad = ImGui.GetStyle().FramePadding.X * 2 + 4;
+            var muteW = ImGui.CalcTextSize(muteLabel).X + pad;
+            var blacklistW = ImGui.CalcTextSize(blacklistLabel).X + pad;
+            var totalW = muteW + blacklistW + ImGui.GetStyle().ItemSpacing.X;
+            ImGui.SameLine();
+            ImGui.SetCursorPosX(
+                ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - totalW);
+            if (ImGui.SmallButton(muteLabel + "##" + entry.Url))
+                plugin.ToggleNowPlayingMute(entry);
+            ImGui.SameLine();
+            if (ImGui.SmallButton(blacklistLabel + "##" + entry.Url))
+                plugin.BlacklistNowPlaying(entry);
+        }
+        ImGui.PopID();
     }
 
     private void DrawHelpBar()

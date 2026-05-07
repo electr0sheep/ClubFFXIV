@@ -39,7 +39,11 @@ internal sealed class MultiStreamPlayer : IDisposable
     private readonly WaveOutEvent output;
 
     private float masterVolume = 0.7f;
-    private bool muted;
+    // Set by the framework tick on focus-loss; ORed with per-voice mute.
+    private bool autoMuted;
+    // Per-voice user mutes from the Now Playing header. Lives behind
+    // voicesLock so SetSpatial reads consistently.
+    private readonly HashSet<string> mutedKeys = new();
 
     public MultiStreamPlayer(BinaryManager binaryManager)
     {
@@ -93,17 +97,18 @@ internal sealed class MultiStreamPlayer : IDisposable
         // because the proximity loop ticks every frame.
     }
 
-    public bool Muted
+    /// <summary>Global auto-mute (focus loss). Per-voice mute lives separately.</summary>
+    public bool AutoMuted
     {
-        get => muted;
+        get => autoMuted;
         set
         {
-            if (muted == value) return;
-            muted = value;
+            if (autoMuted == value) return;
+            autoMuted = value;
             // Fast-path on mute: zero out every voice immediately so the
             // user doesn't hear one-frame leakage. Unmute relies on the next
             // SetSpatial tick to restore each voice's actual volume.
-            if (muted)
+            if (autoMuted)
             {
                 lock (voicesLock)
                 {
@@ -111,6 +116,35 @@ internal sealed class MultiStreamPlayer : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>True if the named voice is currently user-muted.</summary>
+    public bool IsVoiceMuted(string canonicalKey)
+    {
+        lock (voicesLock) return mutedKeys.Contains(canonicalKey);
+    }
+
+    /// <summary>
+    /// Toggle (or set) per-voice user mute. Effective immediately — when set
+    /// to muted, voice volume drops to 0; the next SetSpatial tick won't
+    /// restore it until the user unmutes. Composes with <see cref="AutoMuted"/>.
+    /// </summary>
+    public void SetVoiceMuted(string canonicalKey, bool muted)
+    {
+        lock (voicesLock)
+        {
+            var changed = muted ? mutedKeys.Add(canonicalKey) : mutedKeys.Remove(canonicalKey);
+            if (!changed) return;
+            if (muted && voices.TryGetValue(canonicalKey, out var v))
+                v.Volume = 0f;
+        }
+    }
+
+    /// <summary>Stream URL for an active voice, or null if the key isn't mixed.</summary>
+    public string? GetVoiceUrl(string canonicalKey)
+    {
+        lock (voicesLock)
+            return voices.TryGetValue(canonicalKey, out var v) ? v.Url : null;
     }
 
     /// <summary>
@@ -215,6 +249,9 @@ internal sealed class MultiStreamPlayer : IDisposable
                 voices.Remove(canonicalKey);
                 toDispose = voice;
             }
+            // Don't carry per-voice mute state across remove/re-add: when the
+            // voice next pops up via proximity, treat it as a fresh sound.
+            mutedKeys.Remove(canonicalKey);
         }
         try { toCancel?.Cancel(); } catch { /* ignore */ }
         toDispose?.Dispose();
@@ -229,6 +266,7 @@ internal sealed class MultiStreamPlayer : IDisposable
         lock (voicesLock)
         {
             if (!voices.TryGetValue(canonicalKey, out var voice)) return;
+            var muted = autoMuted || mutedKeys.Contains(canonicalKey);
             voice.Volume = muted ? 0f : (masterVolume * spatialVolume);
             voice.CutoffHz = cutoffHz;
         }

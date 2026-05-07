@@ -489,33 +489,75 @@ public sealed class Plugin : IDalamudPlugin
     public string? CurrentStreamUrl => streamPlayer.CurrentUrl;
 
     /// <summary>
-    /// Human-readable label for what's currently playing — drives the Now
-    /// Playing header strip. Single-stream wins when active (Indoor / Manual);
-    /// otherwise reports the active multi-stream voice (or count). Returns
-    /// "Not playing" when nothing is producing audio.
+    /// One row in the Now Playing header. Abstracts over single-stream and
+    /// per-voice multi-stream so the UI can render uniform rows. PlotKey is
+    /// null for the single-stream row, set for multi-stream voices.
     /// </summary>
-    public string GetNowPlayingLabel()
+    public readonly record struct NowPlayingEntry(
+        string Url,
+        string Label,
+        bool Muted,
+        string? PlotKey);
+
+    /// <summary>
+    /// Snapshot of every audio source currently producing (or about to produce)
+    /// sound. Empty list = "Not playing". Single-stream and multi-stream voices
+    /// are interleaved; the UI renders one row per entry.
+    /// </summary>
+    public IReadOnlyList<NowPlayingEntry> GetNowPlayingEntries()
     {
+        var result = new List<NowPlayingEntry>();
+
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
             var ctx = LookupClubContextForUrl(url);
-            return !string.IsNullOrWhiteSpace(ctx?.ClubName)
+            var label = !string.IsNullOrWhiteSpace(ctx?.ClubName)
                 ? ctx.Value.ClubName
                 : (url.Length > 60 ? url[..57] + "..." : url);
+            result.Add(new NowPlayingEntry(url, label, streamPlayer.UserMuted, PlotKey: null));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
         {
-            var keys = msp.ActiveKeys();
-            if (keys.Count == 1)
+            foreach (var key in msp.ActiveKeys())
             {
-                var name = LookupClubNameForPlotKey(keys[0]);
-                return !string.IsNullOrWhiteSpace(name) ? name : "1 club streaming";
+                var voiceUrl = msp.GetVoiceUrl(key) ?? "";
+                var name = LookupClubNameForPlotKey(key);
+                var label = !string.IsNullOrWhiteSpace(name)
+                    ? name!
+                    : (voiceUrl.Length > 60 ? voiceUrl[..57] + "..." : voiceUrl);
+                result.Add(new NowPlayingEntry(voiceUrl, label, msp.IsVoiceMuted(key), PlotKey: key));
             }
-            return $"{keys.Count} clubs streaming";
         }
 
-        return "Not playing";
+        return result;
+    }
+
+    /// <summary>Toggle the user-mute flag on a Now Playing row.</summary>
+    public void ToggleNowPlayingMute(NowPlayingEntry entry)
+    {
+        if (entry.PlotKey == null)
+            streamPlayer.UserMuted = !streamPlayer.UserMuted;
+        else
+            multiStreamPlayer?.SetVoiceMuted(entry.PlotKey, !entry.Muted);
+    }
+
+    /// <summary>
+    /// Add the row's URL to the blocked list and stop its playback. Future
+    /// auto-play (indoor / outdoor / loop) will be gated by Permissions.Check.
+    /// </summary>
+    public void BlacklistNowPlaying(NowPlayingEntry entry)
+    {
+        if (string.IsNullOrEmpty(entry.Url)) return;
+        Permissions.BlockUrl(entry.Url);
+        if (entry.PlotKey == null)
+        {
+            if (streamPlayer.CurrentUrl == entry.Url) streamPlayer.Stop();
+        }
+        else
+        {
+            multiStreamPlayer?.RemoveVoice(entry.PlotKey);
+        }
     }
 
     /// <summary>
@@ -623,6 +665,15 @@ public sealed class Plugin : IDalamudPlugin
     private void OnStreamNaturallyEnded(string url)
     {
         if (!Config.LoopFinishedVideos) return;
+        // Honor a blacklist that may have been added between this stream
+        // starting and ending — e.g. user hit Blacklist on the Now Playing
+        // header. Without this, the loop would re-play a URL the user just
+        // explicitly told us to stop.
+        if (Permissions.Check(url) == UrlDecision.Block)
+        {
+            Log.Info($"Stream finished but URL is blocked, not looping: {url}");
+            return;
+        }
         Log.Info($"Stream finished, looping: {url}");
         // PlaybackStopped fires from NAudio's audio thread; bounce to a
         // task so we don't block it on the new yt-dlp / ffmpeg startup.
@@ -969,8 +1020,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         // Stream output mute when game is unfocused.
         var shouldMute = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
-        streamPlayer.Muted = shouldMute;
-        if (multiStreamPlayer != null) multiStreamPlayer.Muted = shouldMute;
+        streamPlayer.AutoMuted = shouldMute;
+        if (multiStreamPlayer != null) multiStreamPlayer.AutoMuted = shouldMute;
 
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.

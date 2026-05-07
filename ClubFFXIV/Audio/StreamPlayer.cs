@@ -29,7 +29,11 @@ public sealed class StreamPlayer : IDisposable
     private float masterVolume = 0.7f;
     private float spatialVolume = 1f;
     private float spatialCutoff = BypassCutoffHz;
-    private bool muted;
+    // Two independent mute inputs: autoMuted is set every framework tick by
+    // the focus-mute policy; userMuted is the explicit toggle from the Now
+    // Playing header. They OR together — either one zeros output.
+    private bool autoMuted;
+    private bool userMuted;
     private string? currentUrl;
     // Set true at Stop() entry, cleared once a new chain is wired up. The
     // PlaybackStopped handler (which can fire synchronously from Output.Stop
@@ -98,13 +102,32 @@ public sealed class StreamPlayer : IDisposable
         SpatialCutoffHz = BypassCutoffHz;
     }
 
-    public bool Muted
+    /// <summary>
+    /// Auto-mute set by the framework tick when the FFXIV window loses focus.
+    /// Composes with <see cref="UserMuted"/>: either one zeros output.
+    /// </summary>
+    public bool AutoMuted
     {
-        get => muted;
+        get => autoMuted;
         set
         {
-            if (muted == value) return;
-            muted = value;
+            if (autoMuted == value) return;
+            autoMuted = value;
+            ApplyVolume();
+        }
+    }
+
+    /// <summary>
+    /// Explicit user toggle (Mute button in the Now Playing header). Survives
+    /// framework ticks — the auto-mute path uses <see cref="AutoMuted"/>.
+    /// </summary>
+    public bool UserMuted
+    {
+        get => userMuted;
+        set
+        {
+            if (userMuted == value) return;
+            userMuted = value;
             ApplyVolume();
         }
     }
@@ -248,7 +271,8 @@ public sealed class StreamPlayer : IDisposable
 
     public void Dispose() => Stop();
 
-    private float EffectiveVolume() => muted ? 0f : (masterVolume * spatialVolume);
+    private float EffectiveVolume() =>
+        (autoMuted || userMuted) ? 0f : (masterVolume * spatialVolume);
 
     private void ApplyVolume()
     {
