@@ -60,37 +60,44 @@ export type ValidationResult = { ok: true } | { ok: false; reason: string };
 /// literals. Runs on every redirect hop too — a redirect to 127.0.0.1 is just
 /// as bad as a publish that points there directly.
 export function validateStreamUrlSyntax(s: unknown): string | null {
-  if (typeof s !== "string") return "streamUrl must be a string";
-  if (s.length === 0) return "streamUrl cannot be empty";
-  if (s.length > MAX_URL_LEN) return `streamUrl too long (max ${MAX_URL_LEN})`;
+  const parsed = parseAndCheckSyntax(s);
+  return "error" in parsed ? parsed.error : null;
+}
+
+type SyntaxParseResult = { url: URL } | { error: string };
+
+function parseAndCheckSyntax(s: unknown): SyntaxParseResult {
+  if (typeof s !== "string") return { error: "streamUrl must be a string" };
+  if (s.length === 0) return { error: "streamUrl cannot be empty" };
+  if (s.length > MAX_URL_LEN) return { error: `streamUrl too long (max ${MAX_URL_LEN})` };
 
   let u: URL;
   try {
     u = new URL(s);
   } catch {
-    return "streamUrl is not a valid URL";
+    return { error: "streamUrl is not a valid URL" };
   }
 
   if (u.protocol !== "http:" && u.protocol !== "https:") {
-    return "streamUrl must be http or https";
+    return { error: "streamUrl must be http or https" };
   }
   if (u.username !== "" || u.password !== "") {
-    return "streamUrl cannot contain credentials";
+    return { error: "streamUrl cannot contain credentials" };
   }
 
   const host = normalizeHost(u.hostname);
-  if (host.length === 0) return "streamUrl host is empty";
+  if (host.length === 0) return { error: "streamUrl host is empty" };
   if (BLOCKED_HOSTS.has(host)) {
-    return "streamUrl host is not allowed (loopback)";
+    return { error: "streamUrl host is not allowed (loopback)" };
   }
   if (isIPv4Literal(host) && isPrivateIPv4(host)) {
-    return "streamUrl host is not allowed (private/loopback IPv4)";
+    return { error: "streamUrl host is not allowed (private/loopback IPv4)" };
   }
   if (isIPv6Literal(host) && isPrivateIPv6(host)) {
-    return "streamUrl host is not allowed (private/loopback IPv6)";
+    return { error: "streamUrl host is not allowed (private/loopback IPv6)" };
   }
 
-  return null;
+  return { url: u };
 }
 
 /// Full validation: syntax + KV-cached HEAD probe (with range-GET fallback for
@@ -100,20 +107,14 @@ export async function validateStreamUrl(
   env: Env,
   url: string,
 ): Promise<ValidationResult> {
-  const syntaxErr = validateStreamUrlSyntax(url);
-  if (syntaxErr) return { ok: false, reason: syntaxErr };
+  const parsed = parseAndCheckSyntax(url);
+  if ("error" in parsed) return { ok: false, reason: parsed.error };
 
   // yt-dlp-handled platforms (YouTube, Twitch, SoundCloud, etc.) serve
   // text/html at the URL listeners paste — the plugin extracts the actual
   // stream client-side. A HEAD probe would always fail the audio-content-type
   // check, so trust the host instead. Syntax + host whitelist is the bar.
-  try {
-    const parsed = new URL(url);
-    if (isYtDlpHost(parsed.hostname)) return { ok: true };
-  } catch {
-    // Already covered by validateStreamUrlSyntax above; defensive.
-    return { ok: false, reason: "streamUrl is not a valid URL" };
-  }
+  if (isYtDlpHost(parsed.url.hostname)) return { ok: true };
 
   const k = await cacheKey(url);
   const cachedRaw = await env.CLUBS_KV.get(k);
