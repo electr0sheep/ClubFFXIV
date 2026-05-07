@@ -25,6 +25,29 @@ const AUDIO_MIME_EXACT = new Set([
   "application/dash+xml",
 ]);
 
+// Hosts whose pages serve text/html and rely on the plugin's client-side
+// yt-dlp extractor to find the actual audio stream. Probing them with HEAD
+// would always fail the audio-content-type check. Mirror of UrlClassifier's
+// YtDlpHostsPattern in the plugin (ClubFFXIV/Audio/UrlClassifier.cs) — keep
+// these two lists in sync.
+const YT_DLP_HOSTS: readonly string[] = [
+  "twitch.tv",
+  "youtube.com",
+  "youtu.be",
+  "soundcloud.com",
+  "mixcloud.com",
+  "nicovideo.jp",
+  "twitcasting.tv",
+];
+
+function isYtDlpHost(host: string): boolean {
+  const h = host.toLowerCase();
+  for (const allowed of YT_DLP_HOSTS) {
+    if (h === allowed || h.endsWith("." + allowed)) return true;
+  }
+  return false;
+}
+
 interface CachedVerdict {
   ok: boolean;
   reason?: string;
@@ -79,6 +102,18 @@ export async function validateStreamUrl(
 ): Promise<ValidationResult> {
   const syntaxErr = validateStreamUrlSyntax(url);
   if (syntaxErr) return { ok: false, reason: syntaxErr };
+
+  // yt-dlp-handled platforms (YouTube, Twitch, SoundCloud, etc.) serve
+  // text/html at the URL listeners paste — the plugin extracts the actual
+  // stream client-side. A HEAD probe would always fail the audio-content-type
+  // check, so trust the host instead. Syntax + host whitelist is the bar.
+  try {
+    const parsed = new URL(url);
+    if (isYtDlpHost(parsed.hostname)) return { ok: true };
+  } catch {
+    // Already covered by validateStreamUrlSyntax above; defensive.
+    return { ok: false, reason: "streamUrl is not a valid URL" };
+  }
 
   const k = await cacheKey(url);
   const cachedRaw = await env.CLUBS_KV.get(k);

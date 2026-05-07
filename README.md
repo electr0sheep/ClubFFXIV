@@ -51,7 +51,7 @@ Auto-discovery works as soon as you walk into a registered house or near a calib
 1. Stand inside your house, open `/pclub config`
 2. Paste your stream URL
 3. Click **Publish to registry**
-4. Walk outside to your front door, find your house in the Published Houses list, click **Calibrate door**
+4. Walk outside to your front door, find your house in the My Houses list (My Clubs tab), click **Calibrate door**
 
 Friends within ~40m of your door will hear muffled music as they approach.
 

@@ -68,7 +68,7 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
 
         SectionHeader("Want auto-discovery in housing?");
-        ImGui.BulletText("Set a Registry URL in the Registry section");
+        ImGui.BulletText("Set a Registry URL in the Registry tab");
         ImGui.BulletText("Walk into a registered house — music auto-plays");
         ImGui.BulletText("Walk near a registered plot outdoors — muffled music swells as you approach");
         ImGui.Spacing();

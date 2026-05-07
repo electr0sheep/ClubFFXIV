@@ -18,6 +18,13 @@ public sealed class ConfigWindow : Window, IDisposable
     private string clubDescriptionInput = "";
     private bool clubListedInput = true;
 
+    // Stream URL for the My Clubs tab. Independent from urlInput (Now Playing)
+    // so saving/publishing a club doesn't accidentally use whatever stream the
+    // user happens to be auditioning. Pre-filled from the active plot's
+    // saved/published record when the player enters a new plot.
+    private string clubUrlInput = "";
+    private string? lastClubUrlPlotKey;
+
     // Inline-progress text for in-flight async operations ("Publishing...",
     // "Saving...", "Unpublishing..."). Final results go to Dalamud notifications;
     // this field only holds the during-the-network-call indicator so the user
@@ -465,6 +472,30 @@ public sealed class ConfigWindow : Window, IDisposable
         var key = plugin.CurrentPlotKey;
         var ward = plugin.CurrentWard;
 
+        // Pre-fill the club Stream URL field when the player enters a new plot
+        // that has a saved/published record. Lets the DJ re-publish without
+        // re-pasting their URL. Switching plots clobbers any unsaved input —
+        // acceptable trade-off for the much more common edit-existing flow.
+        var canonical = key?.Canonical;
+        if (canonical != lastClubUrlPlotKey)
+        {
+            lastClubUrlPlotKey = canonical;
+            if (canonical != null
+                && plugin.Config.PublishedHouses.TryGetValue(canonical, out var pub))
+            {
+                clubUrlInput = pub.StreamUrl;
+            }
+            else if (canonical != null
+                && plugin.Config.SavedHouses.TryGetValue(canonical, out var saved))
+            {
+                clubUrlInput = saved.StreamUrl;
+            }
+            else
+            {
+                clubUrlInput = "";
+            }
+        }
+
         if (key.HasValue)
         {
             var name = plugin.HousingDetector.GetDisplayName(key.Value);
@@ -522,13 +553,26 @@ public sealed class ConfigWindow : Window, IDisposable
                 new Vector2(-1, 70));
 
             ImGui.Spacing();
+            ImGui.TextUnformatted("Stream URL:");
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "The audio stream URL listeners hear when they tune into\n" +
+                    "this club. Independent of the Now Playing tab — set this\n" +
+                    "once, save or publish, done. Pre-fills from the saved\n" +
+                    "record when you enter a plot you've already configured.");
+            ImGui.SetNextItemWidth(-1);
+            ImGui.InputText("##clubStreamUrl", ref clubUrlInput, 1024);
+
+            ImGui.Spacing();
             ImGui.Checkbox("Show in public directory", ref clubListedInput);
             ImGui.SameLine();
             ImGui.TextDisabled("(?)");
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(
                     "Adds your club to the Public Directory browse list (visible to\n" +
-                    "anyone who opens the Public Directory panel below).\n\n" +
+                    "anyone who opens the Public Directory from the Registry tab).\n\n" +
                     "Unchecking only hides your club from this directory list.\n" +
                     "Listeners walking past your plot, anyone who knows your plot\n" +
                     "key, and the spatial-audio proximity discovery still work\n" +
@@ -537,11 +581,11 @@ public sealed class ConfigWindow : Window, IDisposable
                     "publish it — local Save URL keeps it private.");
 
             ImGui.Spacing();
-            var noUrl = string.IsNullOrWhiteSpace(urlInput);
+            var noUrl = string.IsNullOrWhiteSpace(clubUrlInput);
             if (noUrl) ImGui.BeginDisabled();
             if (ImGui.Button("Save URL for this house (local)"))
             {
-                plugin.SaveCurrentHouse(effectiveName, urlInput, clubDescriptionInput);
+                plugin.SaveCurrentHouse(effectiveName, clubUrlInput, clubDescriptionInput);
                 plugin.Notify("ClubFFXIV",
                     $"Saved '{effectiveName}' locally.",
                     NotificationType.Success);
@@ -555,7 +599,7 @@ public sealed class ConfigWindow : Window, IDisposable
             {
                 var dn = effectiveName;
                 var desc = clubDescriptionInput;
-                var url = urlInput;
+                var url = clubUrlInput;
                 var listed = clubListedInput;
                 inflightStatus = "Publishing...";
                 _ = Task.Run(async () =>
