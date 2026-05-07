@@ -35,12 +35,6 @@ public sealed class StreamPlayer : IDisposable
     private bool autoMuted;
     private bool userMuted;
     private string? currentUrl;
-    // Set true at Stop() entry, cleared once a new chain is wired up. The
-    // PlaybackStopped handler (which can fire synchronously from Output.Stop
-    // on the audio thread) checks this so a user/replacement stop doesn't
-    // get mistaken for a natural EOF and trigger an unwanted auto-loop.
-    // Volatile because writes happen on UI thread, reads on the audio thread.
-    private volatile bool stopInvoked;
 
     public StreamPlayer(BinaryManager binaryManager)
     {
@@ -195,23 +189,25 @@ public sealed class StreamPlayer : IDisposable
 
         // Capture the URL + source for the natural-end check. Closure refs
         // per-call locals (not class fields) so the right URL fires even if
-        // a later Play() reassigns this.currentUrl. The stopInvoked guard
-        // suppresses the event when our own Stop() triggered the callback.
+        // a later Play() reassigns this.currentUrl.
+        //
+        // DidExitCleanly is called SYNCHRONOUSLY here on the audio thread
+        // because we'd otherwise race our own framework auto-resume: the
+        // framework tick sees IsPlaying=false right after PlaybackStopped
+        // and starts a new PlayAsync, whose Stop() disposes this source —
+        // any Task.Run-deferred check would then read a closed handle and
+        // return false, suppressing the natural-end event. The check itself
+        // is non-blocking now (no WaitForExit), so doing it on the audio
+        // thread is fine. Only the subscriber callback runs in Task.Run.
         var endedUrl = url;
         var endedSource = newSource;
         built.Output.PlaybackStopped += (_, _) =>
         {
-            if (stopInvoked) return;
-            // DidExitCleanly waits up to ~500ms for the OS to publish the
-            // exit code, which we don't want to do on NAudio's audio thread.
-            // Bounce to a thread-pool task before checking + firing.
-            var src = endedSource;
-            var u = endedUrl;
-            _ = Task.Run(() =>
+            if (endedSource is SubprocessAudioReader sub && sub.DidExitCleanly())
             {
-                if (src is SubprocessAudioReader sub && sub.DidExitCleanly())
-                    StreamNaturallyEnded?.Invoke(u);
-            });
+                var u = endedUrl;
+                _ = Task.Run(() => StreamNaturallyEnded?.Invoke(u));
+            }
         };
 
         if (ct.IsCancellationRequested)
@@ -221,10 +217,6 @@ public sealed class StreamPlayer : IDisposable
         }
 
         Stop();
-        // Stop() set stopInvoked = true to suppress the dying chain's
-        // PlaybackStopped from firing the natural-end event. Clear it now
-        // so the new chain is eligible for natural-end detection.
-        stopInvoked = false;
 
         source = built.Source;
         sourceDisposable = built.SourceDisposable;
@@ -257,7 +249,6 @@ public sealed class StreamPlayer : IDisposable
 
     public void Stop()
     {
-        stopInvoked = true;
         try { output?.Stop(); } catch { /* swallow during teardown */ }
         output?.Dispose();
         sourceDisposable?.Dispose();

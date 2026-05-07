@@ -181,19 +181,24 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable
     /// True if ffmpeg ran to completion on its own (exit code 0) — i.e. the
     /// input stream reached a real EOF. Used by <see cref="StreamPlayer"/> to
     /// decide whether to auto-loop a finite source. Returns false if we killed
-    /// the process (normal stream switch / shutdown), if it's still running,
-    /// or if it crashed with a non-zero exit code (network error, decoder
-    /// failure — those shouldn't loop, they should surface as a real failure).
-    /// Briefly waits on the process so the caller doesn't race the OS-level
-    /// exit-code propagation when called immediately after stdout EOF.
+    /// the process, if it's still running (user is mid-Stop), or if it crashed
+    /// with a non-zero exit code. Caller is responsible for calling this BEFORE
+    /// disposing the reader; once the underlying Process is disposed, the
+    /// HasExited / ExitCode lookups throw and the method conservatively returns
+    /// false.
     /// </summary>
     public bool DidExitCleanly()
     {
         if (killedByUs) return false;
         try
         {
-            if (!ffmpeg.HasExited) ffmpeg.WaitForExit(500);
-            return ffmpeg.HasExited && ffmpeg.ExitCode == 0;
+            // Don't WaitForExit here: by the time our consumer (PlaybackStopped
+            // handler) reaches us, ffmpeg has already exited (its stdout EOF is
+            // what caused NAudio's buffer drain to complete). Waiting would
+            // only matter if the process is still running, in which case this
+            // isn't a natural end anyway — return false fast.
+            if (!ffmpeg.HasExited) return false;
+            return ffmpeg.ExitCode == 0;
         }
         catch
         {
