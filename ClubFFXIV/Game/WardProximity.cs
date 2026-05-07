@@ -64,6 +64,31 @@ public static class WardProximity
     }
 
     /// <summary>
+    /// Returns every candidate within streamRange, sorted nearest-first. Used by
+    /// the multi-stream code path so each in-range plot can host its own voice in
+    /// the mixer. Out-of-range candidates are dropped (unlike FindClosest, which
+    /// reports the closest one regardless of range).
+    /// </summary>
+    public static List<Result> FindAllInRange(
+        Vector3 playerPos,
+        IEnumerable<Candidate> candidates,
+        float streamRange,
+        float audibleRange,
+        float fullRange)
+    {
+        var results = new List<Result>();
+        foreach (var c in candidates)
+        {
+            var d = Vector3.Distance(playerPos, c.DoorPosition);
+            if (d > streamRange) continue;
+            var nearness = Normalize(d, audibleRange, fullRange);
+            results.Add(new Result(c, d, nearness, audible: d <= audibleRange, streaming: true));
+        }
+        results.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        return results;
+    }
+
+    /// <summary>
     /// Returns 0 at far, 1 at near. Clamped.
     /// </summary>
     public static float Normalize(float distance, float far, float near)

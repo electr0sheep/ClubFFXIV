@@ -74,11 +74,22 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>
     /// Bypass the local "are you the owner of this house?" check at publish time.
-    /// Off by default — turning it on lets you publish to plots you don't own per
-    /// the game's records. Use only if the ownership detection is wrong (FC
-    /// edge cases, FFXIVClientStructs API drift, etc.).
+    /// DEBUG-only escape hatch for FC edge cases / FFXIVClientStructs API drift.
+    /// In Release the getter unconditionally returns false — a JSON file that
+    /// somehow has the field set true is ignored, and the next config save
+    /// scrubs the value back to false.
     /// </summary>
-    public bool AllowPublishWithoutOwnership { get; set; } = false;
+    public bool AllowPublishWithoutOwnership
+    {
+        get =>
+#if DEBUG
+            allowPublishWithoutOwnership;
+#else
+            false;
+#endif
+        set => allowPublishWithoutOwnership = value;
+    }
+    private bool allowPublishWithoutOwnership = false;
 
     /// <summary>
     /// Auto-update yt-dlp / ffmpeg every few days in the background.
@@ -103,6 +114,22 @@ public class Configuration : IPluginConfiguration
 
     /// <summary>True once the user has been shown the first-run setup wizard.</summary>
     public bool SetupWizardComplete { get; set; } = false;
+
+#if DEBUG
+    /// <summary>
+    /// DEBUG-only multi-voice spatial mode. When on, the outdoor proximity loop
+    /// can keep multiple clubs streaming simultaneously, mixed by per-voice
+    /// distance. Indoor mode still plays one club solo.
+    /// </summary>
+    public bool MultiStreamEnabled { get; set; } = false;
+
+    /// <summary>
+    /// Hard cap on simultaneous outdoor voices. yt-dlp voices count as 2 (each
+    /// spawns a yt-dlp + ffmpeg subprocess), so default 2 = "1 yt-dlp OR 2
+    /// direct" — a deliberately conservative ceiling for the experiment.
+    /// </summary>
+    public int MaxConcurrentStreams { get; set; } = 2;
+#endif
 
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;

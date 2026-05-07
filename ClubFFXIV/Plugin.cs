@@ -58,6 +58,11 @@ public sealed class Plugin : IDalamudPlugin
     public BinaryManager Binaries { get; }
     public UrlPermissions Permissions { get; }
     private readonly StreamPlayer streamPlayer;
+#if DEBUG
+    // Lazily created: the WaveOutEvent inside MultiStreamPlayer is non-trivial,
+    // so we only build it once the user opts in via the Advanced tab toggle.
+    private MultiStreamPlayer? multiStreamPlayer;
+#endif
     private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
     private DateTime lastBinaryUpdateCheck = DateTime.MinValue;
@@ -167,6 +172,9 @@ public sealed class Plugin : IDalamudPlugin
         setupWizard.Dispose();
         directoryWindow.Dispose();
         streamPlayer.Dispose();
+#if DEBUG
+        multiStreamPlayer?.Dispose();
+#endif
         bgmMuter.Dispose();
         registryClient?.Dispose();
         djIdentity?.Dispose();
@@ -378,6 +386,9 @@ public sealed class Plugin : IDalamudPlugin
     {
         streamStartCts?.Cancel();
         streamPlayer.Stop();
+#if DEBUG
+        TearDownMultiStream();
+#endif
         CurrentMode = PlaybackMode.Off;
         CurrentProximity = null;
         userInhibitsAutoPlay = true;
@@ -457,9 +468,46 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    public void SetStreamVolume(float volume) => streamPlayer.MasterVolume = volume;
+    public void SetStreamVolume(float volume)
+    {
+        streamPlayer.MasterVolume = volume;
+#if DEBUG
+        if (multiStreamPlayer != null) multiStreamPlayer.MasterVolume = volume;
+#endif
+    }
     public bool IsStreamPlaying => streamPlayer.IsPlaying;
     public string? CurrentStreamUrl => streamPlayer.CurrentUrl;
+
+#if DEBUG
+    private bool MultiStreamActive => Config.MultiStreamEnabled;
+
+    private MultiStreamPlayer EnsureMultiStreamPlayer()
+    {
+        if (multiStreamPlayer == null)
+        {
+            multiStreamPlayer = new MultiStreamPlayer(Binaries);
+            multiStreamPlayer.MasterVolume = Config.Volume;
+        }
+        return multiStreamPlayer;
+    }
+
+    private void TearDownMultiStream()
+    {
+        multiStreamPlayer?.StopAll();
+    }
+
+    /// <summary>
+    /// Called by the Advanced-tab toggle. Turning OFF tears down any active
+    /// voices but keeps the WaveOutEvent around in case the user toggles back
+    /// on quickly. Turning ON is a no-op until the next outdoor tick spawns
+    /// the first voice (lazy by design — avoids paying the audio init cost
+    /// for users who only flip the toggle to read the tooltip).
+    /// </summary>
+    public void OnMultiStreamToggled()
+    {
+        if (!Config.MultiStreamEnabled) TearDownMultiStream();
+    }
+#endif
 
     public string? DjId => djIdentity?.DjId;
     public bool RegistryEnabled => registryClient != null;
@@ -843,7 +891,11 @@ public sealed class Plugin : IDalamudPlugin
     private void ApplyAudioPolicy()
     {
         // Stream output mute when game is unfocused.
-        streamPlayer.Muted = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
+        var shouldMute = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
+        streamPlayer.Muted = shouldMute;
+#if DEBUG
+        if (multiStreamPlayer != null) multiStreamPlayer.Muted = shouldMute;
+#endif
 
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
@@ -937,6 +989,9 @@ public sealed class Plugin : IDalamudPlugin
         if (CurrentMode is PlaybackMode.Indoor or PlaybackMode.Outdoor)
         {
             streamPlayer.Stop();
+#if DEBUG
+            TearDownMultiStream();
+#endif
             CurrentMode = PlaybackMode.Off;
             CurrentProximity = null;
         }
@@ -985,6 +1040,14 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void EnterIndoor(string url, ClubContext context)
     {
+        // Indoor is solo by contract: tear down any outdoor multi-voice mix
+        // before starting the single-voice indoor stream. The seamless-reuse
+        // optimization below still applies to the single-stream path; multi-
+        // stream sources can't be reused that way (they're inside a mixer).
+#if DEBUG
+        TearDownMultiStream();
+#endif
+
         // Seamless: same URL was already streaming outdoors.
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl == url)
         {
@@ -1013,6 +1076,14 @@ public sealed class Plugin : IDalamudPlugin
     {
         var pos = HousingDetector.PlayerPosition();
         if (pos == null) return;
+
+#if DEBUG
+        if (MultiStreamActive)
+        {
+            HandleOutdoorModeMulti(ward, pos.Value);
+            return;
+        }
+#endif
 
         var candidates = EnumerateCandidates(ward);
         var result = WardProximity.FindClosest(
@@ -1067,6 +1138,99 @@ public sealed class Plugin : IDalamudPlugin
             CurrentMode = PlaybackMode.Outdoor;
         }
     }
+
+#if DEBUG
+    /// <summary>
+    /// Outdoor proximity loop for multi-stream mode. Diffs the desired voice
+    /// set (in-range candidates, capped) against the active mixer voices:
+    /// remove voices for plots out of range or evicted by the cap, add voices
+    /// for newly-in-range plots, and update spatial params on still-active
+    /// voices. yt-dlp candidates count as 2 against MaxConcurrentStreams.
+    /// </summary>
+    private void HandleOutdoorModeMulti(WardLocation ward, System.Numerics.Vector3 pos)
+    {
+        var candidates = EnumerateCandidates(ward);
+        var allInRange = WardProximity.FindAllInRange(
+            pos,
+            candidates,
+            Config.SpatialStreamDistance,
+            Config.SpatialFalloffDistance,
+            Config.SpatialFullVolumeDistance);
+
+        // UI proximity readout shows the closest club, regardless of whether
+        // it ended up with a voice (e.g. cap might have evicted it — unusual,
+        // but possible if a much closer non-yt-dlp later appears).
+        CurrentProximity = allInRange.Count > 0 ? allInRange[0] : (WardProximity.Result?)null;
+
+        var player = multiStreamPlayer;
+        if (allInRange.Count == 0)
+        {
+            if (CurrentMode == PlaybackMode.Outdoor)
+            {
+                if (player != null) TearDownMultiStream();
+                CurrentMode = PlaybackMode.Off;
+            }
+            return;
+        }
+
+        // Lazy-init: only build the WaveOutEvent on first actually-in-range tick.
+        player ??= EnsureMultiStreamPlayer();
+
+        // The single-voice player may still be playing from a prior Indoor or
+        // Manual session; outdoor multi-stream mode owns the audio output, so
+        // stop the single player before voicing anything new.
+        if (streamPlayer.IsPlaying) streamPlayer.Stop();
+
+        // Build desired set under the cap. yt-dlp = 2 voice-units (each spawns
+        // yt-dlp + ffmpeg subprocesses), direct HTTP = 1.
+        var max = Math.Clamp(Config.MaxConcurrentStreams, 1, 5);
+        var desired = new List<WardProximity.Result>();
+        var desiredKeys = new HashSet<string>();
+        var cost = 0;
+        foreach (var r in allInRange)
+        {
+            var voiceCost = UrlClassifier.ClassifyUrl(r.Candidate.StreamUrl) == AudioSourceKind.YtDlp ? 2 : 1;
+            if (cost + voiceCost > max) continue;
+            desired.Add(r);
+            desiredKeys.Add(r.Candidate.CanonicalKey);
+            cost += voiceCost;
+        }
+
+        foreach (var key in player.ActiveKeys())
+        {
+            if (!desiredKeys.Contains(key)) player.RemoveVoice(key);
+        }
+
+        foreach (var r in desired)
+        {
+            var url = r.Candidate.StreamUrl;
+            var key = r.Candidate.CanonicalKey;
+            var cutoff = WardProximity.NearnessToCutoff(
+                r.NormalizedNearness,
+                Config.SpatialMinCutoffHz,
+                Config.SpatialMaxCutoffHz);
+
+            if (player.HasVoice(key))
+            {
+                player.SetSpatial(key, r.NormalizedNearness, cutoff);
+                continue;
+            }
+            if (player.IsStarting(key)) continue;
+
+            var ctx = new ClubContext(r.Candidate.DisplayName, r.Candidate.Description);
+            if (!TryAutoPlayPermission(url, ctx)) continue;
+            if (BinariesMissingForUrl(url)) continue;
+            if (IsStreamInCooldown(url)) continue;
+
+            _ = player.AddVoiceAsync(key, url, cutoff);
+        }
+
+        if (player.VoiceCount > 0 && CurrentMode != PlaybackMode.Outdoor)
+        {
+            CurrentMode = PlaybackMode.Outdoor;
+        }
+    }
+#endif
 
     private IEnumerable<WardProximity.Candidate> EnumerateCandidates(WardLocation ward)
     {

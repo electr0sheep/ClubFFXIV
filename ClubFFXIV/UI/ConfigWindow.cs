@@ -136,7 +136,42 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawAdvancedTab()
     {
         DrawBinariesSection();
+#if DEBUG
+        ImGui.Spacing();
+        DrawDebugMultiStreamSection();
+#endif
     }
+
+#if DEBUG
+    private void DrawDebugMultiStreamSection()
+    {
+        ImGui.TextUnformatted("Multi-stream (DEBUG only)");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextWrapped(
+            "Experimental: outdoor proximity keeps multiple nearby clubs streaming " +
+            "at once, mixed by per-voice distance. Each yt-dlp source costs significant " +
+            "CPU + memory, so the cap counts yt-dlp voices as 2.");
+        ImGui.Spacing();
+
+        var enabled = plugin.Config.MultiStreamEnabled;
+        if (ImGui.Checkbox("Enable multi-stream outdoor mode", ref enabled))
+        {
+            plugin.Config.MultiStreamEnabled = enabled;
+            plugin.Config.Save();
+            plugin.OnMultiStreamToggled();
+        }
+
+        var cap = plugin.Config.MaxConcurrentStreams;
+        ImGui.SetNextItemWidth(160);
+        if (ImGui.SliderInt("Max concurrent voices", ref cap, 1, 5))
+        {
+            plugin.Config.MaxConcurrentStreams = Math.Clamp(cap, 1, 5);
+            plugin.Config.Save();
+        }
+    }
+#endif
 
     private string newAllowDomainInput = "";
     private string newBlockDomainInput = "";
@@ -615,6 +650,7 @@ public sealed class ConfigWindow : Window, IDisposable
             if (publishDisabled) ImGui.EndDisabled();
             if (noUrl) ImGui.EndDisabled();
 
+#if DEBUG
             if (blockedByOwnership)
             {
                 ImGui.Spacing();
@@ -629,10 +665,11 @@ public sealed class ConfigWindow : Window, IDisposable
                 if (ImGui.IsItemHovered())
                     ImGui.SetTooltip(
                         "Bypasses the local 'are you the owner?' check.\n" +
-                        "Use only if the detection is wrong (FC edge cases,\n" +
-                        "API drift). The registry's first-claim-wins rule still\n" +
-                        "applies — you can't take a plot another DJ already has.");
+                        "DEBUG builds only — Release ignores this flag.\n" +
+                        "The registry's first-claim-wins rule still applies —\n" +
+                        "you can't take a plot another DJ already has.");
             }
+#endif
         }
         else if (ward.HasValue)
         {
