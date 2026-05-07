@@ -20,6 +20,17 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
     public string Url { get; }
     public WaveFormat WaveFormat => volumeStage.WaveFormat;
 
+    /// <summary>
+    /// The underlying source's clean-exit oracle, if it implements one.
+    /// MultiStreamPlayer reads this from its MixerInputEnded handler to
+    /// distinguish a natural EOF (eligible for auto-loop) from a disposal-
+    /// driven removal (user stop, walked out of range, evicted by the cap).
+    /// Null for sources that don't implement <see cref="ICleanExitSource"/>
+    /// (currently HttpAudioReader — direct HTTP streams are indefinite by
+    /// design, so they never naturally end).
+    /// </summary>
+    public ICleanExitSource? CleanExit { get; }
+
     private readonly IDisposable sourceDisposable;
     private readonly BiQuadFilterSampleProvider lowpass;
     private readonly VolumeSampleProvider volumeStage;
@@ -36,6 +47,7 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
         CanonicalKey = canonicalKey;
         Url = url;
         this.sourceDisposable = sourceDisposable;
+        CleanExit = source as ICleanExitSource;
 
         ISampleProvider chain = source;
 

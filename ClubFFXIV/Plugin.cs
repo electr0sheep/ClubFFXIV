@@ -569,8 +569,30 @@ public sealed class Plugin : IDalamudPlugin
         {
             multiStreamPlayer = new MultiStreamPlayer(Binaries);
             multiStreamPlayer.MasterVolume = Config.Volume;
+            // Single-stream's loop is wired via streamPlayer.StreamNaturallyEnded;
+            // multi-stream needs its own per-voice path. The mixer auto-removes
+            // voices that EOF, so the framework's outdoor proximity loop will
+            // re-add them on the next tick — but only if the user wants loop.
+            // Without this gate, every multi-stream voice would loop forever
+            // regardless of the LoopFinishedVideos toggle.
+            multiStreamPlayer.VoiceNaturallyEnded += OnMultiStreamVoiceNaturallyEnded;
         }
         return multiStreamPlayer;
+    }
+
+    private void OnMultiStreamVoiceNaturallyEnded(string canonicalKey, string url)
+    {
+        if (!Config.LoopFinishedVideos) return;
+        if (Permissions.Check(url) == UrlDecision.Block)
+        {
+            Log.Info($"Voice finished but URL is blocked, not looping: {url}");
+            return;
+        }
+        Log.Info($"Voice finished, looping: {url} (key={canonicalKey})");
+        // Restart at bypass cutoff; HandleOutdoorModeMulti / HandleIndoorMode
+        // will re-apply the correct spatial params on the next framework tick.
+        // Returns false if a teardown raced us — fine, the voice is gone.
+        _ = multiStreamPlayer?.AddVoiceAsync(canonicalKey, url, MultiStreamPlayer.BypassCutoffHz);
     }
 
     private void TearDownMultiStream()

@@ -51,6 +51,18 @@ internal sealed class MultiStreamPlayer : IDisposable
     /// </summary>
     public bool PlaylistRandom { get; set; }
 
+    /// <summary>
+    /// Fires when an individual voice's source reached a natural EOF
+    /// (eligible for auto-loop). Args: (canonicalKey, url). Plugin's
+    /// loop handler decides whether to <see cref="AddVoiceAsync"/> the same
+    /// URL back, gated on the user's LoopFinishedVideos preference.
+    /// Voices that are removed via <see cref="RemoveVoice"/> or
+    /// <see cref="StopAll"/> do NOT fire this — the mixer-input-ended
+    /// handler distinguishes natural EOF from teardown via
+    /// <see cref="StreamVoice.CleanExit"/>.
+    /// </summary>
+    public event Action<string, string>? VoiceNaturallyEnded;
+
     public MultiStreamPlayer(BinaryManager binaryManager)
     {
         this.binaryManager = binaryManager;
@@ -58,9 +70,57 @@ internal sealed class MultiStreamPlayer : IDisposable
         // the WaveOutEvent never thinks the stream ended just because all
         // voices were temporarily removed.
         mixer = new MixingSampleProvider(MixerFormat) { ReadFully = true };
+        // NAudio fires MixerInputEnded when an input returns less than the
+        // requested sample count — the chain's natural EOF signal. Use this
+        // to drop the voice from our dict (mixer already removes it from its
+        // inputs) and surface the loop-eligible event.
+        mixer.MixerInputEnded += OnMixerInputEnded;
         output = new WaveOutEvent();
         output.Init(mixer.ToWaveProvider());
         output.Play();
+    }
+
+    // Fires synchronously on the audio thread (inside MixingSampleProvider.Read)
+    // when an input returns less than count — i.e. the voice's source EOF'd.
+    // Hand identification + dict bookkeeping happen here under the lock; the
+    // Dispose + event fanout get posted to the threadpool because they may
+    // do slow work (process kills, yt-dlp respawn) that would stall mixer reads.
+    // Note: per-voice mute state in mutedKeys is intentionally preserved here
+    // so a user-muted voice stays muted across natural-end loop iterations.
+    // The walk-out-of-range path (RemoveVoice) clears mutedKeys, which is
+    // the right place — that's a "fresh sound" transition, not a loop.
+    private void OnMixerInputEnded(object? sender, SampleProviderEventArgs e)
+    {
+        if (e.SampleProvider is not StreamVoice voice) return;
+
+        bool weOwnIt;
+        bool naturalEnd;
+        lock (voicesLock)
+        {
+            // Identify by reference, not key — a teardown + re-add for the same
+            // key could race the mixer's drain and we'd otherwise misattribute
+            // the event to the new voice.
+            if (voices.TryGetValue(voice.CanonicalKey, out var stored) && ReferenceEquals(stored, voice))
+            {
+                voices.Remove(voice.CanonicalKey);
+                weOwnIt = true;
+            }
+            else
+            {
+                weOwnIt = false;
+            }
+            naturalEnd = voice.CleanExit?.DidExitCleanly() == true;
+        }
+
+        if (!weOwnIt) return;
+
+        var key = voice.CanonicalKey;
+        var url = voice.Url;
+        _ = Task.Run(() =>
+        {
+            if (naturalEnd) VoiceNaturallyEnded?.Invoke(key, url);
+            try { voice.Dispose(); } catch { /* swallow during teardown */ }
+        });
     }
 
     public int VoiceCount
