@@ -493,9 +493,15 @@ public sealed class Plugin : IDalamudPlugin
     public void RebuildRegistryClient()
     {
         registryClient?.Dispose();
-        registryClient = string.IsNullOrWhiteSpace(Config.RegistryUrl)
-            ? null
-            : new ClubRegistryClient(Config.RegistryUrl);
+        // Defensive validation: the Apply button in ConfigWindow already
+        // validates, but a persisted-from-old-version or hand-edited config
+        // could still hold a malformed URL. Treat invalid as disabled rather
+        // than constructing a client that throws on every ward-fetch tick.
+        registryClient =
+            ClubRegistryClient.TryNormalizeRegistryUrl(Config.RegistryUrl, out var normalized)
+            && !string.IsNullOrEmpty(normalized)
+                ? new ClubRegistryClient(normalized)
+                : null;
         wardCache.Clear();
         InvalidateDirectoryCache();
     }

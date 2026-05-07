@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Threading.Tasks;
 using ClubFFXIV.Game;
+using ClubFFXIV.Network;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
@@ -644,14 +645,57 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.Button("Apply"))
         {
-            plugin.Config.RegistryUrl = registryUrlInput.Trim();
-            plugin.Config.Save();
-            plugin.RebuildRegistryClient();
-            plugin.Notify("ClubFFXIV",
-                plugin.RegistryEnabled
-                    ? "Registry connected."
-                    : "Registry disabled (URL is blank).",
-                NotificationType.Info);
+            if (!ClubRegistryClient.TryNormalizeRegistryUrl(registryUrlInput, out var normalized))
+            {
+                plugin.Notify("ClubFFXIV",
+                    "Not a valid registry.",
+                    NotificationType.Error,
+                    durationSeconds: 8);
+            }
+            else if (normalized.Length == 0)
+            {
+                // Blank → disable, no probe needed.
+                plugin.Config.RegistryUrl = "";
+                plugin.Config.Save();
+                plugin.RebuildRegistryClient();
+                plugin.Notify("ClubFFXIV",
+                    "Registry disabled (URL is blank).",
+                    NotificationType.Info);
+            }
+            else
+            {
+                // Probe /health before persisting so a syntactically-valid but
+                // wrong URL doesn't reach the per-tick ward fetcher.
+                var candidate = normalized;
+                inflightStatus = "Checking registry...";
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using var probe = new ClubRegistryClient(candidate);
+                        await probe.CheckHealthAsync();
+                        registryUrlInput = candidate;
+                        plugin.Config.RegistryUrl = candidate;
+                        plugin.Config.Save();
+                        plugin.RebuildRegistryClient();
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV",
+                            "Registry connected.",
+                            NotificationType.Success);
+                    }
+                    catch (Exception ex)
+                    {
+                        // Underlying message goes to the log for diagnosis;
+                        // the user-facing notification stays uniform.
+                        Plugin.Log.Error(ex, "Registry health check failed");
+                        inflightStatus = "";
+                        plugin.Notify("ClubFFXIV",
+                            "Not a valid registry.",
+                            NotificationType.Error,
+                            durationSeconds: 8);
+                    }
+                });
+            }
         }
         ImGui.SameLine();
         ImGui.TextDisabled(plugin.RegistryEnabled ? "● enabled" : "○ disabled");

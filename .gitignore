@@ -6,3 +6,4 @@ obj/
 .vscode/
 .idea/
 *.lutconfig
+.DS_Store

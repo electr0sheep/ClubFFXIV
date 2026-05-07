@@ -22,6 +22,61 @@ public sealed class ClubRegistryClient : IDisposable
         http.DefaultRequestHeaders.UserAgent.ParseAdd("ClubFFXIV/0.1");
     }
 
+    /// <summary>
+    /// Cheap syntactic check: does the input even look like an http(s) base
+    /// URL we could probe? Blank is accepted as "registry disabled". Anything
+    /// past this gate still has to pass <see cref="CheckHealthAsync"/> to
+    /// count as a real registry.
+    /// </summary>
+    public static bool TryNormalizeRegistryUrl(string? input, out string normalized)
+    {
+        var trimmed = (input ?? "").Trim();
+        if (trimmed.Length == 0)
+        {
+            normalized = "";
+            return true;
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(uri.Host)
+            && string.IsNullOrEmpty(uri.Query)
+            && string.IsNullOrEmpty(uri.Fragment))
+        {
+            normalized = trimmed.TrimEnd('/');
+            return true;
+        }
+
+        normalized = "";
+        return false;
+    }
+
+    /// <summary>
+    /// Probe the configured base URL to confirm it's actually a ClubFFXIV
+    /// registry (not just any reachable HTTP server). Hits <c>/health</c>,
+    /// which the worker returns as the literal body <c>"ok"</c>. Throws on
+    /// any other response — a generic 404, a different service's HTML, etc.
+    /// — so the caller can surface a single error to the user instead of
+    /// silently saving a bad URL and letting the per-tick ward fetcher spam
+    /// the log.
+    /// </summary>
+    public async Task CheckHealthAsync(CancellationToken ct = default)
+    {
+        var url = $"{baseUrl}/health";
+        using var resp = await http.GetAsync(url, ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            throw new InvalidOperationException(
+                $"Server returned {(int)resp.StatusCode}; this URL doesn't look like a ClubFFXIV registry.");
+        }
+        var body = (await resp.Content.ReadAsStringAsync(ct)).Trim();
+        if (!string.Equals(body, "ok", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "URL is reachable but doesn't appear to be a ClubFFXIV registry.");
+        }
+    }
+
     public async Task<ClubRecord?> GetAsync(string plotKey, CancellationToken ct = default)
     {
         var url = $"{baseUrl}/clubs/{Uri.EscapeDataString(plotKey)}";
