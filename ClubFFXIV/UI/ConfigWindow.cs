@@ -160,22 +160,19 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawAdvancedTab()
     {
         DrawBinariesSection();
-#if DEBUG
         ImGui.Spacing();
-        DrawDebugMultiStreamSection();
-#endif
+        DrawMultiStreamSection();
     }
 
-#if DEBUG
-    private void DrawDebugMultiStreamSection()
+    private void DrawMultiStreamSection()
     {
-        ImGui.TextUnformatted("Multi-stream (DEBUG only)");
+        ImGui.TextUnformatted("Multi-stream");
         ImGui.Separator();
         ImGui.Spacing();
 
         ImGui.TextWrapped(
-            "Experimental: outdoor proximity keeps multiple nearby clubs streaming " +
-            "at once, mixed by per-voice distance. Each yt-dlp source costs significant " +
+            "Outdoor proximity keeps multiple nearby clubs streaming at once, " +
+            "mixed by per-voice distance. Each yt-dlp source costs significant " +
             "CPU + memory, so the cap counts yt-dlp voices as 2.");
         ImGui.Spacing();
 
@@ -195,7 +192,6 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.Save();
         }
     }
-#endif
 
     private string newAllowDomainInput = "";
     private string newBlockDomainInput = "";
@@ -582,8 +578,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
             // --- Path 2: Registry (publish if owner & new; edit if has key) -
             var hasPublishedKey = plugin.Config.PublishedHouses.TryGetValue(canonical, out var publishedEntry);
-            var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner
-                                     && !plugin.Config.AllowPublishWithoutOwnership;
+            var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner;
 
             ImGui.SameLine();
             if (hasPublishedKey && publishedEntry != null)
@@ -601,27 +596,6 @@ public sealed class ConfigWindow : Window, IDisposable
                     plugin.ClubFormWindow.OpenRegistryPublish(plot);
                 if (publishDisabled) ImGui.EndDisabled();
             }
-
-#if DEBUG
-            if (blockedByOwnership && !hasPublishedKey)
-            {
-                ImGui.Spacing();
-                var allow = plugin.Config.AllowPublishWithoutOwnership;
-                if (ImGui.Checkbox("Allow publish without ownership check (override)", ref allow))
-                {
-                    plugin.Config.AllowPublishWithoutOwnership = allow;
-                    plugin.Config.Save();
-                }
-                ImGui.SameLine();
-                ImGui.TextDisabled("(?)");
-                if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(
-                        "Bypasses the local 'are you the owner?' check.\n" +
-                        "DEBUG builds only — Release ignores this flag.\n" +
-                        "The registry's first-claim-wins rule still applies —\n" +
-                        "you can't take a plot another DJ already has.");
-            }
-#endif
         }
         else if (ward.HasValue)
         {

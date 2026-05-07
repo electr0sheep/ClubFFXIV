@@ -1,4 +1,3 @@
-#if DEBUG
 using System;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -77,4 +76,3 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
         try { sourceDisposable.Dispose(); } catch { /* swallow during teardown */ }
     }
 }
-#endif

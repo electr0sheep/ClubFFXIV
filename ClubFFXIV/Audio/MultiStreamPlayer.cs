@@ -1,4 +1,3 @@
-#if DEBUG
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -14,10 +13,9 @@ namespace ClubFFXIV.Audio;
 /// one club's stream; voices are keyed by canonical plot key so the outdoor
 /// proximity diff loop can add/remove them by identity.
 ///
-/// Why behind #if DEBUG: per-voice resamplers + multiple concurrent decoders
-/// (especially yt-dlp subprocesses) compound CPU/network/memory linearly. The
-/// experiment ships with a low default concurrency cap; exposing this to
-/// production without more telemetry on real-world resource usage is risky.
+/// Per-voice resamplers + multiple concurrent decoders (especially yt-dlp
+/// subprocesses) compound CPU/network/memory linearly, so the default
+/// concurrency cap stays low — see <see cref="Configuration.MaxConcurrentStreams"/>.
 /// </summary>
 internal sealed class MultiStreamPlayer : IDisposable
 {
@@ -262,4 +260,3 @@ internal sealed class MultiStreamPlayer : IDisposable
         output.Dispose();
     }
 }
-#endif

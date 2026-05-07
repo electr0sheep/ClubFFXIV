@@ -64,11 +64,9 @@ public sealed class Plugin : IDalamudPlugin
     public BinaryManager Binaries { get; }
     public UrlPermissions Permissions { get; }
     private readonly StreamPlayer streamPlayer;
-#if DEBUG
     // Lazily created: the WaveOutEvent inside MultiStreamPlayer is non-trivial,
     // so we only build it once the user opts in via the Advanced tab toggle.
     private MultiStreamPlayer? multiStreamPlayer;
-#endif
     private readonly GameBgmMuter bgmMuter = new();
     private ClubRegistryClient? registryClient;
     private DateTime lastBinaryUpdateCheck = DateTime.MinValue;
@@ -183,9 +181,7 @@ public sealed class Plugin : IDalamudPlugin
         directoryWindow.Dispose();
         ClubFormWindow.Dispose();
         streamPlayer.Dispose();
-#if DEBUG
         multiStreamPlayer?.Dispose();
-#endif
         bgmMuter.Dispose();
         registryClient?.Dispose();
         djIdentity?.Dispose();
@@ -397,9 +393,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         streamStartCts?.Cancel();
         streamPlayer.Stop();
-#if DEBUG
         TearDownMultiStream();
-#endif
         CurrentMode = PlaybackMode.Off;
         CurrentProximity = null;
         userInhibitsAutoPlay = true;
@@ -482,14 +476,11 @@ public sealed class Plugin : IDalamudPlugin
     public void SetStreamVolume(float volume)
     {
         streamPlayer.MasterVolume = volume;
-#if DEBUG
         if (multiStreamPlayer != null) multiStreamPlayer.MasterVolume = volume;
-#endif
     }
     public bool IsStreamPlaying => streamPlayer.IsPlaying;
     public string? CurrentStreamUrl => streamPlayer.CurrentUrl;
 
-#if DEBUG
     private bool MultiStreamActive => Config.MultiStreamEnabled;
 
     private MultiStreamPlayer EnsureMultiStreamPlayer()
@@ -518,7 +509,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (!Config.MultiStreamEnabled) TearDownMultiStream();
     }
-#endif
 
     public string? DjId => djIdentity?.DjId;
     public bool RegistryEnabled => registryClient != null;
@@ -920,19 +910,15 @@ public sealed class Plugin : IDalamudPlugin
         // Stream output mute when game is unfocused.
         var shouldMute = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
         streamPlayer.Muted = shouldMute;
-#if DEBUG
         if (multiStreamPlayer != null) multiStreamPlayer.Muted = shouldMute;
-#endif
 
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         // Mute while a load is pending too — otherwise the game's BGM blares for the
         // 1–3s the stream takes to connect after entering a house.
         var streamWillPlay = streamPlayer.IsPlaying || pendingStartUrl != null;
-#if DEBUG
         if (!streamWillPlay && MultiStreamActive && multiStreamPlayer?.HasAnyActivity == true)
             streamWillPlay = true;
-#endif
         var streamIsPrimary = streamWillPlay
             && CurrentMode is PlaybackMode.Indoor or PlaybackMode.Manual;
         if (streamIsPrimary)
@@ -1020,9 +1006,7 @@ public sealed class Plugin : IDalamudPlugin
         if (CurrentMode is PlaybackMode.Indoor or PlaybackMode.Outdoor)
         {
             streamPlayer.Stop();
-#if DEBUG
             TearDownMultiStream();
-#endif
             CurrentMode = PlaybackMode.Off;
             CurrentProximity = null;
         }
@@ -1031,7 +1015,6 @@ public sealed class Plugin : IDalamudPlugin
     private void HandleIndoorMode(PlotKey key)
     {
         bool alreadySettled;
-#if DEBUG
         if (MultiStreamActive)
         {
             // Multi-stream Indoor: voice exists for this plot ⇒ already settled.
@@ -1049,9 +1032,6 @@ public sealed class Plugin : IDalamudPlugin
         {
             alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying;
         }
-#else
-        alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying;
-#endif
 
         if (alreadySettled)
         {
@@ -1094,13 +1074,11 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void EnterIndoor(string url, ClubContext context)
     {
-#if DEBUG
         if (MultiStreamActive)
         {
             EnterIndoorMulti(url, context);
             return;
         }
-#endif
 
         // Seamless: same URL was already streaming outdoors.
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl == url)
@@ -1126,7 +1104,6 @@ public sealed class Plugin : IDalamudPlugin
         _ = StartStreamAsync(url, PlaybackMode.Indoor, context.ClubName);
     }
 
-#if DEBUG
     /// <summary>
     /// Indoor entry in multi-stream mode. Indoor is solo: keep only the voice
     /// for the current plot (so the user hears one club distinctly), and bypass
@@ -1180,20 +1157,17 @@ public sealed class Plugin : IDalamudPlugin
         CurrentProximity = null;
         _ = player.AddVoiceAsync(canonical, url, MultiStreamPlayer.BypassCutoffHz);
     }
-#endif
 
     private void HandleOutdoorMode(WardLocation ward)
     {
         var pos = HousingDetector.PlayerPosition();
         if (pos == null) return;
 
-#if DEBUG
         if (MultiStreamActive)
         {
             HandleOutdoorModeMulti(ward, pos.Value);
             return;
         }
-#endif
 
         var candidates = EnumerateCandidates(ward);
         var result = WardProximity.FindClosest(
@@ -1249,7 +1223,6 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-#if DEBUG
     /// <summary>
     /// Outdoor proximity loop for multi-stream mode. Diffs the desired voice
     /// set (in-range candidates, capped) against the active mixer voices:
@@ -1340,7 +1313,6 @@ public sealed class Plugin : IDalamudPlugin
             CurrentMode = PlaybackMode.Outdoor;
         }
     }
-#endif
 
     private IEnumerable<WardProximity.Candidate> EnumerateCandidates(WardLocation ward)
     {
