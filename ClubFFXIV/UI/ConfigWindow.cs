@@ -350,7 +350,7 @@ public sealed class ConfigWindow : Window, IDisposable
         var volumeText = $"vol {(int)(plugin.Config.Volume * 100)}%";
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
-        ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, 32), ImGuiChildFlags.Borders);
+        ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, 32), true);
         ImGui.Spacing();
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(iconColor, icon);
