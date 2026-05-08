@@ -78,11 +78,15 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             psi.ArgumentList.Add("--playlist-random");
         // Authenticate as the user's logged-in browser session — the
         // standard fix for YouTube's "Sign in to confirm you're not a bot"
-        // screen. Empty leaves yt-dlp anonymous.
+        // screen. Empty leaves yt-dlp anonymous. When set, also load our
+        // bundled yt-dlp-ChromeCookieUnlock plugin so Chrome cookies work
+        // even when Chrome has the DB file locked.
         if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
         {
             psi.ArgumentList.Add("--cookies-from-browser");
             psi.ArgumentList.Add(cookiesFromBrowser);
+            psi.ArgumentList.Add("--plugin-dirs");
+            psi.ArgumentList.Add(binaries.YtDlpPluginsRoot);
         }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);

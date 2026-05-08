@@ -30,6 +30,15 @@ public sealed class BinaryManager
     public string FfmpegPath => Path.Combine(BinDir, "ffmpeg.exe");
     public string YtDlpPath => Path.Combine(BinDir, "yt-dlp.exe");
 
+    /// <summary>
+    /// Root directory passed to yt-dlp via --plugin-dirs. Contains a single
+    /// bundled plugin (yt-dlp-ChromeCookieUnlock, MIT) that releases Chrome's
+    /// cookies-DB file lock so --cookies-from-browser chrome works while
+    /// Chrome is running. Always populated; readers conditionally append the
+    /// arg when the user has cookies-from-browser configured.
+    /// </summary>
+    public string YtDlpPluginsRoot { get; }
+
     public bool FfmpegInstalled => File.Exists(FfmpegPath);
     public bool YtDlpInstalled => File.Exists(YtDlpPath);
     public bool Ready => FfmpegInstalled && YtDlpInstalled;
@@ -38,7 +47,120 @@ public sealed class BinaryManager
     {
         BinDir = Path.Combine(pluginConfigDir, "bin");
         Directory.CreateDirectory(BinDir);
+        YtDlpPluginsRoot = Path.Combine(pluginConfigDir, "yt-dlp-plugins");
+        TryEnsureBundledPlugins();
     }
+
+    /// <summary>
+    /// Writes bundled yt-dlp plugins to <see cref="YtDlpPluginsRoot"/> in the
+    /// directory layout yt-dlp expects (root/yt_dlp_plugins/postprocessor/...).
+    /// Idempotent: rewrites only when the on-disk content differs, so plugin
+    /// updates land cleanly across our own version bumps. Wrapped in try/catch
+    /// because a plugin-write failure should NOT prevent ClubFFXIV from
+    /// starting — yt-dlp still works without the cookie unlock, the user
+    /// just won't get the Chrome cookie workaround.
+    /// </summary>
+    private void TryEnsureBundledPlugins()
+    {
+        try
+        {
+            var ppDir = Path.Combine(YtDlpPluginsRoot, "yt_dlp_plugins", "postprocessor");
+            Directory.CreateDirectory(ppDir);
+            var dest = Path.Combine(ppDir, "chrome_cookie_unlock.py");
+            if (!File.Exists(dest) || File.ReadAllText(dest) != ChromeCookieUnlockSource)
+            {
+                File.WriteAllText(dest, ChromeCookieUnlockSource);
+            }
+        }
+        catch
+        {
+            // Best-effort: if we can't write (perms, AV interference, etc.),
+            // yt-dlp still works without the unlock plugin. User-visible effect
+            // is that --cookies-from-browser chrome may fail with the file-lock
+            // error; the UI tooltip points them at Firefox as the fallback.
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Bundled MIT-licensed plugin: yt-dlp-ChromeCookieUnlock
+    // https://github.com/seproDev/yt-dlp-ChromeCookieUnlock
+    // (c) 2023 Charles Machalow, (c) 2024 sepro
+    // Licensed under the MIT License (see plugin repo).
+    // Releases Windows file lock on Chrome's cookies DB via Restart Manager
+    // so yt-dlp can copy and read it while Chrome is open.
+    // ---------------------------------------------------------------------
+    private const string ChromeCookieUnlockSource =
+@"import sys
+
+import yt_dlp.cookies
+
+original_func = yt_dlp.cookies._open_database_copy
+
+def unlock_chrome(database_path, tmpdir):
+    try:
+        return original_func(database_path, tmpdir)
+    except PermissionError:
+        print('Attempting to unlock cookies', file=sys.stderr)
+        unlock_cookies(database_path)
+        return original_func(database_path, tmpdir)
+
+yt_dlp.cookies._open_database_copy = unlock_chrome
+
+
+# Adapted from https://gist.github.com/csm10495/e89e660ffee0030e8ef410b793ad6a7e
+# By Charles Machalow under the MIT License
+
+from ctypes import windll, byref, create_unicode_buffer, pointer, WINFUNCTYPE
+from ctypes.wintypes import DWORD, WCHAR, UINT
+
+ERROR_SUCCESS = 0
+ERROR_MORE_DATA  = 234
+RmForceShutdown = 1
+
+@WINFUNCTYPE(None, UINT)
+def callback(percent_complete: UINT) -> None:
+    pass
+
+rstrtmgr = windll.LoadLibrary(""Rstrtmgr"")
+
+def unlock_cookies(cookies_path):
+    session_handle = DWORD(0)
+    session_flags = DWORD(0)
+    session_key = (WCHAR * 256)()
+
+    result = DWORD(rstrtmgr.RmStartSession(byref(session_handle), session_flags, session_key)).value
+
+    if result != ERROR_SUCCESS:
+        raise RuntimeError(f""RmStartSession returned non-zero result: {result}"")
+
+    try:
+        result = DWORD(rstrtmgr.RmRegisterResources(session_handle, 1, byref(pointer(create_unicode_buffer(cookies_path))), 0, None, 0, None)).value
+
+        if result != ERROR_SUCCESS:
+            raise RuntimeError(f""RmRegisterResources returned non-zero result: {result}"")
+
+        proc_info_needed = DWORD(0)
+        proc_info = DWORD(0)
+        reboot_reasons = DWORD(0)
+
+        result = DWORD(rstrtmgr.RmGetList(session_handle, byref(proc_info_needed), byref(proc_info), None, byref(reboot_reasons))).value
+
+        if result not in (ERROR_SUCCESS, ERROR_MORE_DATA):
+            raise RuntimeError(f""RmGetList returned non-successful result: {result}"")
+
+        if proc_info_needed.value:
+            result = DWORD(rstrtmgr.RmShutdown(session_handle, RmForceShutdown, callback)).value
+
+            if result != ERROR_SUCCESS:
+                raise RuntimeError(f""RmShutdown returned non-successful result: {result}"")
+        else:
+            print(""File is not locked"")
+    finally:
+        result = DWORD(rstrtmgr.RmEndSession(session_handle)).value
+
+        if result != ERROR_SUCCESS:
+            raise RuntimeError(f""RmEndSession returned non-successful result: {result}"")
+";
 
     /// <summary>
     /// Ensures both binaries exist on disk, downloading whichever is missing.

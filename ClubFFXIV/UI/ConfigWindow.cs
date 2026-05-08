@@ -213,8 +213,13 @@ public sealed class ConfigWindow : Window, IDisposable
                 "  brave, chrome, chromium, edge, firefox,\n" +
                 "  opera, safari, vivaldi.\n\n" +
                 "You must be logged into YouTube (or whichever\n" +
-                "site is gating you) in that browser. Saved\n" +
-                "on lose-focus.");
+                "site is gating you) in that browser.\n\n" +
+                "Chrome / Edge / other Chromium browsers: we\n" +
+                "bundle the yt-dlp-ChromeCookieUnlock plugin\n" +
+                "(MIT) which releases the cookies-DB file lock\n" +
+                "via Windows Restart Manager, so reads work\n" +
+                "even while the browser is open.\n\n" +
+                "Saved on lose-focus.");
 
         ImGui.SetNextItemWidth(200);
         ImGui.InputText("##ytDlpCookies", ref ytDlpCookiesInput, 32);

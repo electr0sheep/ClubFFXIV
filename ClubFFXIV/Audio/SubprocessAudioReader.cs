@@ -251,11 +251,15 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // Authenticate as the user's logged-in browser session — the
         // standard fix for YouTube's "Sign in to confirm you're not a bot"
         // screen. Empty/null leaves yt-dlp anonymous (works for most
-        // public videos until YouTube tightens further).
+        // public videos until YouTube tightens further). When set, also
+        // load our bundled yt-dlp-ChromeCookieUnlock plugin so reading
+        // Chrome's cookies works even when Chrome has the DB file locked.
         if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
         {
             psi.ArgumentList.Add("--cookies-from-browser");
             psi.ArgumentList.Add(cookiesFromBrowser);
+            psi.ArgumentList.Add("--plugin-dirs");
+            psi.ArgumentList.Add(binaries.YtDlpPluginsRoot);
         }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);
