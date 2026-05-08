@@ -1691,13 +1691,32 @@ public sealed class Plugin : IDalamudPlugin
     private IEnumerable<WardProximity.Candidate> EnumerateCandidates(WardLocation ward)
     {
         // Local entries first — DJ's own calibrations win over registry.
-        foreach (var (key, entry) in Config.SavedHouses)
-            if (TryLocalToCandidate(key, entry, ward, out var c)) yield return c;
+        // Within locals, Published wins over Saved when both exist for the
+        // same plot key: the Published entry carries the Passphrase field
+        // (the password gate), but the Saved-mirror sync currently drops it,
+        // so picking Saved would leak the URL outdoors for password-protected
+        // clubs. Walking Published first + skipping duplicate keys in Saved
+        // makes the gate authoritative regardless of which copies exist.
+        var seen = new HashSet<string>();
         foreach (var (key, entry) in Config.PublishedHouses)
-            if (TryLocalToCandidate(key, entry, ward, out var c)) yield return c;
+        {
+            if (TryLocalToCandidate(key, entry, ward, out var c))
+            {
+                seen.Add(key);
+                yield return c;
+            }
+        }
+        foreach (var (key, entry) in Config.SavedHouses)
+        {
+            if (seen.Contains(key)) continue;
+            if (TryLocalToCandidate(key, entry, ward, out var c))
+            {
+                seen.Add(key);
+                yield return c;
+            }
+        }
 
         // Registry-discovered, deduplicated against local keys.
-        var seen = new HashSet<string>();
         foreach (var (key, _) in Config.SavedHouses) seen.Add(key);
         foreach (var (key, _) in Config.PublishedHouses) seen.Add(key);
 
