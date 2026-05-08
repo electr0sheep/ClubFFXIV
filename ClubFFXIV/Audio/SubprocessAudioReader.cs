@@ -241,6 +241,14 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
         // --no-playlist tells yt-dlp to download the video, not the playlist.
         psi.ArgumentList.Add("--no-playlist");
+        // Work around YouTube's PO Token / SABR streaming requirements: the
+        // web client needs a Proof-of-Origin token for most formats, and
+        // when cookies are loaded yt-dlp prefers the web client. Adding the
+        // android client as a fallback gives yt-dlp formats that don't need
+        // PO Token. "default" preserves yt-dlp's normal client priority for
+        // anonymous / older-video cases where web works.
+        psi.ArgumentList.Add("--extractor-args");
+        psi.ArgumentList.Add("youtube:player_client=default,android");
         // For pure playlist URLs, --playlist-random shuffles before emit;
         // off, yt-dlp emits items in their original order. Either way we
         // only read the first stdout line below, so we get one URL per
