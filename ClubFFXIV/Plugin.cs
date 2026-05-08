@@ -1243,6 +1243,25 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        // Indoor mode is solo. Prune outdoor audio NOW, before we even know
+        // whether we can play this plot's stream — that way a password-
+        // protected club we don't (yet) have the password for, or a registry
+        // round-trip that hasn't returned, results in silence inside the
+        // house instead of outdoor proximity audio leaking through. The
+        // current plot's voice/stream (if it exists already) stays put.
+        if (MultiStreamActive && multiStreamPlayer != null)
+        {
+            foreach (var activeKey in multiStreamPlayer.ActiveKeys())
+            {
+                if (activeKey != key.Canonical)
+                    multiStreamPlayer.RemoveVoice(activeKey);
+            }
+        }
+        else if (CurrentMode == PlaybackMode.Outdoor && streamPlayer.IsPlaying)
+        {
+            streamPlayer.Stop();
+        }
+
         if (Config.SavedHouses.TryGetValue(key.Canonical, out var saved)
             && !string.IsNullOrWhiteSpace(saved.StreamUrl))
         {
