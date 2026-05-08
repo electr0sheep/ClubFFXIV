@@ -76,12 +76,38 @@ import {
 } from "./types";
 
 export async function handleGet(
+  req: Request,
   env: Env,
   plotKey: string,
 ): Promise<Response> {
   const raw = await env.CLUBS_KV.get(`club:${plotKey}`);
   if (!raw) return jsonResponse({ error: "not found" }, 404);
   const record = JSON.parse(raw) as ClubRecord;
+
+  // Password-protected: gate on `?passwordHash=` matching the stored hash.
+  // Mismatch returns 401 (with the salt so the listener can re-prompt) but
+  // shares the body shape with the no-hash 200 case so client code can handle
+  // both uniformly.
+  if (record.passwordHash) {
+    const provided = new URL(req.url).searchParams.get("passwordHash");
+    if (provided !== record.passwordHash) {
+      return jsonResponse(
+        {
+          streamUrl: "",
+          displayName: record.displayName,
+          description: record.description ?? "",
+          djId: record.djId,
+          door: record.door,
+          updatedAt: record.updatedAt,
+          listed: record.listed !== false,
+          passwordRequired: true,
+          passwordSalt: record.passwordSalt,
+        },
+        provided === null ? 200 : 401,
+      );
+    }
+  }
+
   return jsonResponse({
     streamUrl: record.streamUrl,
     displayName: record.displayName,
@@ -90,6 +116,10 @@ export async function handleGet(
     door: record.door,
     updatedAt: record.updatedAt,
     listed: record.listed !== false,
+    passwordRequired: !!record.passwordHash,
+    // Salt is fine to expose — it's bound to a high-entropy passphrase that
+    // the registry never sees in plaintext.
+    passwordSalt: record.passwordSalt,
   });
 }
 
@@ -166,6 +196,12 @@ export async function handlePost(
   // field and expected to appear in any future browse list.
   const listed = parsed.listed !== false;
 
+  // Password gate: both fields must be present together (set the gate) or
+  // both absent (clear / unset). Anything else is a malformed body.
+  const pwErr = passwordPairError(parsed.passwordSalt, parsed.passwordHash);
+  if (pwErr) return jsonResponse({ error: pwErr }, 400);
+  const passwordRequired = !!parsed.passwordHash;
+
   const record: ClubRecord = {
     streamUrl: parsed.streamUrl,
     displayName,
@@ -175,6 +211,8 @@ export async function handlePost(
     updatedAt: Date.now(),
     door: parsed.door,
     listed,
+    passwordSalt: parsed.passwordSalt,
+    passwordHash: parsed.passwordHash,
   };
   await safePut(env, `club:${plotKey}`, JSON.stringify(record));
 
@@ -186,12 +224,17 @@ export async function handlePost(
     }
     if (parsed.door) {
       await addToWardIndex(env, worldId, parsed.door, plotKey, {
-        streamUrl: parsed.streamUrl,
+        // Don't store the real URL on password-protected entries — anyone
+        // walking past the ward fetches the index, and the URL would be
+        // visible to listeners who haven't authenticated. The per-club GET
+        // is the only place the URL is released, gated on the hash check.
+        streamUrl: passwordRequired ? "" : parsed.streamUrl,
         displayName,
         description,
         djId,
         door: parsed.door,
         updatedAt: record.updatedAt,
+        passwordRequired: passwordRequired || undefined,
       });
     }
   }
@@ -201,12 +244,15 @@ export async function handlePost(
   // the directory is purely the opt-in browse list.
   if (listed) {
     await addToDirectory(env, plotKey, {
-      streamUrl: parsed.streamUrl,
+      // Same logic as the ward index — password-protected URLs aren't in the
+      // directory blob; listeners must hit the per-club GET with the hash.
+      streamUrl: passwordRequired ? "" : parsed.streamUrl,
       displayName,
       description,
       djId,
       door: parsed.door,
       updatedAt: record.updatedAt,
+      passwordRequired: passwordRequired || undefined,
     });
   } else {
     await removeFromDirectory(env, plotKey);
@@ -438,6 +484,24 @@ function sanitizeDescription(input: unknown): SanitizeResult {
     return { ok: false, error: "description cannot contain bidi-override characters" };
   }
   return { ok: true, value: trimmed };
+}
+
+// Argon2id base64 length sanity bounds. 16-byte salt → 24 base64 chars,
+// 32-byte hash → 44 base64 chars. Generous upper bounds (256) catch obvious
+// overflows / typos without locking us into a specific PHC parameter set.
+function passwordPairError(salt: string | undefined, hash: string | undefined): string | null {
+  const haveSalt = typeof salt === "string" && salt.length > 0;
+  const haveHash = typeof hash === "string" && hash.length > 0;
+  if (haveSalt !== haveHash) {
+    return "passwordSalt and passwordHash must both be present or both absent";
+  }
+  if (haveSalt) {
+    if (salt!.length < 16 || salt!.length > 256) return "passwordSalt out of range";
+    if (hash!.length < 32 || hash!.length > 256) return "passwordHash out of range";
+    if (!/^[A-Za-z0-9+/=]+$/.test(salt!)) return "passwordSalt must be base64";
+    if (!/^[A-Za-z0-9+/=]+$/.test(hash!)) return "passwordHash must be base64";
+  }
+  return null;
 }
 
 function doorError(d: Door): string | null {

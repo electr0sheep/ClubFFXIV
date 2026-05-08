@@ -62,7 +62,7 @@ export default {
       try {
         switch (req.method) {
           case "GET":
-            return await handleGet(env, plotKey);
+            return await handleGet(req, env, plotKey);
           case "POST":
             return await handlePost(req, env, plotKey);
           case "DELETE":

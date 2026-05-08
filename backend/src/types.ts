@@ -27,6 +27,13 @@ export interface ClubRecord {
   /// from per-plot GET, ward proximity, or anyone who knows the plot key — it's
   /// strictly a directory-visibility flag.
   listed?: boolean;
+  /// Argon2id hash + salt for password-protected clubs. Both null/undefined =
+  /// no password gate. When set, GET /clubs/:key requires `?passwordHash=…`
+  /// matching `passwordHash` to release `streamUrl`. The plugin computes the
+  /// hash locally from a 6-word EFF-long-list passphrase before publishing,
+  /// so the registry never sees the plaintext.
+  passwordSalt?: string;
+  passwordHash?: string;
 }
 
 export interface PublishBody {
@@ -36,6 +43,10 @@ export interface PublishBody {
   nonce: number;
   door?: Door;
   listed?: boolean;
+  /// Both must be present together (set the password gate) or both absent
+  /// (clear it). Sending one without the other is rejected as a malformed body.
+  passwordSalt?: string;
+  passwordHash?: string;
 }
 
 export interface DeleteBody {
@@ -48,12 +59,16 @@ export interface DeleteBody {
 export type WardIndex = Record<string, WardIndexEntry>;
 
 export interface WardIndexEntry {
+  /// Empty string for password-protected entries (URL is gated behind the
+  /// per-key GET with `?passwordHash=…`). passwordRequired flags this case
+  /// so listeners know to prompt before trying to play.
   streamUrl: string;
   displayName: string;
   description?: string;
   djId: string;
   door: Door;
   updatedAt: number;
+  passwordRequired?: boolean;
 }
 
 /// Public directory: { plotKey: DirectoryEntry } stored at key `directory`.
@@ -62,12 +77,14 @@ export interface WardIndexEntry {
 export type DirectoryIndex = Record<string, DirectoryEntry>;
 
 export interface DirectoryEntry {
+  /// Empty string for password-protected entries; see WardIndexEntry.streamUrl.
   streamUrl: string;
   displayName: string;
   description?: string;
   djId: string;
   door?: Door;
   updatedAt: number;
+  passwordRequired?: boolean;
 }
 
 export const DIRECTORY_KEY = "directory";
