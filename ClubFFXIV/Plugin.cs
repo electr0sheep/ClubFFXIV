@@ -123,6 +123,9 @@ public sealed class Plugin : IDalamudPlugin
     // registry round-trip.
     private readonly Dictionary<string, string> resolvedPasswordedUrls = new();
     private readonly HashSet<string> resolvingPasswordedUrls = new();
+    // Plots the user dismissed via Skip on the passphrase prompt. Cleared on
+    // territory change so leaving and re-entering the plot re-prompts.
+    private readonly HashSet<string> skippedPasswordedPlots = new();
 
     // Public directory cache: a single global blob, fetched lazily when the
     // user opens the Public Directory panel. TTL 60s; the UI also exposes a
@@ -805,6 +808,20 @@ public sealed class Plugin : IDalamudPlugin
         existing.Description = description;
         existing.Listed = listed;
         existing.Passphrase = passphrase ?? "";
+
+        // The DJ owns the passphrase by definition — pre-fill both caches so
+        // their own indoor / outdoor playback doesn't prompt them for their
+        // own stream. Cleared if they re-publish without a passphrase.
+        if (!string.IsNullOrWhiteSpace(passphrase))
+        {
+            Config.KnownClubPassphrases[canonicalKey] = passphrase;
+            resolvedPasswordedUrls[canonicalKey] = streamUrl;
+        }
+        else
+        {
+            Config.KnownClubPassphrases.Remove(canonicalKey);
+            resolvedPasswordedUrls.Remove(canonicalKey);
+        }
         Config.Save();
 
         InvalidateWardCacheForDoor(door);
@@ -867,6 +884,20 @@ public sealed class Plugin : IDalamudPlugin
         entry.Description = newDescription;
         entry.Listed = newListed;
         entry.Passphrase = newPassphrase ?? "";
+
+        // Mirror PublishHouseAsync: keep the DJ's own auth caches in sync with
+        // their published gate so their outdoor / indoor mode never prompts
+        // them for their own stream.
+        if (!string.IsNullOrWhiteSpace(newPassphrase))
+        {
+            Config.KnownClubPassphrases[canonicalKey] = newPassphrase;
+            resolvedPasswordedUrls[canonicalKey] = newStreamUrl;
+        }
+        else
+        {
+            Config.KnownClubPassphrases.Remove(canonicalKey);
+            resolvedPasswordedUrls.Remove(canonicalKey);
+        }
         Config.Save();
 
         // Drop the cached ward listing so the DJ's own client refetches the
@@ -1063,6 +1094,9 @@ public sealed class Plugin : IDalamudPlugin
     private void OnTerritoryChanged(uint territoryType)
     {
         lastHousingCheck = DateTime.MinValue;
+        // Reset the "user dismissed this" set so re-entering a ward / plot
+        // gets a fresh chance to prompt for any password-protected clubs.
+        skippedPasswordedPlots.Clear();
     }
 
     private void ApplyAudioPolicy()
@@ -1346,6 +1380,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private void PromptForPassphrase(PlotKey key, ClubRecord record)
     {
+        // User said Skip earlier this territory — don't loop the prompt.
+        if (skippedPasswordedPlots.Contains(key.Canonical)) return;
         if (passphrasePromptWindow.HasPromptFor(key.Canonical)) return;
         var ctx = new ClubContext(record.DisplayName, record.Description);
         var saltB64 = record.PasswordSalt ?? "";
@@ -1353,7 +1389,7 @@ public sealed class Plugin : IDalamudPlugin
             key.Canonical,
             ctx,
             onSubmit: entered => _ = HandlePassphraseSubmitted(key, saltB64, entered),
-            onCancel: () => { /* user dismissed; do nothing — they can re-enter later */ });
+            onCancel: () => skippedPasswordedPlots.Add(key.Canonical));
         passphrasePromptWindow.EnsureOpenIfPending();
     }
 
@@ -1678,7 +1714,7 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private static bool TryLocalToCandidate(
+    private bool TryLocalToCandidate(
         string key, ClubEntry entry, WardLocation ward, out WardProximity.Candidate candidate)
     {
         candidate = default;
@@ -1686,6 +1722,14 @@ public sealed class Plugin : IDalamudPlugin
         if (entry.DoorTerritoryType != ward.TerritoryType) return false;
         if (entry.DoorWard != ward.Ward) return false;
         if (string.IsNullOrWhiteSpace(entry.StreamUrl)) return false;
+        // Password-protected local entries must go through the same outdoor
+        // gate as registry-discovered ones: the listener must have authenticated
+        // (resolvedPasswordedUrls is the proof). The DJ's own publish path
+        // populates this dict on success, so their own outdoor mode keeps
+        // working without re-entering their own house.
+        if (!string.IsNullOrEmpty(entry.Passphrase)
+            && !resolvedPasswordedUrls.ContainsKey(key))
+            return false;
         candidate = new WardProximity.Candidate(
             key, entry.DisplayName, entry.StreamUrl, entry.DoorPosition.ToVec(), entry.Description);
         return true;
