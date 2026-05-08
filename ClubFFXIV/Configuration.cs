@@ -16,6 +16,16 @@ public class Configuration : IPluginConfiguration
     public Dictionary<string, ClubEntry> SavedHouses { get; set; } = new();
     public Dictionary<string, ClubEntry> PublishedHouses { get; set; } = new();
 
+    /// <summary>
+    /// Per-plot passphrase cache for clubs the user has authenticated against.
+    /// Keyed by canonical plot key. Populated when the user enters a passphrase
+    /// at the prompt, consumed silently on subsequent visits so they don't
+    /// re-prompt every time. Plain text by design — same threat model as the
+    /// browser cookies we read for yt-dlp; a local config compromise already
+    /// owns much more than these.
+    /// </summary>
+    public Dictionary<string, string> KnownClubPassphrases { get; set; } = new();
+
     // Defaults to the public ClubFFXIV registry so the plugin works out of the box.
     // Users can point at their own backend by changing this in /pclub config; clearing
     // it disables registry features (local SavedHouses still work).
@@ -180,6 +190,18 @@ public class ClubEntry
     /// directory-list-only flag; full privacy = don't publish.
     /// </summary>
     public bool Listed { get; set; } = true;
+
+    /// <summary>
+    /// Plaintext passphrase for password-protected clubs (PublishedHouses only).
+    /// Generated locally via <see cref="ClubFFXIV.Network.Passphrase.Generate"/>;
+    /// the plaintext is stored on disk so the DJ can re-show it to share with
+    /// friends. Only an Argon2id hash + salt of this passphrase is sent to the
+    /// registry — the registry never sees the plaintext. Empty/null = no
+    /// password gate. Local SavedHouses don't need this; the field is here on
+    /// the shared <see cref="ClubEntry"/> type for convenience but only used
+    /// on PublishedHouses entries.
+    /// </summary>
+    public string Passphrase { get; set; } = "";
 }
 
 [Serializable]

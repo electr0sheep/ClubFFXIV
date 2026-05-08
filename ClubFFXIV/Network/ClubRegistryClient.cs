@@ -77,11 +77,31 @@ public sealed class ClubRegistryClient : IDisposable
         }
     }
 
-    public async Task<ClubRecord?> GetAsync(string plotKey, CancellationToken ct = default)
+    /// <summary>
+    /// Fetch a club record by plot key. For password-protected clubs the
+    /// registry returns the record with <c>StreamUrl</c> empty and
+    /// <c>PasswordRequired</c>/<c>PasswordSalt</c> populated; the caller then
+    /// re-invokes with the listener's Argon2id-derived
+    /// <paramref name="passwordHash"/> (base64) to receive the real URL.
+    /// A wrong hash returns 401 with the same metadata so the caller can
+    /// re-prompt; this method maps that to a non-null record with
+    /// <c>StreamUrl</c> still empty so the upstream code path stays uniform.
+    /// </summary>
+    public async Task<ClubRecord?> GetAsync(string plotKey, string? passwordHash = null, CancellationToken ct = default)
     {
         var url = $"{baseUrl}/clubs/{Uri.EscapeDataString(plotKey)}";
+        if (!string.IsNullOrEmpty(passwordHash))
+            url += $"?passwordHash={Uri.EscapeDataString(passwordHash)}";
+
         using var resp = await http.GetAsync(url, ct);
         if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+        // 401 = password required or wrong password. Body is still a ClubRecord
+        // (without streamUrl) so the caller can extract the salt and re-prompt.
+        if (resp.StatusCode == HttpStatusCode.Unauthorized)
+        {
+            var unauthBody = await resp.Content.ReadAsStringAsync(ct);
+            return JsonSerializer.Deserialize<ClubRecord>(unauthBody);
+        }
         resp.EnsureSuccessStatusCode();
         var json = await resp.Content.ReadAsStringAsync(ct);
         return JsonSerializer.Deserialize<ClubRecord>(json);
@@ -105,6 +125,8 @@ public sealed class ClubRegistryClient : IDisposable
         DoorPayload? door = null,
         bool listed = true,
         string description = "",
+        string? passwordSalt = null,
+        string? passwordHash = null,
         CancellationToken ct = default)
     {
         var body = JsonSerializer.Serialize(new PublishRequest
@@ -115,6 +137,11 @@ public sealed class ClubRegistryClient : IDisposable
             Nonce = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Door = door,
             Listed = listed,
+            // Both null = club has no password (registry stores nothing).
+            // Both set = club is password-protected. Sending one without the
+            // other is a client bug; the registry will reject mismatched pairs.
+            PasswordSalt = passwordSalt,
+            PasswordHash = passwordHash,
         });
         var signature = dj.Sign($"POST:{plotKey}:{body}");
 
@@ -249,6 +276,9 @@ internal sealed class RegistryErrorBody
 
 public sealed class ClubRecord
 {
+    // Empty when the club is password-protected and the caller hasn't
+    // supplied (or supplied the wrong) passwordHash. Use PasswordRequired
+    // to distinguish "this club has no URL set" from "URL is gated."
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("description")] public string Description { get; set; } = "";
@@ -256,6 +286,11 @@ public sealed class ClubRecord
     [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
     [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
+    // Password gating. PasswordRequired=true means the listener must supply
+    // an Argon2id hash (derived from the entered passphrase + PasswordSalt)
+    // via GetAsync's passwordHash parameter to receive the real StreamUrl.
+    [JsonPropertyName("passwordRequired")] public bool PasswordRequired { get; set; }
+    [JsonPropertyName("passwordSalt")] public string? PasswordSalt { get; set; }
 }
 
 public sealed class DirectoryListing
@@ -266,12 +301,14 @@ public sealed class DirectoryListing
 public sealed class DirectoryListingEntry
 {
     [JsonPropertyName("plotKey")] public string PlotKey { get; set; } = "";
+    // Empty for password-protected clubs (URL is only released after auth).
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("description")] public string Description { get; set; } = "";
     [JsonPropertyName("djId")] public string DjId { get; set; } = "";
     [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
+    [JsonPropertyName("passwordRequired")] public bool PasswordRequired { get; set; }
 }
 
 public sealed class WardListing
@@ -285,12 +322,14 @@ public sealed class WardListing
 public sealed class WardListingEntry
 {
     [JsonPropertyName("plotKey")] public string PlotKey { get; set; } = "";
+    // Empty for password-protected clubs (URL is only released after auth).
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("description")] public string Description { get; set; } = "";
     [JsonPropertyName("djId")] public string DjId { get; set; } = "";
     [JsonPropertyName("door")] public DoorPayload Door { get; set; } = new();
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
+    [JsonPropertyName("passwordRequired")] public bool PasswordRequired { get; set; }
 }
 
 public sealed class DoorPayload
@@ -311,6 +350,12 @@ internal sealed class PublishRequest
     [JsonPropertyName("door"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DoorPayload? Door { get; set; }
     [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
+    // Both null = no password (registry clears any prior password fields).
+    // Both set = password gate (registry stores; future GETs require hash).
+    [JsonPropertyName("passwordSalt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PasswordSalt { get; set; }
+    [JsonPropertyName("passwordHash"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PasswordHash { get; set; }
 }
 
 internal sealed class DeleteRequest

@@ -36,6 +36,12 @@ public sealed class ClubFormWindow : Window, IDisposable
     private string descInput = "";
     private string urlInput = "";
     private bool listedInput = true;
+    // Registry-mode-only password gate. When the checkbox is on, the form
+    // shows the passphrase plaintext (so the DJ can copy/share it) and the
+    // generate button. The plaintext lives in passphraseInput; a blank
+    // checkbox at submit time clears the password gate on the registry.
+    private bool passwordProtectInput;
+    private string passphraseInput = "";
 
     public ClubFormWindow(Plugin plugin)
         : base("Club##ClubFFXIVForm", ImGuiWindowFlags.NoCollapse)
@@ -83,6 +89,8 @@ public sealed class ClubFormWindow : Window, IDisposable
         descInput = "";
         urlInput = "";
         listedInput = true;
+        passwordProtectInput = false;
+        passphraseInput = "";
         WindowName = "Publish new club##ClubFFXIVForm";
         IsOpen = true;
     }
@@ -96,6 +104,8 @@ public sealed class ClubFormWindow : Window, IDisposable
         descInput = entry.Description;
         urlInput = entry.StreamUrl;
         listedInput = entry.Listed;
+        passwordProtectInput = !string.IsNullOrEmpty(entry.Passphrase);
+        passphraseInput = entry.Passphrase ?? "";
         WindowName = "Edit club##ClubFFXIVForm";
         IsOpen = true;
     }
@@ -148,6 +158,44 @@ public sealed class ClubFormWindow : Window, IDisposable
                     "Unchecking only hides this club from the directory — anyone\n" +
                     "who knows your plot key or walks past still discovers it.\n" +
                     "For full privacy, don't publish (use a local override instead).");
+
+            ImGui.Spacing();
+            var wasProtected = passwordProtectInput;
+            ImGui.Checkbox("Password-protect this club", ref passwordProtectInput);
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Listeners need this passphrase before they can hear your\n" +
+                    "club. We auto-generate a 6-word passphrase from the EFF\n" +
+                    "long diceware list (~155 bits of entropy). Share it with\n" +
+                    "your friends in Discord, etc. — anyone without it gets\n" +
+                    "silence.\n\n" +
+                    "The plaintext stays on your machine; the registry only\n" +
+                    "stores an Argon2id hash + salt so we can verify listeners.");
+
+            // Auto-generate on first toggle-on so the field is never empty
+            // while the gate is enabled.
+            if (passwordProtectInput && !wasProtected && string.IsNullOrEmpty(passphraseInput))
+                passphraseInput = Passphrase.Generate();
+
+            if (passwordProtectInput)
+            {
+                ImGui.Indent();
+                ImGui.TextUnformatted("Passphrase:");
+                ImGui.SetNextItemWidth(-1);
+                ImGui.InputText("##cfPassphrase", ref passphraseInput, 256, ImGuiInputTextFlags.ReadOnly);
+
+                if (ImGui.Button("Generate new", new Vector2(140, 0)))
+                    passphraseInput = Passphrase.Generate();
+                ImGui.SameLine();
+                if (ImGui.Button("Copy", new Vector2(80, 0)))
+                {
+                    ImGui.SetClipboardText(passphraseInput);
+                    plugin.Notify("ClubFFXIV", "Passphrase copied to clipboard.", NotificationType.Info);
+                }
+                ImGui.Unindent();
+            }
         }
 
         ImGui.Spacing();
@@ -204,11 +252,13 @@ public sealed class ClubFormWindow : Window, IDisposable
                 break;
 
             case FormMode.RegistryPublish:
+            {
+                var passphraseToSend = passwordProtectInput ? passphraseInput : null;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await plugin.PublishHouseAsync(key, name, url, desc, listed);
+                        await plugin.PublishHouseAsync(key, name, url, desc, listed, passphraseToSend);
                         plugin.Notify("ClubFFXIV",
                             listed
                                 ? $"Published '{name}'."
@@ -225,13 +275,16 @@ public sealed class ClubFormWindow : Window, IDisposable
                     }
                 });
                 break;
+            }
 
             case FormMode.RegistryEdit:
+            {
+                var passphraseToSend = passwordProtectInput ? passphraseInput : null;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await plugin.RenamePublishedHouseAsync(key, name, url, desc, listed);
+                        await plugin.RenamePublishedHouseAsync(key, name, url, desc, listed, passphraseToSend);
                         // If a local-only mirror also exists, sync the full
                         // editable set (name + URL + description) so the two
                         // copies don't drift. Indoor mode reads SavedHouses
@@ -256,6 +309,7 @@ public sealed class ClubFormWindow : Window, IDisposable
                     }
                 });
                 break;
+            }
         }
     }
 }

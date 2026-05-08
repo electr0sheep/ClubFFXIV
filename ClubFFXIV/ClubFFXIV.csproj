@@ -14,6 +14,12 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- EFF long diceware wordlist (CC BY 3.0). 7776 words, ~106 KB.
+		     Used by Network/Passphrase.cs to generate club passphrases. -->
+		<EmbeddedResource Include="Resources/eff_large_wordlist.txt" />
+	</ItemGroup>
+
+	<ItemGroup>
 	  <PackageReference Update="DotNet.ReproducibleBuilds" Version="2.0.2" />
 	</ItemGroup>
 

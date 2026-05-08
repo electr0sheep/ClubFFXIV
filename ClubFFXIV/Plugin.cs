@@ -53,6 +53,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
     private readonly UrlPermissionWindow permissionWindow;
+    private readonly ClubPassphrasePromptWindow passphrasePromptWindow;
     private readonly SetupWizardWindow setupWizard;
     private readonly DirectoryWindow directoryWindow;
     /// <summary>
@@ -139,6 +140,7 @@ public sealed class Plugin : IDalamudPlugin
 
         configWindow = new ConfigWindow(this);
         permissionWindow = new UrlPermissionWindow(Permissions);
+        passphrasePromptWindow = new ClubPassphrasePromptWindow();
         setupWizard = new SetupWizardWindow(this);
         directoryWindow = new DirectoryWindow(this);
         ClubFormWindow = new ClubFormWindow(this);
@@ -147,6 +149,7 @@ public sealed class Plugin : IDalamudPlugin
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(helpWindow);
         WindowSystem.AddWindow(permissionWindow);
+        WindowSystem.AddWindow(passphrasePromptWindow);
         WindowSystem.AddWindow(setupWizard);
         WindowSystem.AddWindow(directoryWindow);
         WindowSystem.AddWindow(ClubFormWindow);
@@ -177,6 +180,7 @@ public sealed class Plugin : IDalamudPlugin
         configWindow.Dispose();
         helpWindow.Dispose();
         permissionWindow.Dispose();
+        passphrasePromptWindow.Dispose();
         setupWizard.Dispose();
         directoryWindow.Dispose();
         ClubFormWindow.Dispose();
@@ -751,7 +755,8 @@ public sealed class Plugin : IDalamudPlugin
     /// survive the publish.
     /// </summary>
     public async Task PublishHouseAsync(
-        string canonicalKey, string displayName, string streamUrl, string description, bool listed)
+        string canonicalKey, string displayName, string streamUrl, string description, bool listed,
+        string? passphrase = null)
     {
         if (registryClient == null)
             throw new InvalidOperationException("Registry URL not set");
@@ -765,8 +770,20 @@ public sealed class Plugin : IDalamudPlugin
         else if (Config.SavedHouses.TryGetValue(canonicalKey, out var saved) && HasDoor(saved))
             door = ToDoorPayload(saved);
 
+        // Hash the passphrase locally and send (salt, hash) to the registry —
+        // the registry never sees the plaintext. Empty/null passphrase clears
+        // any existing password gate.
+        string? saltB64 = null, hashB64 = null;
+        if (!string.IsNullOrWhiteSpace(passphrase))
+        {
+            var (salt, hash) = Passphrase.Hash(passphrase);
+            saltB64 = Convert.ToBase64String(salt);
+            hashB64 = Convert.ToBase64String(hash);
+        }
+
         await registryClient.PublishAsync(
-            canonicalKey, streamUrl, displayName, dj, door, listed, description);
+            canonicalKey, streamUrl, displayName, dj, door, listed, description,
+            passwordSalt: saltB64, passwordHash: hashB64);
 
         if (existing == null)
         {
@@ -777,6 +794,7 @@ public sealed class Plugin : IDalamudPlugin
         existing.StreamUrl = streamUrl;
         existing.Description = description;
         existing.Listed = listed;
+        existing.Passphrase = passphrase ?? "";
         Config.Save();
 
         InvalidateWardCacheForDoor(door);
@@ -802,7 +820,8 @@ public sealed class Plugin : IDalamudPlugin
     /// from current location.
     /// </summary>
     public async Task RenamePublishedHouseAsync(
-        string canonicalKey, string newDisplayName, string newStreamUrl, string newDescription, bool newListed)
+        string canonicalKey, string newDisplayName, string newStreamUrl, string newDescription, bool newListed,
+        string? newPassphrase = null)
     {
         if (registryClient == null)
             throw new InvalidOperationException("Registry URL not set");
@@ -819,14 +838,25 @@ public sealed class Plugin : IDalamudPlugin
         if (newDescription.Length > 500)
             throw new InvalidOperationException("Description too long (max 500 chars)");
 
+        // Hash passphrase if non-empty; empty/null clears the password gate.
+        string? saltB64 = null, hashB64 = null;
+        if (!string.IsNullOrWhiteSpace(newPassphrase))
+        {
+            var (salt, hash) = Passphrase.Hash(newPassphrase);
+            saltB64 = Convert.ToBase64String(salt);
+            hashB64 = Convert.ToBase64String(hash);
+        }
+
         var door = HasDoor(entry) ? ToDoorPayload(entry) : null;
         await registryClient.PublishAsync(
-            canonicalKey, newStreamUrl, newDisplayName, djIdentity, door, newListed, newDescription);
+            canonicalKey, newStreamUrl, newDisplayName, djIdentity, door, newListed, newDescription,
+            passwordSalt: saltB64, passwordHash: hashB64);
 
         entry.DisplayName = newDisplayName;
         entry.StreamUrl = newStreamUrl;
         entry.Description = newDescription;
         entry.Listed = newListed;
+        entry.Passphrase = newPassphrase ?? "";
         Config.Save();
 
         // Drop the cached ward listing so the DJ's own client refetches the
@@ -1189,6 +1219,23 @@ public sealed class Plugin : IDalamudPlugin
             var record = await registryClient!.GetAsync(key.Canonical);
             if (record == null) return;
             if (!Nullable.Equals(CurrentPlotKey, key)) return;
+
+            // Password-protected: try the cached passphrase first; if that
+            // doesn't unlock the URL, prompt the user. We don't keep retrying
+            // the prompt across framework ticks — passphrasePromptWindow's
+            // queue dedupes by plotKey.
+            if (record.PasswordRequired)
+            {
+                if (await TryUnlockWithCachedPassphrase(key, record) is { } unlocked)
+                    record = unlocked;
+                else
+                {
+                    PromptForPassphrase(key, record);
+                    return;
+                }
+            }
+
+            if (string.IsNullOrEmpty(record.StreamUrl)) return;
             EnterIndoor(record.StreamUrl, new ClubContext(record.DisplayName, record.Description));
         }
         catch (Exception ex)
@@ -1196,6 +1243,82 @@ public sealed class Plugin : IDalamudPlugin
             Log.Warning($"Registry lookup failed: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// If we have a cached passphrase for this plot, derive the Argon2id hash
+    /// using the salt from the registry response and re-fetch with it.
+    /// Returns the unlocked record (with StreamUrl filled in) on success,
+    /// null if no cache OR the cached passphrase was rejected.
+    /// </summary>
+    private async Task<ClubRecord?> TryUnlockWithCachedPassphrase(PlotKey key, ClubRecord record)
+    {
+        if (string.IsNullOrEmpty(record.PasswordSalt)) return null;
+        if (!Config.KnownClubPassphrases.TryGetValue(key.Canonical, out var cached)
+            || string.IsNullOrEmpty(cached))
+            return null;
+
+        try
+        {
+            var salt = Convert.FromBase64String(record.PasswordSalt);
+            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(cached, salt));
+            var unlocked = await registryClient!.GetAsync(key.Canonical, hash);
+            // Wrong password yields a record with PasswordRequired=true and no
+            // URL; treat as cache miss so the prompt flow runs.
+            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            {
+                Config.KnownClubPassphrases.Remove(key.Canonical);
+                Config.Save();
+                return null;
+            }
+            return unlocked;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"Cached passphrase unlock failed: {ex.Message}");
+            return null;
+        }
+    }
+
+    private void PromptForPassphrase(PlotKey key, ClubRecord record)
+    {
+        if (passphrasePromptWindow.HasPromptFor(key.Canonical)) return;
+        var ctx = new ClubContext(record.DisplayName, record.Description);
+        var saltB64 = record.PasswordSalt ?? "";
+        passphrasePromptWindow.Prompt(
+            key.Canonical,
+            ctx,
+            onSubmit: entered => _ = HandlePassphraseSubmitted(key, saltB64, entered),
+            onCancel: () => { /* user dismissed; do nothing — they can re-enter later */ });
+        passphrasePromptWindow.EnsureOpenIfPending();
+    }
+
+    private async Task HandlePassphraseSubmitted(PlotKey key, string saltB64, string entered)
+    {
+        if (registryClient == null) return;
+        try
+        {
+            var salt = Convert.FromBase64String(saltB64);
+            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(entered, salt));
+            var unlocked = await registryClient.GetAsync(key.Canonical, hash);
+            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            {
+                passphrasePromptWindow.ReportFailure("Wrong passphrase. Try again or Skip.");
+                return;
+            }
+            // Cache for future visits and play.
+            Config.KnownClubPassphrases[key.Canonical] = entered;
+            Config.Save();
+            passphrasePromptWindow.Resolve();
+            if (Nullable.Equals(CurrentPlotKey, key))
+                EnterIndoor(unlocked.StreamUrl, new ClubContext(unlocked.DisplayName, unlocked.Description));
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"Passphrase verify failed: {ex.Message}");
+            passphrasePromptWindow.ReportFailure("Verification failed — check the registry connection.");
+        }
+    }
+
 
     /// <summary>
     /// Enter indoor playback for the given URL. If we were already playing this exact
