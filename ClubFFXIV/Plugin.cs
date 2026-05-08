@@ -140,6 +140,21 @@ public sealed class Plugin : IDalamudPlugin
         Config = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         Config.Initialize(PluginInterface);
 
+        // Seed the listener-side passphrase + URL caches from PublishedHouses
+        // entries that already carry a Passphrase. Covers two cases that the
+        // publish-side auto-populate misses: (1) clubs whose passphrase was
+        // set before the auto-populate code landed, (2) plugin restarts —
+        // resolvedPasswordedUrls is in-memory only and would be empty
+        // otherwise, so the DJ's own outdoor mode would have to wait for the
+        // ward warm-fetch round-trip on every session.
+        foreach (var (key, entry) in Config.PublishedHouses)
+        {
+            if (string.IsNullOrEmpty(entry.Passphrase)) continue;
+            Config.KnownClubPassphrases[key] = entry.Passphrase;
+            if (!string.IsNullOrEmpty(entry.StreamUrl))
+                resolvedPasswordedUrls[key] = entry.StreamUrl;
+        }
+
         Binaries = new BinaryManager(PluginInterface.GetPluginConfigDirectory());
         Permissions = new UrlPermissions(Config);
         streamPlayer = new StreamPlayer(Binaries);
@@ -1218,6 +1233,27 @@ public sealed class Plugin : IDalamudPlugin
 
     private void HandleIndoorMode(PlotKey key)
     {
+        // Indoor mode is solo: prune every tick, BEFORE the alreadySettled
+        // check. Otherwise a multi-stream mixer that already has the current
+        // plot's voice (e.g., the DJ auto-populated path) would early-return
+        // here while outdoor proximity voices for OTHER nearby clubs continue
+        // mixing in. RemoveVoice is idempotent (no-op if the key isn't
+        // active), so calling every tick is cheap.
+        if (MultiStreamActive && multiStreamPlayer != null)
+        {
+            foreach (var activeKey in multiStreamPlayer.ActiveKeys())
+            {
+                if (activeKey != key.Canonical)
+                    multiStreamPlayer.RemoveVoice(activeKey);
+            }
+        }
+        else if (CurrentMode == PlaybackMode.Outdoor && streamPlayer.IsPlaying)
+        {
+            // Single-stream: only fires once on Outdoor→Indoor transition,
+            // since CurrentMode flips to Indoor below.
+            streamPlayer.Stop();
+        }
+
         bool alreadySettled;
         if (MultiStreamActive)
         {
@@ -1241,25 +1277,6 @@ public sealed class Plugin : IDalamudPlugin
         {
             CurrentProximity = null;
             return;
-        }
-
-        // Indoor mode is solo. Prune outdoor audio NOW, before we even know
-        // whether we can play this plot's stream — that way a password-
-        // protected club we don't (yet) have the password for, or a registry
-        // round-trip that hasn't returned, results in silence inside the
-        // house instead of outdoor proximity audio leaking through. The
-        // current plot's voice/stream (if it exists already) stays put.
-        if (MultiStreamActive && multiStreamPlayer != null)
-        {
-            foreach (var activeKey in multiStreamPlayer.ActiveKeys())
-            {
-                if (activeKey != key.Canonical)
-                    multiStreamPlayer.RemoveVoice(activeKey);
-            }
-        }
-        else if (CurrentMode == PlaybackMode.Outdoor && streamPlayer.IsPlaying)
-        {
-            streamPlayer.Stop();
         }
 
         if (Config.SavedHouses.TryGetValue(key.Canonical, out var saved)
