@@ -325,8 +325,8 @@ public sealed class Plugin : IDalamudPlugin
 
     /// <summary>
     /// Pre-flight check for auto-play (Indoor / Outdoor): if the URL needs
-    /// yt-dlp + ffmpeg but those aren't installed, emit a one-time chat
-    /// warning and suppress this tick. Without this guard, the auto-play
+    /// yt-dlp + ffmpeg + Deno but those aren't installed, emit a one-time
+    /// chat warning and suppress this tick. Without this guard, the auto-play
     /// loop would re-attempt every 500ms and spam the log with bin-missing
     /// errors. Manual play already surfaces the error directly to the user
     /// via StartStreamAsync's catch.
@@ -339,8 +339,8 @@ public sealed class Plugin : IDalamudPlugin
         {
             warnedAboutMissingBinaries = true;
             ChatGui.PrintError(
-                "[ClubFFXIV] A nearby club's stream needs yt-dlp + ffmpeg, which haven't " +
-                "been installed yet. Open /pclub config → External binaries to download (~83 MB).");
+                "[ClubFFXIV] A nearby club's stream needs yt-dlp + ffmpeg + Deno, which haven't " +
+                "been installed yet. Open /pclub config → External binaries to download (~123 MB).");
         }
         return true;
     }

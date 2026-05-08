@@ -199,9 +199,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.TextWrapped(
             "If YouTube starts showing \"Sign in to confirm you're not a bot\" errors, " +
-            "set this to your browser name (firefox, chrome, edge, brave, opera, " +
-            "vivaldi, chromium, safari). yt-dlp will read your logged-in session " +
-            "cookies from that browser. Leave empty to stay anonymous.");
+            "set this to \"firefox\". Make sure you're logged into YouTube in Firefox " +
+            "first — yt-dlp will read your session cookies from there. Leave empty to " +
+            "stay anonymous.");
         ImGui.Spacing();
 
         ImGui.TextUnformatted("Cookies from browser:");
@@ -209,16 +209,13 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextDisabled("(?)");
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
-                "Browsers yt-dlp can read cookies from:\n" +
-                "  brave, chrome, chromium, edge, firefox,\n" +
-                "  opera, safari, vivaldi.\n\n" +
+                "Recommended: firefox\n\n" +
+                "Chromium-based browsers (Chrome, Edge, Brave,\n" +
+                "Vivaldi, Opera) encrypt cookies with app-bound\n" +
+                "encryption that yt-dlp cannot decrypt without\n" +
+                "additional setup. Use Firefox.\n\n" +
                 "You must be logged into YouTube (or whichever\n" +
-                "site is gating you) in that browser.\n\n" +
-                "Chrome / Edge / other Chromium browsers: we\n" +
-                "bundle the yt-dlp-ChromeCookieUnlock plugin\n" +
-                "(MIT) which releases the cookies-DB file lock\n" +
-                "via Windows Restart Manager, so reads work\n" +
-                "even while the browser is open.\n\n" +
+                "site is gating you) in Firefox.\n\n" +
                 "Saved on lose-focus.");
 
         ImGui.SetNextItemWidth(200);
@@ -324,11 +321,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private string ytDlpVersion = "(checking...)";
     private string ffmpegVersion = "(checking...)";
+    private string denoVersion = "(checking...)";
     private bool versionsRequested;
 
     private void DrawBinariesSection()
     {
-        ImGui.TextUnformatted("External binaries (yt-dlp, ffmpeg)");
+        ImGui.TextUnformatted("External binaries (yt-dlp, ffmpeg, deno)");
         ImGui.Separator();
         ImGui.Spacing();
 
@@ -341,12 +339,14 @@ public sealed class ConfigWindow : Window, IDisposable
             {
                 ytDlpVersion = await plugin.Binaries.GetYtDlpVersionAsync();
                 ffmpegVersion = await plugin.Binaries.GetFfmpegVersionAsync();
+                denoVersion = await plugin.Binaries.GetDenoVersionAsync();
             });
         }
 
         ImGui.TextWrapped(
             "Required for Twitch / YouTube / SoundCloud playback. " +
-            "Direct MP3/Icecast streams don't need these.");
+            "Direct MP3/Icecast streams don't need these. Deno is yt-dlp's " +
+            "JavaScript runtime — needed to solve YouTube's signature/n-challenge.");
         ImGui.Spacing();
 
         DrawBinaryRow("yt-dlp", plugin.Binaries.YtDlpInstalled, ytDlpVersion, async () =>
@@ -377,6 +377,22 @@ public sealed class ConfigWindow : Window, IDisposable
             {
                 ffmpegVersion = $"(error: {ex.Message})";
                 plugin.Notify("ClubFFXIV: ffmpeg update failed",
+                    ex.Message, NotificationType.Error, durationSeconds: 8);
+            }
+        });
+
+        DrawBinaryRow("deno", plugin.Binaries.DenoInstalled, denoVersion, async () =>
+        {
+            denoVersion = "(updating, ~40 MB...)";
+            try
+            {
+                denoVersion = await plugin.Binaries.UpdateDenoAsync();
+                plugin.Notify("ClubFFXIV", "Deno updated.", NotificationType.Success);
+            }
+            catch (Exception ex)
+            {
+                denoVersion = $"(error: {ex.Message})";
+                plugin.Notify("ClubFFXIV: Deno update failed",
                     ex.Message, NotificationType.Error, durationSeconds: 8);
             }
         });

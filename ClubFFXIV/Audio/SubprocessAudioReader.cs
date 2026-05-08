@@ -241,14 +241,11 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
         // --no-playlist tells yt-dlp to download the video, not the playlist.
         psi.ArgumentList.Add("--no-playlist");
-        // Work around YouTube's PO Token / SABR streaming requirements: the
-        // web client needs a Proof-of-Origin token for most formats, and
-        // when cookies are loaded yt-dlp prefers the web client. Adding the
-        // android client as a fallback gives yt-dlp formats that don't need
-        // PO Token. "default" preserves yt-dlp's normal client priority for
-        // anonymous / older-video cases where web works.
-        psi.ArgumentList.Add("--extractor-args");
-        psi.ArgumentList.Add("youtube:player_client=default,android");
+        // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
+        // signature/n-challenge JS. Without a JS runtime, yt-dlp falls back
+        // to "Only images are available" for most YouTube videos.
+        psi.ArgumentList.Add("--js-runtimes");
+        psi.ArgumentList.Add($"deno:{binaries.DenoPath}");
         // For pure playlist URLs, --playlist-random shuffles before emit;
         // off, yt-dlp emits items in their original order. Either way we
         // only read the first stdout line below, so we get one URL per
@@ -258,16 +255,14 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             psi.ArgumentList.Add("--playlist-random");
         // Authenticate as the user's logged-in browser session — the
         // standard fix for YouTube's "Sign in to confirm you're not a bot"
-        // screen. Empty/null leaves yt-dlp anonymous (works for most
-        // public videos until YouTube tightens further). When set, also
-        // load our bundled yt-dlp-ChromeCookieUnlock plugin so reading
-        // Chrome's cookies works even when Chrome has the DB file locked.
+        // screen. Empty/null leaves yt-dlp anonymous. Firefox is the
+        // recommended browser; Chromium-based browsers (Chrome, Edge,
+        // Brave, etc.) ship their cookies under app-bound encryption that
+        // yt-dlp can't decrypt without further setup.
         if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
         {
             psi.ArgumentList.Add("--cookies-from-browser");
             psi.ArgumentList.Add(cookiesFromBrowser);
-            psi.ArgumentList.Add("--plugin-dirs");
-            psi.ArgumentList.Add(binaries.YtDlpPluginsRoot);
         }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);

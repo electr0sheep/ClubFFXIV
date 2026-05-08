@@ -112,11 +112,12 @@ public sealed class SetupWizardWindow : Window, IDisposable
         ImGui.TextWrapped(
             "Twitch, YouTube, SoundCloud, Mixcloud, Twitcasting, and Niconico " +
             "ship their streams in segmented / encrypted formats the plugin " +
-            "can't decode on its own. ClubFFXIV uses two open-source tools " +
+            "can't decode on its own. ClubFFXIV uses three open-source tools " +
             "to handle them:");
         ImGui.Spacing();
         ImGui.BulletText("yt-dlp (~3 MB) — extracts the actual stream URL from those sites");
         ImGui.BulletText("ffmpeg (~80 MB) — decodes that stream into raw audio");
+        ImGui.BulletText("Deno (~40 MB) — JS runtime yt-dlp uses to solve YouTube's challenge scripts");
         ImGui.Spacing();
         ImGui.TextWrapped(
             "Direct MP3 / Icecast / Shoutcast / OGG streams (e.g. SomaFM, your " +
@@ -126,6 +127,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
         DrawBinaryStatusLine("yt-dlp", plugin.Binaries.YtDlpInstalled);
         DrawBinaryStatusLine("ffmpeg", plugin.Binaries.FfmpegInstalled);
+        DrawBinaryStatusLine("deno", plugin.Binaries.DenoInstalled);
         ImGui.Spacing();
 
         var ready = plugin.Binaries.Ready;
@@ -135,7 +137,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
             ? "Already installed"
             : binaryInstallInFlight
                 ? "Downloading..."
-                : "Download yt-dlp + ffmpeg (~83 MB)";
+                : "Download yt-dlp + ffmpeg + Deno (~123 MB)";
         if (ImGui.Button(btnLabel, new Vector2(280, 0)))
         {
             StartBinaryDownload();

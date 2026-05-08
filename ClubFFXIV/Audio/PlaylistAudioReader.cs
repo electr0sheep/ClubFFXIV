@@ -71,13 +71,11 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         psi.ArgumentList.Add("-g");
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
         psi.ArgumentList.Add("--no-playlist");
-        // Work around YouTube's PO Token / SABR streaming requirements: web
-        // client needs a Proof-of-Origin token for most formats, and cookies
-        // make yt-dlp prefer the web client. "default,android" keeps the
-        // normal client priority but adds android as a fallback that doesn't
-        // require PO Token.
-        psi.ArgumentList.Add("--extractor-args");
-        psi.ArgumentList.Add("youtube:player_client=default,android");
+        // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
+        // signature/n-challenge JS. Without a JS runtime, yt-dlp falls back
+        // to "Only images are available" for most YouTube videos.
+        psi.ArgumentList.Add("--js-runtimes");
+        psi.ArgumentList.Add($"deno:{binaries.DenoPath}");
         // yt-dlp emits one URL per item to stdout; we consume them lazily
         // line-by-line as ffmpeg songs end. With --playlist-random, yt-dlp
         // shuffles the playlist before emitting.
@@ -85,15 +83,13 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             psi.ArgumentList.Add("--playlist-random");
         // Authenticate as the user's logged-in browser session — the
         // standard fix for YouTube's "Sign in to confirm you're not a bot"
-        // screen. Empty leaves yt-dlp anonymous. When set, also load our
-        // bundled yt-dlp-ChromeCookieUnlock plugin so Chrome cookies work
-        // even when Chrome has the DB file locked.
+        // screen. Empty leaves yt-dlp anonymous. Firefox is the
+        // recommended browser; Chromium-based browsers (Chrome, Edge,
+        // Brave, etc.) encrypt cookies in a way yt-dlp can't decrypt.
         if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
         {
             psi.ArgumentList.Add("--cookies-from-browser");
             psi.ArgumentList.Add(cookiesFromBrowser);
-            psi.ArgumentList.Add("--plugin-dirs");
-            psi.ArgumentList.Add(binaries.YtDlpPluginsRoot);
         }
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add(url);
