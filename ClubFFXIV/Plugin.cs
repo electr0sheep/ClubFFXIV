@@ -114,6 +114,16 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan WardCacheTtl = TimeSpan.FromSeconds(60);
     private string? wardFetchInFlight;
 
+    // Resolved-URL cache for password-protected clubs the listener has
+    // authenticated against. Populated opportunistically on indoor-prompt
+    // success and proactively after each ward fetch (only for plots with a
+    // cached passphrase). EnumerateCandidates substitutes from this cache so
+    // outdoor proximity can play locked clubs without re-prompting. In-memory
+    // only — re-derived on each session from KnownClubPassphrases + a fresh
+    // registry round-trip.
+    private readonly Dictionary<string, string> resolvedPasswordedUrls = new();
+    private readonly HashSet<string> resolvingPasswordedUrls = new();
+
     // Public directory cache: a single global blob, fetched lazily when the
     // user opens the Public Directory panel. TTL 60s; the UI also exposes a
     // manual Refresh button.
@@ -1270,12 +1280,67 @@ public sealed class Plugin : IDalamudPlugin
                 Config.Save();
                 return null;
             }
+            // Opportunistic warm: outdoor proximity reads from this dict.
+            resolvedPasswordedUrls[key.Canonical] = unlocked.StreamUrl;
             return unlocked;
         }
         catch (Exception ex)
         {
             Log.Warning($"Cached passphrase unlock failed: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Background-resolve the URL for a password-protected club using the
+    /// listener's cached passphrase. On success the URL is stored in
+    /// <see cref="resolvedPasswordedUrls"/> for outdoor proximity to consume.
+    /// On 401 (cached passphrase rejected) the cache entry is dropped so the
+    /// next indoor visit prompts cleanly. Single-flight per plot key via
+    /// <see cref="resolvingPasswordedUrls"/>; framework ticks fire this off
+    /// every ward refetch and we don't want N concurrent identical fetches.
+    /// </summary>
+    private async Task WarmPasswordedUrlAsync(string plotKey)
+    {
+        if (registryClient == null) return;
+        if (!Config.KnownClubPassphrases.TryGetValue(plotKey, out var passphrase)
+            || string.IsNullOrEmpty(passphrase)) return;
+        lock (resolvingPasswordedUrls)
+        {
+            if (resolvingPasswordedUrls.Contains(plotKey)) return;
+            resolvingPasswordedUrls.Add(plotKey);
+        }
+        try
+        {
+            // First fetch returns the salt (+ no URL since we haven't auth'd yet).
+            var meta = await registryClient.GetAsync(plotKey);
+            if (meta == null || !meta.PasswordRequired || string.IsNullOrEmpty(meta.PasswordSalt))
+            {
+                // Club is no longer password-protected (or gone) — clear stale cache.
+                resolvedPasswordedUrls.Remove(plotKey);
+                return;
+            }
+            var salt = Convert.FromBase64String(meta.PasswordSalt);
+            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(passphrase, salt));
+            var unlocked = await registryClient.GetAsync(plotKey, hash);
+            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            {
+                // Stored passphrase rejected — drop both the resolved URL and
+                // the now-stale passphrase so the next indoor visit prompts.
+                resolvedPasswordedUrls.Remove(plotKey);
+                Config.KnownClubPassphrases.Remove(plotKey);
+                Config.Save();
+                return;
+            }
+            resolvedPasswordedUrls[plotKey] = unlocked.StreamUrl;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning($"Warm passworded URL failed for {plotKey}: {ex.Message}");
+        }
+        finally
+        {
+            lock (resolvingPasswordedUrls) resolvingPasswordedUrls.Remove(plotKey);
         }
     }
 
@@ -1307,6 +1372,7 @@ public sealed class Plugin : IDalamudPlugin
             }
             // Cache for future visits and play.
             Config.KnownClubPassphrases[key.Canonical] = entered;
+            resolvedPasswordedUrls[key.Canonical] = unlocked.StreamUrl;
             Config.Save();
             passphrasePromptWindow.Resolve();
             if (Nullable.Equals(CurrentPlotKey, key))
@@ -1585,10 +1651,27 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var entry in cached.Clubs)
             {
                 if (seen.Contains(entry.PlotKey)) continue;
+
+                // Password-protected entries arrive with empty StreamUrl from
+                // the registry — gated behind per-key auth. Substitute the
+                // resolved URL we cached after a successful indoor unlock /
+                // ward-warm; if we don't have one yet, skip silently. The
+                // ward fetch hook (EnsureWardListingAsync) kicks off a warm
+                // for any password-protected entry with a cached passphrase,
+                // so the next tick will see the URL appear without ever
+                // prompting outdoors.
+                var url = entry.StreamUrl;
+                if (entry.PasswordRequired)
+                {
+                    if (!resolvedPasswordedUrls.TryGetValue(entry.PlotKey, out url) || string.IsNullOrEmpty(url))
+                        continue;
+                }
+                if (string.IsNullOrEmpty(url)) continue;
+
                 yield return new WardProximity.Candidate(
                     entry.PlotKey,
                     entry.DisplayName,
-                    entry.StreamUrl,
+                    url,
                     new Vector3(entry.Door.X, entry.Door.Y, entry.Door.Z),
                     entry.Description);
             }
@@ -1642,6 +1725,15 @@ public sealed class Plugin : IDalamudPlugin
             Log.Info($"Fetching ward listing: world={worldId} territory={ward.TerritoryType} ward={ward.Ward}");
             var listing = await registryClient.GetWardAsync(worldId, ward.TerritoryType, ward.Ward);
             wardCache[k] = new CachedWardListing(DateTime.UtcNow, listing);
+
+            // Warm the resolved-URL cache for any password-protected entries
+            // we have a passphrase for. This lets outdoor proximity play
+            // locked clubs without prompting.
+            foreach (var entry in listing.Clubs)
+            {
+                if (entry.PasswordRequired && Config.KnownClubPassphrases.ContainsKey(entry.PlotKey))
+                    _ = WarmPasswordedUrlAsync(entry.PlotKey);
+            }
             Log.Info($"Ward listing fetched: {listing.Clubs.Count} club(s)");
         }
         catch (Exception ex)
