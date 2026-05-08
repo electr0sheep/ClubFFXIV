@@ -273,27 +273,39 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        var stdoutTask = proc.StandardOutput.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
-        var stderrTask = proc.StandardError.ReadToEndAsync(cts.Token).WaitAsync(CancellationToken.None);
-        await proc.WaitForExitAsync(cts.Token);
-
-        var stdout = (await stdoutTask).Trim();
-        var stderr = (await stderrTask).Trim();
-
-        if (proc.ExitCode != 0)
+        // Read just the first emitted URL line, then kill yt-dlp. Without
+        // this, ReadToEndAsync would wait for stdout EOF — for a YouTube
+        // playlist URL that means yt-dlp keeps resolving every item before
+        // exiting (~1-2s/item with Deno-backed signature solving), blowing
+        // through our 20s timeout for any non-trivial playlist. Reading
+        // line-by-line gets us the first item's URL as soon as it's
+        // resolved; we don't need the rest. (PlaylistAudioReader is the
+        // wrapper that DOES iterate playlists across multiple ffmpegs;
+        // SubprocessAudioReader is the single-shot path.)
+        string? firstUrl;
+        try
         {
-            // Common cases: channel offline, video private, region-locked.
-            var msg = string.IsNullOrEmpty(stderr) ? "yt-dlp failed (no error output)" : stderr;
+            firstUrl = await proc.StandardOutput.ReadLineAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { proc.Kill(entireProcessTree: true); } catch { }
+            throw;
+        }
+
+        try { proc.Kill(entireProcessTree: true); } catch { /* already exited */ }
+
+        if (string.IsNullOrEmpty(firstUrl))
+        {
+            // yt-dlp emitted nothing — surface stderr for the actual error
+            // (offline channel, private video, region lock, missing format).
+            string stderr;
+            try { stderr = (await proc.StandardError.ReadToEndAsync()).Trim(); }
+            catch { stderr = ""; }
+            var msg = string.IsNullOrEmpty(stderr) ? "yt-dlp returned no URL" : stderr;
             throw new InvalidOperationException($"yt-dlp: {msg}");
         }
 
-        // -g may print multiple URLs (one per format); take the first.
-        var firstUrl = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries) is { Length: > 0 } lines
-            ? lines[0].Trim()
-            : "";
-        if (string.IsNullOrEmpty(firstUrl))
-            throw new InvalidOperationException("yt-dlp returned no URL");
-
-        return firstUrl;
+        return firstUrl.Trim();
     }
 }
