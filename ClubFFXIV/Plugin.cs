@@ -257,6 +257,7 @@ public sealed class Plugin : IDalamudPlugin
         bgmMuter.Dispose();
         registryClient?.Dispose();
         djIdentity?.Dispose();
+        UI.NowPlayingThumbnails.DisposeAll();
     }
 
     public void ToggleHelp() => helpWindow.Toggle();
