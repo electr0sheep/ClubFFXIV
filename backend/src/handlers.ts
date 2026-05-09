@@ -62,11 +62,15 @@ async function safeDelete(env: Env, key: string): Promise<void> {
 }
 import {
   ClubRecord,
+  CURRENT_SCHEMA_VERSION,
   DeleteBody,
   DIRECTORY_KEY,
   DirectoryEntry,
   DirectoryIndex,
   Door,
+  ENC_NONCE_LEN,
+  ENC_URL_MAX_LEN,
+  ENC_URL_MIN_LEN,
   Env,
   MAX_DESCRIPTION_LEN,
   NONCE_MAX_AGE_MS,
@@ -84,11 +88,12 @@ export async function handleGet(
   if (!raw) return jsonResponse({ error: "not found" }, 404);
   const record = JSON.parse(raw) as ClubRecord;
 
-  // Password-protected: gate on `?passwordHash=` matching the stored hash.
-  // Mismatch returns 401 (with the salt so the listener can re-prompt) but
-  // shares the body shape with the no-hash 200 case so client code can handle
-  // both uniformly.
-  if (record.passwordHash) {
+  // v2 encrypted-URL records: encryption *is* the access control, so the
+  // ciphertext is served to anyone who asks. Legacy records (passwordHash
+  // present, no encUrl) still go through the server-side hash gate below.
+  const isV2Encrypted = !!record.encUrl;
+
+  if (record.passwordHash && !isV2Encrypted) {
     const provided = new URL(req.url).searchParams.get("passwordHash");
     if (provided !== record.passwordHash) {
       return jsonResponse(
@@ -116,10 +121,18 @@ export async function handleGet(
     door: record.door,
     updatedAt: record.updatedAt,
     listed: record.listed !== false,
-    passwordRequired: !!record.passwordHash,
+    // Either gating mechanism (legacy hash or v2 ciphertext) signals
+    // password-required to the listener; clients that don't yet know
+    // about encUrl still see the flag and prompt accordingly.
+    passwordRequired: !!record.passwordSalt,
     // Salt is fine to expose — it's bound to a high-entropy passphrase that
     // the registry never sees in plaintext.
     passwordSalt: record.passwordSalt,
+    // v2 fields. Absent on legacy records; clients fall back to the
+    // passwordHash flow when they see passwordRequired but no encUrl.
+    encUrl: record.encUrl,
+    encNonce: record.encNonce,
+    schemaVersion: record.schemaVersion,
   });
 }
 
@@ -146,12 +159,33 @@ export async function handlePost(
     return jsonResponse({ error: "invalid json" }, 400);
   }
 
-  if (!parsed.streamUrl || parsed.displayName === undefined) {
-    return jsonResponse({ error: "missing streamUrl or displayName" }, 400);
+  // Detect the password mode up front so we can correctly interpret the
+  // streamUrl field. v2 encrypted publishes legitimately carry an empty
+  // streamUrl (the URL travels in encUrl); reject empty URLs only for the
+  // unprotected and legacy paths where the registry expects a plaintext URL.
+  const passwordModeErr = passwordFieldsError(parsed);
+  if (passwordModeErr) return jsonResponse({ error: passwordModeErr }, 400);
+  const isV2Encrypted = !!parsed.encUrl && !!parsed.encNonce;
+
+  if (parsed.displayName === undefined) {
+    return jsonResponse({ error: "missing displayName" }, 400);
   }
-  const syntaxErr = validateStreamUrlSyntax(parsed.streamUrl);
-  if (syntaxErr) {
-    return jsonResponse({ error: syntaxErr }, 400);
+  if (!isV2Encrypted) {
+    if (!parsed.streamUrl) {
+      return jsonResponse({ error: "missing streamUrl" }, 400);
+    }
+    const syntaxErr = validateStreamUrlSyntax(parsed.streamUrl);
+    if (syntaxErr) {
+      return jsonResponse({ error: syntaxErr }, 400);
+    }
+  } else if (parsed.streamUrl) {
+    // Defense-in-depth: an encrypted publish with a plaintext URL alongside
+    // would silently leak the URL into the record. Reject the contradiction
+    // rather than guessing which one the client meant.
+    return jsonResponse(
+      { error: "streamUrl must be empty for encrypted publishes" },
+      400,
+    );
   }
 
   const dnResult = sanitizeDisplayName(parsed.displayName);
@@ -184,8 +218,11 @@ export async function handlePost(
   // Probe the stream URL last — after all cheap validations and the ownership
   // check pass — so an unauthorized or malformed publish never triggers a
   // network call. Re-publishes that don't change the URL skip the probe; the
-  // cache covers explicit URL changes within its TTL window.
-  if (parsed.streamUrl !== previousStreamUrl) {
+  // cache covers explicit URL changes within its TTL window. Encrypted
+  // publishes skip the probe entirely: the registry can't see the URL, so
+  // there's nothing to probe — the plugin runs its own preflight syntax
+  // check (StreamUrlValidator) before encrypting.
+  if (!isV2Encrypted && parsed.streamUrl !== previousStreamUrl) {
     const urlCheck = await validateStreamUrl(env, parsed.streamUrl);
     if (!urlCheck.ok) {
       return jsonResponse({ error: `streamUrl rejected: ${urlCheck.reason}` }, 400);
@@ -196,14 +233,13 @@ export async function handlePost(
   // field and expected to appear in any future browse list.
   const listed = parsed.listed !== false;
 
-  // Password gate: both fields must be present together (set the gate) or
-  // both absent (clear / unset). Anything else is a malformed body.
-  const pwErr = passwordPairError(parsed.passwordSalt, parsed.passwordHash);
-  if (pwErr) return jsonResponse({ error: pwErr }, 400);
-  const passwordRequired = !!parsed.passwordHash;
+  const passwordRequired = !!parsed.passwordSalt;
 
   const record: ClubRecord = {
-    streamUrl: parsed.streamUrl,
+    // v2-encrypted records never carry the plaintext URL; the registry
+    // physically cannot leak what it doesn't store. Legacy records keep the
+    // plaintext URL gated behind the hash check on GET.
+    streamUrl: isV2Encrypted ? "" : parsed.streamUrl,
     displayName,
     description,
     djId,
@@ -212,7 +248,14 @@ export async function handlePost(
     door: parsed.door,
     listed,
     passwordSalt: parsed.passwordSalt,
-    passwordHash: parsed.passwordHash,
+    // Only one of (passwordHash) or (encUrl + encNonce) is set per record;
+    // passwordFieldsError above enforces that. The unset branch produces
+    // `undefined`, which JSON.stringify drops, so legacy fields don't bloat
+    // v2 records and vice versa.
+    passwordHash: isV2Encrypted ? undefined : parsed.passwordHash,
+    encUrl: isV2Encrypted ? parsed.encUrl : undefined,
+    encNonce: isV2Encrypted ? parsed.encNonce : undefined,
+    schemaVersion: isV2Encrypted ? CURRENT_SCHEMA_VERSION : undefined,
   };
   await safePut(env, `club:${plotKey}`, JSON.stringify(record));
 
@@ -489,17 +532,79 @@ function sanitizeDescription(input: unknown): SanitizeResult {
 // Argon2id base64 length sanity bounds. 16-byte salt → 24 base64 chars,
 // 32-byte hash → 44 base64 chars. Generous upper bounds (256) catch obvious
 // overflows / typos without locking us into a specific PHC parameter set.
-function passwordPairError(salt: string | undefined, hash: string | undefined): string | null {
-  const haveSalt = typeof salt === "string" && salt.length > 0;
-  const haveHash = typeof hash === "string" && hash.length > 0;
-  if (haveSalt !== haveHash) {
-    return "passwordSalt and passwordHash must both be present or both absent";
+const SALT_MIN_B64 = 16;
+const SALT_MAX_B64 = 256;
+const HASH_MIN_B64 = 32;
+const HASH_MAX_B64 = 256;
+const BASE64_RE = /^[A-Za-z0-9+/=]+$/;
+
+function isPresent(s: string | undefined): boolean {
+  return typeof s === "string" && s.length > 0;
+}
+
+/// Returns a malformed-body error string, or null when the body sits in
+/// exactly one of the three valid password modes:
+///   - Unprotected: all four password fields absent.
+///   - Legacy: passwordSalt + passwordHash; no encUrl/encNonce. Still
+///     accepted on POST so older plugin builds keep publishing until they
+///     upgrade.
+///   - v2 encrypted: passwordSalt + encUrl + encNonce + schemaVersion=2;
+///     no passwordHash.
+/// Anything else (mixed fields, partial pairs, wrong schemaVersion) is
+/// rejected with a precise reason so the caller can surface it.
+function passwordFieldsError(b: PublishBody): string | null {
+  const haveSalt = isPresent(b.passwordSalt);
+  const haveHash = isPresent(b.passwordHash);
+  const haveEncUrl = isPresent(b.encUrl);
+  const haveEncNonce = isPresent(b.encNonce);
+  const haveAnyV2 = haveEncUrl || haveEncNonce;
+
+  if (haveHash && haveAnyV2) {
+    return "passwordHash and encUrl cannot both be set";
   }
-  if (haveSalt) {
-    if (salt!.length < 16 || salt!.length > 256) return "passwordSalt out of range";
-    if (hash!.length < 32 || hash!.length > 256) return "passwordHash out of range";
-    if (!/^[A-Za-z0-9+/=]+$/.test(salt!)) return "passwordSalt must be base64";
-    if (!/^[A-Za-z0-9+/=]+$/.test(hash!)) return "passwordHash must be base64";
+
+  if (haveAnyV2) {
+    if (!haveSalt) return "passwordSalt required when encUrl/encNonce set";
+    if (!haveEncUrl || !haveEncNonce) {
+      return "encUrl and encNonce must both be present";
+    }
+    if (b.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+      return `schemaVersion must be ${CURRENT_SCHEMA_VERSION} for encrypted publishes`;
+    }
+    if (b.passwordSalt!.length < SALT_MIN_B64 || b.passwordSalt!.length > SALT_MAX_B64) {
+      return "passwordSalt out of range";
+    }
+    if (!BASE64_RE.test(b.passwordSalt!)) return "passwordSalt must be base64";
+    if (b.encUrl!.length < ENC_URL_MIN_LEN || b.encUrl!.length > ENC_URL_MAX_LEN) {
+      return "encUrl out of range";
+    }
+    if (!BASE64_RE.test(b.encUrl!)) return "encUrl must be base64";
+    if (b.encNonce!.length !== ENC_NONCE_LEN) return "encNonce wrong length";
+    if (!BASE64_RE.test(b.encNonce!)) return "encNonce must be base64";
+    return null;
+  }
+
+  if (haveSalt || haveHash) {
+    if (!haveSalt || !haveHash) {
+      return "passwordSalt and passwordHash must both be present or both absent";
+    }
+    if (b.schemaVersion !== undefined && b.schemaVersion !== 1) {
+      return "legacy passwordHash records use schemaVersion 1 (or omit it)";
+    }
+    if (b.passwordSalt!.length < SALT_MIN_B64 || b.passwordSalt!.length > SALT_MAX_B64) {
+      return "passwordSalt out of range";
+    }
+    if (b.passwordHash!.length < HASH_MIN_B64 || b.passwordHash!.length > HASH_MAX_B64) {
+      return "passwordHash out of range";
+    }
+    if (!BASE64_RE.test(b.passwordSalt!)) return "passwordSalt must be base64";
+    if (!BASE64_RE.test(b.passwordHash!)) return "passwordHash must be base64";
+    return null;
+  }
+
+  // Unprotected.
+  if (b.schemaVersion !== undefined) {
+    return "schemaVersion is only meaningful for password-protected publishes";
   }
   return null;
 }

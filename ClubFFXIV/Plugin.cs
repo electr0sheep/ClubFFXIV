@@ -798,20 +798,20 @@ public sealed class Plugin : IDalamudPlugin
         else if (Config.SavedHouses.TryGetValue(canonicalKey, out var saved) && HasDoor(saved))
             door = ToDoorPayload(saved);
 
-        // Hash the passphrase locally and send (salt, hash) to the registry —
-        // the registry never sees the plaintext. Empty/null passphrase clears
-        // any existing password gate.
-        string? saltB64 = null, hashB64 = null;
-        if (!string.IsNullOrWhiteSpace(passphrase))
-        {
-            var (salt, hash) = Passphrase.Hash(passphrase);
-            saltB64 = Convert.ToBase64String(salt);
-            hashB64 = Convert.ToBase64String(hash);
-        }
+        // Plugin-side syntax check before any expensive crypto / network call.
+        // For unencrypted publishes the registry repeats this; for encrypted
+        // ones the registry can't see the URL, so this is the only validation
+        // it ever gets.
+        var urlSyntaxErr = StreamUrlValidator.Validate(streamUrl);
+        if (urlSyntaxErr != null) throw new InvalidOperationException(urlSyntaxErr);
 
+        var publish = BuildPublishFields(streamUrl, passphrase);
         await registryClient.PublishAsync(
-            canonicalKey, streamUrl, displayName, dj, door, listed, description,
-            passwordSalt: saltB64, passwordHash: hashB64);
+            canonicalKey, publish.streamUrl, displayName, dj, door, listed, description,
+            passwordSalt: publish.saltB64,
+            encUrl: publish.encUrlB64,
+            encNonce: publish.encNonceB64,
+            schemaVersion: publish.schemaVersion);
 
         if (existing == null)
         {
@@ -880,19 +880,19 @@ public sealed class Plugin : IDalamudPlugin
         if (newDescription.Length > 500)
             throw new InvalidOperationException("Description too long (max 500 chars)");
 
-        // Hash passphrase if non-empty; empty/null clears the password gate.
-        string? saltB64 = null, hashB64 = null;
-        if (!string.IsNullOrWhiteSpace(newPassphrase))
-        {
-            var (salt, hash) = Passphrase.Hash(newPassphrase);
-            saltB64 = Convert.ToBase64String(salt);
-            hashB64 = Convert.ToBase64String(hash);
-        }
+        // Plugin-side syntax check before any expensive crypto / network call.
+        // Mirrors PublishHouseAsync — see comment there for rationale.
+        var urlSyntaxErr = StreamUrlValidator.Validate(newStreamUrl);
+        if (urlSyntaxErr != null) throw new InvalidOperationException(urlSyntaxErr);
 
+        var publish = BuildPublishFields(newStreamUrl, newPassphrase);
         var door = HasDoor(entry) ? ToDoorPayload(entry) : null;
         await registryClient.PublishAsync(
-            canonicalKey, newStreamUrl, newDisplayName, djIdentity, door, newListed, newDescription,
-            passwordSalt: saltB64, passwordHash: hashB64);
+            canonicalKey, publish.streamUrl, newDisplayName, djIdentity, door, newListed, newDescription,
+            passwordSalt: publish.saltB64,
+            encUrl: publish.encUrlB64,
+            encNonce: publish.encNonceB64,
+            schemaVersion: publish.schemaVersion);
 
         entry.DisplayName = newDisplayName;
         entry.StreamUrl = newStreamUrl;
@@ -930,6 +930,43 @@ public sealed class Plugin : IDalamudPlugin
         {
             EnterIndoor(newStreamUrl, new ClubContext(newDisplayName, newDescription));
         }
+    }
+
+    /// <summary>
+    /// Build the password-related fields that go on a PublishAsync call.
+    /// Empty/null passphrase yields an unprotected publish (all crypto fields
+    /// null, plaintext URL on the wire). Non-empty passphrase rotates fresh
+    /// salt + nonce and AES-256-GCM-encrypts the URL — the registry only
+    /// ever sees the ciphertext.
+    ///
+    /// Reused across PublishHouseAsync, RenamePublishedHouseAsync, and the
+    /// auto-republish that fires after a door calibrate. Keeping the
+    /// derivation in one place is what prevents the calibrate path from
+    /// silently stripping the password gate (the bug it had before this
+    /// helper existed).
+    /// </summary>
+    private static (
+        string streamUrl,
+        string? saltB64,
+        string? encUrlB64,
+        string? encNonceB64,
+        int? schemaVersion)
+        BuildPublishFields(string streamUrl, string? passphrase)
+    {
+        if (string.IsNullOrWhiteSpace(passphrase))
+            return (streamUrl, null, null, null, null);
+
+        var salt = Passphrase.GenerateSalt();
+        var (ciphertext, nonce) = Passphrase.EncryptUrl(passphrase, salt, streamUrl);
+        // streamUrl on the wire is empty for v2 — the registry rejects
+        // publishes carrying plaintext alongside ciphertext, and we don't
+        // want the URL on the wire even in transit.
+        return (
+            "",
+            Convert.ToBase64String(salt),
+            Convert.ToBase64String(ciphertext),
+            Convert.ToBase64String(nonce),
+            2);
     }
 
     public async Task UnpublishHouseAsync(string canonicalKey)
@@ -982,12 +1019,23 @@ public sealed class Plugin : IDalamudPlugin
                 var desc = pub.Description;
                 var url = pub.StreamUrl;
                 var listed = pub.Listed;
+                // Carry the existing passphrase through so a calibrate
+                // doesn't silently strip the password gate. Re-running the
+                // v2 encryption rotates salt + nonce, which is fine — old
+                // listeners just decrypt the new ciphertext with the same
+                // passphrase on their next refetch.
+                var passphrase = pub.Passphrase;
                 _ = Task.Run(async () =>
                 {
                     try
                     {
+                        var publish = BuildPublishFields(url, passphrase);
                         await registryClient.PublishAsync(
-                            canonicalKey, url, dn, djIdentity, doorPayload, listed, desc);
+                            canonicalKey, publish.streamUrl, dn, djIdentity, doorPayload, listed, desc,
+                            passwordSalt: publish.saltB64,
+                            encUrl: publish.encUrlB64,
+                            encNonce: publish.encNonceB64,
+                            schemaVersion: publish.schemaVersion);
                         InvalidateWardCacheForDoor(doorPayload);
                     }
                     catch (Exception ex)
@@ -1325,10 +1373,11 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// If we have a cached passphrase for this plot, derive the Argon2id hash
-    /// using the salt from the registry response and re-fetch with it.
-    /// Returns the unlocked record (with StreamUrl filled in) on success,
-    /// null if no cache OR the cached passphrase was rejected.
+    /// If we have a cached passphrase for this plot, resolve the plaintext
+    /// stream URL via <see cref="ResolvePasswordedUrlAsync"/> (v2 decrypt or
+    /// legacy hash round-trip, depending on the record format). Returns the
+    /// input record with <c>StreamUrl</c> filled in on success, null if
+    /// there's no cache OR the cached passphrase was rejected.
     /// </summary>
     private async Task<ClubRecord?> TryUnlockWithCachedPassphrase(PlotKey key, ClubRecord record)
     {
@@ -1337,26 +1386,64 @@ public sealed class Plugin : IDalamudPlugin
             || string.IsNullOrEmpty(cached))
             return null;
 
-        try
+        var url = await ResolvePasswordedUrlAsync(key.Canonical, record, cached);
+        if (string.IsNullOrEmpty(url))
         {
-            var salt = Convert.FromBase64String(record.PasswordSalt);
-            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(cached, salt));
-            var unlocked = await registryClient!.GetAsync(key.Canonical, hash);
-            // Wrong password yields a record with PasswordRequired=true and no
-            // URL; treat as cache miss so the prompt flow runs.
-            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            // Cached passphrase no longer valid (DJ rotated it). Drop the
+            // cache entry so the prompt flow runs cleanly on the next visit.
+            Config.KnownClubPassphrases.Remove(key.Canonical);
+            Config.Save();
+            return null;
+        }
+        // Opportunistic warm: outdoor proximity reads from this dict.
+        resolvedPasswordedUrls[key.Canonical] = url;
+        record.StreamUrl = url;
+        return record;
+    }
+
+    /// <summary>
+    /// Resolve the plaintext stream URL for a password-protected record.
+    /// v2 records (EncUrl + EncNonce + PasswordSalt) decrypt locally — no
+    /// second registry call, AEAD failure means wrong passphrase. Legacy
+    /// records (PasswordHash gate, no EncUrl) fall back to the original
+    /// flow: derive the Argon2id hash and re-GET with it. Returns null on
+    /// any failure (wrong passphrase, malformed base64, network error)
+    /// so callers can route to a re-prompt without distinguishing causes.
+    /// </summary>
+    private async Task<string?> ResolvePasswordedUrlAsync(
+        string canonicalKey, ClubRecord record, string passphrase)
+    {
+        if (string.IsNullOrEmpty(record.PasswordSalt)) return null;
+
+        byte[] salt;
+        try { salt = Convert.FromBase64String(record.PasswordSalt); }
+        catch (FormatException) { return null; }
+
+        if (!string.IsNullOrEmpty(record.EncUrl) && !string.IsNullOrEmpty(record.EncNonce))
+        {
+            try
             {
-                Config.KnownClubPassphrases.Remove(key.Canonical);
-                Config.Save();
+                var ciphertext = Convert.FromBase64String(record.EncUrl);
+                var nonce = Convert.FromBase64String(record.EncNonce);
+                return Passphrase.DecryptUrl(passphrase, salt, ciphertext, nonce);
+            }
+            catch (FormatException)
+            {
                 return null;
             }
-            // Opportunistic warm: outdoor proximity reads from this dict.
-            resolvedPasswordedUrls[key.Canonical] = unlocked.StreamUrl;
-            return unlocked;
+        }
+
+        if (registryClient == null) return null;
+        try
+        {
+            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(passphrase, salt));
+            var unlocked = await registryClient.GetAsync(canonicalKey, hash);
+            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl)) return null;
+            return unlocked.StreamUrl;
         }
         catch (Exception ex)
         {
-            Log.Warning($"Cached passphrase unlock failed: {ex.Message}");
+            Log.Warning($"Legacy passphrase unlock failed: {ex.Message}");
             return null;
         }
     }
@@ -1382,7 +1469,10 @@ public sealed class Plugin : IDalamudPlugin
         }
         try
         {
-            // First fetch returns the salt (+ no URL since we haven't auth'd yet).
+            // First fetch returns metadata. For v2 records this fetch ALSO
+            // returns the encUrl/encNonce, so the unified resolver can
+            // decrypt without a second round-trip; for legacy records the
+            // resolver falls back to the hash-gated re-fetch.
             var meta = await registryClient.GetAsync(plotKey);
             if (meta == null || !meta.PasswordRequired || string.IsNullOrEmpty(meta.PasswordSalt))
             {
@@ -1390,10 +1480,8 @@ public sealed class Plugin : IDalamudPlugin
                 resolvedPasswordedUrls.Remove(plotKey);
                 return;
             }
-            var salt = Convert.FromBase64String(meta.PasswordSalt);
-            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(passphrase, salt));
-            var unlocked = await registryClient.GetAsync(plotKey, hash);
-            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            var url = await ResolvePasswordedUrlAsync(plotKey, meta, passphrase);
+            if (string.IsNullOrEmpty(url))
             {
                 // Stored passphrase rejected — drop both the resolved URL and
                 // the now-stale passphrase so the next indoor visit prompts.
@@ -1402,7 +1490,7 @@ public sealed class Plugin : IDalamudPlugin
                 Config.Save();
                 return;
             }
-            resolvedPasswordedUrls[plotKey] = unlocked.StreamUrl;
+            resolvedPasswordedUrls[plotKey] = url;
         }
         catch (Exception ex)
         {
@@ -1420,35 +1508,36 @@ public sealed class Plugin : IDalamudPlugin
         if (skippedPasswordedPlots.Contains(key.Canonical)) return;
         if (passphrasePromptWindow.HasPromptFor(key.Canonical)) return;
         var ctx = new ClubContext(record.DisplayName, record.Description);
-        var saltB64 = record.PasswordSalt ?? "";
+        // Capture the full record so HandlePassphraseSubmitted can decrypt
+        // the v2 ciphertext we already have rather than re-fetching. For
+        // legacy records the captured record only contributes salt /
+        // display metadata; the resolver still does its second GET.
         passphrasePromptWindow.Prompt(
             key.Canonical,
             ctx,
-            onSubmit: entered => _ = HandlePassphraseSubmitted(key, saltB64, entered),
+            onSubmit: entered => _ = HandlePassphraseSubmitted(key, record, entered),
             onCancel: () => skippedPasswordedPlots.Add(key.Canonical));
         passphrasePromptWindow.EnsureOpenIfPending();
     }
 
-    private async Task HandlePassphraseSubmitted(PlotKey key, string saltB64, string entered)
+    private async Task HandlePassphraseSubmitted(PlotKey key, ClubRecord record, string entered)
     {
         if (registryClient == null) return;
         try
         {
-            var salt = Convert.FromBase64String(saltB64);
-            var hash = Convert.ToBase64String(Passphrase.HashWithSalt(entered, salt));
-            var unlocked = await registryClient.GetAsync(key.Canonical, hash);
-            if (unlocked == null || string.IsNullOrEmpty(unlocked.StreamUrl))
+            var url = await ResolvePasswordedUrlAsync(key.Canonical, record, entered);
+            if (string.IsNullOrEmpty(url))
             {
                 passphrasePromptWindow.ReportFailure("Wrong passphrase. Try again or Skip.");
                 return;
             }
             // Cache for future visits and play.
             Config.KnownClubPassphrases[key.Canonical] = entered;
-            resolvedPasswordedUrls[key.Canonical] = unlocked.StreamUrl;
+            resolvedPasswordedUrls[key.Canonical] = url;
             Config.Save();
             passphrasePromptWindow.Resolve();
             if (Nullable.Equals(CurrentPlotKey, key))
-                EnterIndoor(unlocked.StreamUrl, new ClubContext(unlocked.DisplayName, unlocked.Description));
+                EnterIndoor(url, new ClubContext(record.DisplayName, record.Description));
         }
         catch (Exception ex)
         {

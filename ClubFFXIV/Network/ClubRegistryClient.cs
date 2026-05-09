@@ -78,14 +78,19 @@ public sealed class ClubRegistryClient : IDisposable
     }
 
     /// <summary>
-    /// Fetch a club record by plot key. For password-protected clubs the
-    /// registry returns the record with <c>StreamUrl</c> empty and
-    /// <c>PasswordRequired</c>/<c>PasswordSalt</c> populated; the caller then
-    /// re-invokes with the listener's Argon2id-derived
-    /// <paramref name="passwordHash"/> (base64) to receive the real URL.
-    /// A wrong hash returns 401 with the same metadata so the caller can
-    /// re-prompt; this method maps that to a non-null record with
-    /// <c>StreamUrl</c> still empty so the upstream code path stays uniform.
+    /// Fetch a club record by plot key. Two listener flows for password
+    /// protection share this entry point:
+    ///   - v2 encrypted: response carries <c>EncUrl</c>, <c>EncNonce</c>,
+    ///     <c>PasswordSalt</c>; caller decrypts client-side via
+    ///     <c>Passphrase.DecryptUrl</c>. The <paramref name="passwordHash"/>
+    ///     argument is unused here.
+    ///   - Legacy hash-gated: response carries <c>PasswordRequired=true</c>
+    ///     and <c>PasswordSalt</c> only; caller derives the Argon2id hash
+    ///     from the entered passphrase and re-invokes this method with it
+    ///     to receive the plaintext URL. A wrong hash returns 401 with the
+    ///     same metadata; this method maps that to a non-null record with
+    ///     <c>StreamUrl</c> still empty so the upstream code path stays
+    ///     uniform.
     /// </summary>
     public async Task<ClubRecord?> GetAsync(string plotKey, string? passwordHash = null, CancellationToken ct = default)
     {
@@ -126,7 +131,9 @@ public sealed class ClubRegistryClient : IDisposable
         bool listed = true,
         string description = "",
         string? passwordSalt = null,
-        string? passwordHash = null,
+        string? encUrl = null,
+        string? encNonce = null,
+        int? schemaVersion = null,
         CancellationToken ct = default)
     {
         var body = JsonSerializer.Serialize(new PublishRequest
@@ -137,11 +144,14 @@ public sealed class ClubRegistryClient : IDisposable
             Nonce = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
             Door = door,
             Listed = listed,
-            // Both null = club has no password (registry stores nothing).
-            // Both set = club is password-protected. Sending one without the
-            // other is a client bug; the registry will reject mismatched pairs.
+            // For v2 encrypted publish: PasswordSalt + EncUrl + EncNonce +
+            // SchemaVersion=2; StreamUrl must be empty. For unprotected:
+            // all four password-related params null. The registry's
+            // passwordFieldsError rejects any other combination.
             PasswordSalt = passwordSalt,
-            PasswordHash = passwordHash,
+            EncUrl = encUrl,
+            EncNonce = encNonce,
+            SchemaVersion = schemaVersion,
         });
         var signature = dj.Sign($"POST:{plotKey}:{body}");
 
@@ -276,9 +286,9 @@ internal sealed class RegistryErrorBody
 
 public sealed class ClubRecord
 {
-    // Empty when the club is password-protected and the caller hasn't
-    // supplied (or supplied the wrong) passwordHash. Use PasswordRequired
-    // to distinguish "this club has no URL set" from "URL is gated."
+    // Empty for v2 encrypted records (the URL travels in EncUrl) and for
+    // legacy password-protected records the caller hasn't authenticated to
+    // yet. PasswordRequired distinguishes "no URL set" from "URL is gated."
     [JsonPropertyName("streamUrl")] public string StreamUrl { get; set; } = "";
     [JsonPropertyName("displayName")] public string DisplayName { get; set; } = "";
     [JsonPropertyName("description")] public string Description { get; set; } = "";
@@ -286,11 +296,17 @@ public sealed class ClubRecord
     [JsonPropertyName("door")] public DoorPayload? Door { get; set; }
     [JsonPropertyName("updatedAt")] public long UpdatedAt { get; set; }
     [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
-    // Password gating. PasswordRequired=true means the listener must supply
-    // an Argon2id hash (derived from the entered passphrase + PasswordSalt)
-    // via GetAsync's passwordHash parameter to receive the real StreamUrl.
+    // Password gating. PasswordRequired=true with no EncUrl signals legacy
+    // records that need GetAsync(passwordHash:); with EncUrl set, the
+    // listener decrypts client-side via Passphrase.DecryptUrl.
     [JsonPropertyName("passwordRequired")] public bool PasswordRequired { get; set; }
     [JsonPropertyName("passwordSalt")] public string? PasswordSalt { get; set; }
+    // v2 fields. Both present + SchemaVersion=2 indicates a fully-encrypted
+    // record; absent means a legacy hash-gated record. Mixed states are
+    // rejected by the registry on POST.
+    [JsonPropertyName("encUrl")] public string? EncUrl { get; set; }
+    [JsonPropertyName("encNonce")] public string? EncNonce { get; set; }
+    [JsonPropertyName("schemaVersion")] public int? SchemaVersion { get; set; }
 }
 
 public sealed class DirectoryListing
@@ -350,12 +366,24 @@ internal sealed class PublishRequest
     [JsonPropertyName("door"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public DoorPayload? Door { get; set; }
     [JsonPropertyName("listed")] public bool Listed { get; set; } = true;
-    // Both null = no password (registry clears any prior password fields).
-    // Both set = password gate (registry stores; future GETs require hash).
+    // Three valid combinations on the wire (mirroring backend's
+    // passwordFieldsError):
+    //   1. all null — unprotected publish.
+    //   2. PasswordSalt + EncUrl + EncNonce + SchemaVersion=2 — v2 encrypted.
+    //      StreamUrl must be empty.
+    //   3. PasswordSalt + PasswordHash — legacy auth-hash. Plugin no longer
+    //      writes this on new publishes, but the field stays for back-compat
+    //      with any downstream tooling that constructs requests directly.
     [JsonPropertyName("passwordSalt"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PasswordSalt { get; set; }
     [JsonPropertyName("passwordHash"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? PasswordHash { get; set; }
+    [JsonPropertyName("encUrl"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EncUrl { get; set; }
+    [JsonPropertyName("encNonce"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? EncNonce { get; set; }
+    [JsonPropertyName("schemaVersion"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? SchemaVersion { get; set; }
 }
 
 internal sealed class DeleteRequest
