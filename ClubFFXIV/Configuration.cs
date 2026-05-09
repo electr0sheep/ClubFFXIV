@@ -109,8 +109,8 @@ public class Configuration : IPluginConfiguration
     /// "chromium", or "safari" has yt-dlp authenticate as your logged-in browser
     /// session — the standard fix for YouTube's "Sign in to confirm you're not a bot"
     /// screen. You must be logged into the relevant site in that browser.
-    /// Forwarded to both <see cref="StreamPlayer"/> and <see cref="MultiStreamPlayer"/>
-    /// on each framework tick, so changes take effect on the next stream start.
+    /// Pushed to both <see cref="StreamPlayer"/> and <see cref="MultiStreamPlayer"/>
+    /// when the user edits the field; changes take effect on the next stream start.
     /// </summary>
     public string YtDlpCookiesBrowser { get; set; } = "";
 

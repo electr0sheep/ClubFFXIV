@@ -172,6 +172,8 @@ public sealed class Plugin : IDalamudPlugin
         Permissions = new UrlPermissions(Config);
         streamPlayer = new StreamPlayer(Binaries);
         streamPlayer.MasterVolume = Config.Volume;
+        streamPlayer.PlaylistRandom = Config.PlaylistRandom;
+        streamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
         streamPlayer.StreamNaturallyEnded += OnStreamNaturallyEnded;
         lastBinaryUpdateCheck = Config.BinariesLastChecked;
 
@@ -633,6 +635,10 @@ public sealed class Plugin : IDalamudPlugin
             // driven, so a freshly-created player constructed while the user is
             // alt-tabbed would otherwise stay unmuted until the next transition.
             multiStreamPlayer.AutoMuted = !soundsPlayWhenInactive && !gameFocused;
+            // Same reason for yt-dlp options: SyncYtDlpOptions is push-on-change,
+            // so seed the freshly-created player with current config now.
+            multiStreamPlayer.PlaylistRandom = Config.PlaylistRandom;
+            multiStreamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
             // Single-stream's loop is wired via streamPlayer.StreamNaturallyEnded;
             // multi-stream needs its own per-voice path. The mixer auto-removes
             // voices that EOF, so the framework's outdoor proximity loop will
@@ -1227,22 +1233,31 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
+    /// Push yt-dlp options (playlist shuffle, cookies-from-browser) from config
+    /// into both stream players. Call after the user toggles either in the UI;
+    /// the values are read at the next CreateAsync (next stream start / loop),
+    /// so this doesn't interrupt anything currently playing. Push-on-change
+    /// rather than pull-on-tick to keep ApplyAudioPolicy quiet.
+    /// </summary>
+    public void SyncYtDlpOptions()
+    {
+        streamPlayer.PlaylistRandom = Config.PlaylistRandom;
+        streamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
+        if (multiStreamPlayer != null)
+        {
+            multiStreamPlayer.PlaylistRandom = Config.PlaylistRandom;
+            multiStreamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
+        }
+    }
+
+    /// <summary>
     /// After audio state is settled for the tick, apply cross-cutting policies:
-    /// game BGM muting (when our stream plays) and yt-dlp option sync. Focus
-    /// muting lives in <see cref="RecomputeFocusMute"/>, fired by event/edge.
+    /// game BGM muting (when our stream plays). Focus muting lives in
+    /// <see cref="RecomputeFocusMute"/> (fired by event/edge); yt-dlp option
+    /// sync lives in <see cref="SyncYtDlpOptions"/> (pushed from the UI).
     /// </summary>
     private void ApplyAudioPolicy()
     {
-        // Keep yt-dlp playlist-random in sync each tick. The flag is read at
-        // the next CreateAsync call (i.e. next stream start / next loop), so
-        // toggling it in the UI applies on the following start without any
-        // explicit "apply" wiring.
-        streamPlayer.PlaylistRandom = Config.PlaylistRandom;
-        if (multiStreamPlayer != null) multiStreamPlayer.PlaylistRandom = Config.PlaylistRandom;
-
-        streamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
-        if (multiStreamPlayer != null) multiStreamPlayer.YtDlpCookiesBrowser = Config.YtDlpCookiesBrowser;
-
         // Game BGM mute only when stream is the primary audio source (indoor / manual).
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         // Mute while a load is pending too — otherwise the game's BGM blares for the

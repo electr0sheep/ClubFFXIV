@@ -171,6 +171,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             plugin.Config.PlaylistRandom = random;
             plugin.Config.Save();
+            plugin.SyncYtDlpOptions();
         }
         ImGui.SameLine();
         ImGui.TextDisabled("(?)");
@@ -224,6 +225,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             plugin.Config.YtDlpCookiesBrowser = ytDlpCookiesInput.Trim();
             plugin.Config.Save();
+            plugin.SyncYtDlpOptions();
         }
     }
 

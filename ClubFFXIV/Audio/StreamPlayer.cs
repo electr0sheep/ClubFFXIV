@@ -29,25 +29,26 @@ public sealed class StreamPlayer : IDisposable
     private float masterVolume = 0.7f;
     private float spatialVolume = 1f;
     private float spatialCutoff = BypassCutoffHz;
-    // Two independent mute inputs: autoMuted is set every framework tick by
-    // the focus-mute policy; userMuted is the explicit toggle from the Now
-    // Playing header. They OR together — either one zeros output.
+    // Two independent mute inputs: autoMuted is set on focus / FFXIV-config
+    // transitions by the focus-mute policy; userMuted is the explicit toggle
+    // from the Now Playing header. They OR together — either one zeros output.
     private bool autoMuted;
     private bool userMuted;
     private string? currentUrl;
 
     /// <summary>
     /// Forwarded to yt-dlp as --playlist-random when true, --lazy-playlist
-    /// when false. Plugin keeps this in sync with
-    /// <see cref="Configuration.PlaylistRandom"/> on each framework tick;
-    /// the value is read at the next <see cref="PlayAsync"/> call.
+    /// when false. Pushed by <see cref="Plugin.SyncYtDlpOptions"/> when the
+    /// user toggles it; the value is read at the next <see cref="PlayAsync"/>
+    /// call, so toggles apply on the following start without interrupting
+    /// anything currently playing.
     /// </summary>
     public bool PlaylistRandom { get; set; }
 
     /// <summary>
     /// Browser name passed to yt-dlp's --cookies-from-browser, or empty to
-    /// disable. Plugin syncs this from <see cref="Configuration.YtDlpCookiesBrowser"/>
-    /// each framework tick; the value is read at the next <see cref="PlayAsync"/> call.
+    /// disable. Pushed by <see cref="Plugin.SyncYtDlpOptions"/> when the user
+    /// edits it; read at the next <see cref="PlayAsync"/> call.
     /// </summary>
     public string YtDlpCookiesBrowser { get; set; } = "";
 

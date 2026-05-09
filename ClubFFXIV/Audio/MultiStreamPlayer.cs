@@ -47,14 +47,14 @@ internal sealed class MultiStreamPlayer : IDisposable
 
     /// <summary>
     /// Forwarded to yt-dlp as --playlist-random when adding a new voice.
-    /// Plugin syncs this from <see cref="Configuration.PlaylistRandom"/>.
+    /// Pushed by <see cref="Plugin.SyncYtDlpOptions"/> when the user toggles it.
     /// </summary>
     public bool PlaylistRandom { get; set; }
 
     /// <summary>
     /// Browser name passed to yt-dlp's --cookies-from-browser, or empty to
-    /// disable. Plugin syncs this from <see cref="Configuration.YtDlpCookiesBrowser"/>;
-    /// read at each <see cref="AddVoiceAsync"/> call.
+    /// disable. Pushed by <see cref="Plugin.SyncYtDlpOptions"/> when the user
+    /// edits it; read at each <see cref="AddVoiceAsync"/> call.
     /// </summary>
     public string YtDlpCookiesBrowser { get; set; } = "";
 
