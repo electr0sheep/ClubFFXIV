@@ -34,6 +34,11 @@ public sealed class HelpWindow : Window, IDisposable
                 DrawDj();
                 ImGui.EndTabItem();
             }
+            if (ImGui.BeginTabItem("FAQ"))
+            {
+                DrawFaq();
+                ImGui.EndTabItem();
+            }
             ImGui.EndTabBar();
         }
     }
@@ -199,6 +204,79 @@ public sealed class HelpWindow : Window, IDisposable
 
         if (ImGui.Button("Open full broadcasting guide"))
             OpenUrl(GuideUrl);
+    }
+
+    private void DrawFaq()
+    {
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "Quick answers to the most common questions. Still stuck? " +
+            "The Listener and DJ tabs go deeper.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Does this work with Spotify or Apple Music?");
+        ImGui.TextWrapped(
+            "No. Both services use DRM-encrypted streams that only their official apps can play, " +
+            "and there's no legal way around that. If your playlist also exists on YouTube or " +
+            "YouTube Music, paste that URL instead — free Spotify-to-YouTube converters can " +
+            "rebuild a playlist in a couple of clicks.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("I want my YouTube Music playlist to play in my house. How?");
+        ImGui.BulletText("Open /pclub config → Now Playing, paste the playlist URL, click Play to test");
+        ImGui.BulletText("Settings tab → enable \"Random playlist order\" if you want shuffle");
+        ImGui.BulletText("Settings tab → enable \"Loop videos when they finish\" so it never runs out");
+        ImGui.BulletText("My Clubs tab → \"Create local override\" to bind it to this house — auto-plays when you walk in");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("YouTube says \"Sign in to confirm you're not a bot.\" Now what?");
+        ImGui.TextWrapped(
+            "Open the Advanced tab and set \"Cookies from browser\" to firefox. You must already " +
+            "be logged into YouTube in Firefox — yt-dlp reads your session cookies from there. " +
+            "Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi) encrypt cookies in a " +
+            "way yt-dlp can't read without extra setup, so Firefox is the easy answer.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Can I play a local MP3 from my computer?");
+        ImGui.TextWrapped(
+            "Not directly — the plugin only plays URLs. If you want your own files to be the " +
+            "soundtrack for friends visiting, the realistic path is to host them on your own " +
+            "Icecast server (free with Cloudflare Tunnel — see the I want to DJ tab).");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Music keeps playing when I alt-tab. How do I mute it?");
+        ImGui.TextWrapped(
+            "The plugin follows FFXIV's own \"Play sounds when window is not active\" toggles — " +
+            "no separate setting on our end. In-game: System Configuration → Sound Settings, " +
+            "uncheck both \"Play sound effects when window is not active\" and \"Play BGM when " +
+            "window is not active.\" The plugin will mute the moment you alt-tab.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Why is the first stream so slow to start?");
+        ImGui.TextWrapped(
+            "First time you play a Twitch / YouTube / SoundCloud URL, the plugin downloads " +
+            "~80 MB of helper binaries (ffmpeg + yt-dlp). One-time per install — every later " +
+            "stream is instant. Direct Icecast / Shoutcast streams skip the download entirely.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("How do I share my stream with a friend?");
+        ImGui.BulletText("Send them the URL — they paste into /pclub config and click Play");
+        ImGui.BulletText("DJing from a house? \"Publish new club\" in My Clubs lets any plugin user discover it");
+        ImGui.BulletText("Want it private? Set a passphrase on publish — listeners enter it once, then it's cached");
     }
 
     private static void SectionHeader(string text)
