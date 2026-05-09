@@ -88,16 +88,16 @@ internal static class NowPlayingThumbnails
         var entry = cache.GetOrAdd(url, BeginFetch);
         if (entry.State == State.Loaded
             && entry.Wrap is { } wrap
-            && wrap.ImGuiHandle != IntPtr.Zero)
+            && wrap.Handle != IntPtr.Zero)
         {
             if (cropToSquare && wrap.Width > 0 && wrap.Height > 0)
             {
                 var (uv0, uv1) = ComputeCoverCropUv(wrap.Width, wrap.Height, size);
-                ImGui.Image(wrap.ImGuiHandle, size, uv0, uv1);
+                ImGui.Image(wrap.Handle, size, uv0, uv1);
             }
             else
             {
-                ImGui.Image(wrap.ImGuiHandle, size);
+                ImGui.Image(wrap.Handle, size);
             }
             return true;
         }
