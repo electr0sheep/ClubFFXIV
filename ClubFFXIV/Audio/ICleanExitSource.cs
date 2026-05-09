@@ -35,3 +35,18 @@ public interface ISeekableSource
     /// </summary>
     void SeekToSeconds(double seconds);
 }
+
+/// <summary>
+/// Audio source that can advance to the next item in a multi-item stream
+/// — currently only <see cref="PlaylistAudioReader"/>. The implementation
+/// piggybacks on the existing inter-item EOF flow (dispose the inner
+/// ffmpeg, the wrapper reads the next URL from yt-dlp's stdout). Single-
+/// video URLs go through the same playlist wrapper but degenerate to one
+/// item; calling SkipToNext on those exhausts the playlist early, which
+/// the host's natural-end logic handles (loop-on → restart, loop-off →
+/// stop). Safe to call from any thread.
+/// </summary>
+public interface ISkippableSource
+{
+    void SkipToNext();
+}

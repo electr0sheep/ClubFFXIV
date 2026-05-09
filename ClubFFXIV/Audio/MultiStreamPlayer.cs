@@ -283,6 +283,31 @@ internal sealed class MultiStreamPlayer : IDisposable
     }
 
     /// <summary>
+    /// True iff the named voice exists and its source supports skip-next
+    /// (i.e. it's a yt-dlp playlist wrapper). UI gate for the skip icon.
+    /// </summary>
+    public bool IsVoiceSkippable(string canonicalKey)
+    {
+        lock (voicesLock)
+            return voices.TryGetValue(canonicalKey, out var v) && v.IsSkippable;
+    }
+
+    /// <summary>
+    /// Advance the named voice to its source's next playlist item. No-op
+    /// for unknown keys or non-skippable sources. Released outside the
+    /// lock for the same reason as SeekVoice.
+    /// </summary>
+    public void SkipVoiceToNext(string canonicalKey)
+    {
+        StreamVoice? v;
+        lock (voicesLock)
+        {
+            voices.TryGetValue(canonicalKey, out v);
+        }
+        v?.SkipToNext();
+    }
+
+    /// <summary>
     /// Async because source construction blocks on network buffering / yt-dlp
     /// subprocess startup. Returns false if the voice was rejected (already
     /// active / starting, missing binaries, cancelled, or source error).

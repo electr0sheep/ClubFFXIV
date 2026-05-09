@@ -39,6 +39,7 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
     // non-seekable sources (HTTP Icecast); the public Seek/Position methods
     // no-op in that case so the UI can call without first checking IsLive.
     private readonly ISeekableSource? seekable;
+    private readonly ISkippableSource? skippable;
     private bool paused;
     private bool disposed;
 
@@ -55,6 +56,7 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
         this.sourceDisposable = sourceDisposable;
         CleanExit = source as ICleanExitSource;
         seekable = source as ISeekableSource;
+        skippable = source as ISkippableSource;
 
         ISampleProvider chain = source;
 
@@ -115,6 +117,12 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
 
     /// <summary>Forward to the underlying source's seek; no-op if unseekable.</summary>
     public void SeekToSeconds(double seconds) => seekable?.SeekToSeconds(seconds);
+
+    /// <summary>True iff the underlying source supports skip-next (yt-dlp playlist wrapper).</summary>
+    public bool IsSkippable => skippable != null;
+
+    /// <summary>Jump to the next playlist item; no-op for non-skippable sources.</summary>
+    public void SkipToNext() => skippable?.SkipToNext();
 
     public float Volume
     {

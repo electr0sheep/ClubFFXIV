@@ -337,6 +337,24 @@ public sealed class StreamPlayer : IDisposable
         if (source is ISeekableSource s) s.SeekToSeconds(seconds);
     }
 
+    /// <summary>
+    /// True iff the current source supports skipping to a next item — i.e.
+    /// it's a yt-dlp-backed playlist wrapper. Single-video URLs still go
+    /// through the playlist wrapper (1-item playlist), so this stays true
+    /// for them; calling skip on a 1-item playlist exhausts it, and the
+    /// natural-end loop logic handles the resulting behavior.
+    /// </summary>
+    public bool IsSkippable => source is ISkippableSource;
+
+    /// <summary>
+    /// Jump to the next playlist item. No-op when the source can't skip
+    /// (live HTTP / Icecast); UI can call without first checking IsLive.
+    /// </summary>
+    public void SkipToNext()
+    {
+        if (source is ISkippableSource s) s.SkipToNext();
+    }
+
     public void Stop()
     {
         try { output?.Stop(); } catch { /* swallow during teardown */ }

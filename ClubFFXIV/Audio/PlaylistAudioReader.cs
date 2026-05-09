@@ -28,7 +28,7 @@ namespace ClubFFXIV.Audio;
 /// EOF flows through as natural EOF. The Plugin loop replays the URL,
 /// which respawns this whole wrapper from scratch.
 /// </summary>
-internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, ICleanExitSource, ISeekableSource
+internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, ICleanExitSource, ISeekableSource, ISkippableSource
 {
     public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(44100, 2);
 
@@ -258,6 +258,22 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     public void SeekToSeconds(double seconds)
     {
         currentInner?.SeekToSeconds(seconds);
+    }
+
+    /// <summary>
+    /// Jump to the next playlist item by disposing the current inner
+    /// ffmpeg. The Read loop's existing EOF detection sees stdout closed,
+    /// kicks off AdvanceAsync, which pulls the next URL from yt-dlp and
+    /// spawns a fresh ffmpeg — exactly the same flow as a natural item
+    /// end, just triggered on demand. For single-video URLs (1-item
+    /// playlist) this exhausts the wrapper, and the host's PlaybackStopped
+    /// → natural-end loop logic handles the next behavior (restart on
+    /// loop-on, stop on loop-off). Safe from any thread; SubprocessAudio
+    /// Reader.Dispose is idempotent and concurrent-safe.
+    /// </summary>
+    public void SkipToNext()
+    {
+        currentInner?.Dispose();
     }
 
     public void Dispose()

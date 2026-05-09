@@ -612,6 +612,7 @@ public sealed class Plugin : IDalamudPlugin
         bool IsLive,
         bool IsPaused,
         bool Seekable,
+        bool CanSkipNext,
         double PositionSeconds,
         double DurationSeconds);
 
@@ -647,6 +648,7 @@ public sealed class Plugin : IDalamudPlugin
                 // hiding the seek bar via this flag is sufficient.
                 Seekable: !isLive && streamPlayer.PositionSeconds >= 0
                           && streamPlayer.DurationSeconds > 0,
+                CanSkipNext: !isLive && streamPlayer.IsSkippable,
                 PositionSeconds: streamPlayer.PositionSeconds,
                 DurationSeconds: streamPlayer.DurationSeconds));
         }
@@ -667,6 +669,7 @@ public sealed class Plugin : IDalamudPlugin
                     IsLive: voiceLive,
                     IsPaused: msp.IsVoicePaused(key),
                     Seekable: !voiceLive && msp.IsVoiceSeekable(key) && voiceDuration > 0,
+                    CanSkipNext: !voiceLive && msp.IsVoiceSkippable(key),
                     PositionSeconds: msp.GetVoicePosition(key),
                     DurationSeconds: voiceDuration));
             }
@@ -723,6 +726,21 @@ public sealed class Plugin : IDalamudPlugin
             streamPlayer.SeekToSeconds(seconds);
         else
             multiStreamPlayer?.SeekVoice(entry.PlotKey, seconds);
+    }
+
+    /// <summary>
+    /// Advance a Now Playing row to its source's next playlist item. For
+    /// single-video URLs (1-item playlist) this exhausts the wrapper, and
+    /// the natural-end loop logic decides what happens next (restart on
+    /// loop-on, stop on loop-off). No-op for live or non-skippable entries.
+    /// </summary>
+    public void SkipNowPlayingToNext(NowPlayingEntry entry)
+    {
+        if (entry.IsLive || !entry.CanSkipNext) return;
+        if (entry.PlotKey == null)
+            streamPlayer.SkipToNext();
+        else
+            multiStreamPlayer?.SkipVoiceToNext(entry.PlotKey);
     }
 
     /// <summary>

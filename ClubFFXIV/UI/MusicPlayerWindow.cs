@@ -256,6 +256,22 @@ public sealed class MusicPlayerWindow : Window, IDisposable
                 plugin.ToggleNowPlayingPause(entry);
         }
 
+        // Skip-next icon — only for sources that can advance (yt-dlp playlist
+        // wrappers, including single-video URLs which exhaust on click and
+        // hand off to the natural-end loop logic).
+        if (entry.CanSkipNext)
+        {
+            ImGui.SameLine();
+            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+            ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f),
+                FontAwesomeIcon.AngleDoubleRight.ToIconString());
+            ImGui.PopFont();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Skip to next track");
+            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+                plugin.SkipNowPlayingToNext(entry);
+        }
+
         ImGui.SameLine();
         ImGui.TextUnformatted(entry.Label);
         // Full URL on hover, in case the truncation hid the relevant tail.
@@ -402,11 +418,12 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     }
 
     /// <summary>
-    /// Always-on player controls: Stop + Volume. The URL paste UI (with hint,
-    /// description, and Play button) lives in the popup opened by the title-
-    /// bar "+" — see <see cref="DrawAddStreamPopup"/>. Keeping Stop in the
-    /// body means the user can halt the current stream without first opening
-    /// the popup, which is the common case after walking away from a club.
+    /// Always-on player controls: Stop, Loop toggle, Random toggle, Volume.
+    /// The URL paste UI (with hint, description, and Play button) lives in
+    /// the popup opened by the title-bar "+" — see
+    /// <see cref="DrawAddStreamPopup"/>. Keeping Stop in the body means the
+    /// user can halt the current stream without first opening the popup,
+    /// which is the common case after walking away from a club.
     /// </summary>
     private void DrawPlayerControls()
     {
@@ -416,6 +433,11 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             // Now Playing header reflects "stopped" — no extra status needed.
         }
 
+        ImGui.SameLine();
+        DrawLoopToggle();
+        ImGui.SameLine();
+        DrawRandomToggle();
+
         ImGui.Spacing();
         var volume = plugin.Config.Volume;
         if (ImGui.SliderFloat("Volume", ref volume, 0f, 1f, "%.2f"))
@@ -423,6 +445,70 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             plugin.Config.Volume = volume;
             plugin.Config.Save();
             plugin.SetStreamVolume(volume);
+        }
+    }
+
+    /// <summary>
+    /// Loop toggle: when a finite source ends, restart it. Active = bright
+    /// icon; inactive = dim. Click flips. Same TextColored + IsItemClicked
+    /// pattern as the per-row pause icon, for visual consistency.
+    /// </summary>
+    private void DrawLoopToggle()
+    {
+        var active = plugin.Config.LoopFinishedVideos;
+        var color = active
+            ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
+            : new Vector4(0.45f, 0.45f, 0.50f, 1f);
+
+        ImGui.AlignTextToFramePadding();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        ImGui.TextColored(color, FontAwesomeIcon.Repeat.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                (active ? "Loop: ON\n" : "Loop: OFF\n") +
+                "When a finite source ends, restart it from the top:\n" +
+                "  • Single video: replays the same video.\n" +
+                "  • Playlist: starts the playlist over (with a fresh\n" +
+                "    shuffle if Random is on).\n" +
+                "Off = playlist plays through once and stops.\n" +
+                "Indefinite streams (Twitch, Icecast) never reach a\n" +
+                "natural end, so this setting is a no-op for them.");
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+        {
+            plugin.Config.LoopFinishedVideos = !active;
+            plugin.Config.Save();
+        }
+    }
+
+    /// <summary>
+    /// Random playlist order toggle. Forwarded to <see cref="Plugin.SyncYtDlpOptions"/>
+    /// so the next play picks up the new flag — already-running yt-dlp
+    /// processes don't re-shuffle mid-stream.
+    /// </summary>
+    private void DrawRandomToggle()
+    {
+        var active = plugin.Config.PlaylistRandom;
+        var color = active
+            ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
+            : new Vector4(0.45f, 0.45f, 0.50f, 1f);
+
+        ImGui.AlignTextToFramePadding();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        ImGui.TextColored(color, FontAwesomeIcon.Random.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                (active ? "Random order: ON\n" : "Random order: OFF\n") +
+                "How playlist items are ordered:\n" +
+                "  • Off: original playlist order.\n" +
+                "  • On: yt-dlp shuffles the playlist before iteration.\n" +
+                "No effect on single videos or live streams.");
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+        {
+            plugin.Config.PlaylistRandom = !active;
+            plugin.Config.Save();
+            plugin.SyncYtDlpOptions();
         }
     }
 

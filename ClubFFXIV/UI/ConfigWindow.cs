@@ -136,39 +136,9 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TextUnformatted("Playback");
         ImGui.Spacing();
 
-        var loop = plugin.Config.LoopFinishedVideos;
-        if (ImGui.Checkbox("Loop videos when they finish", ref loop))
-        {
-            plugin.Config.LoopFinishedVideos = loop;
-            plugin.Config.Save();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "When a finite source ends, restart it from the top:\n" +
-                "  • Single video: replays the same video.\n" +
-                "  • Playlist: starts the playlist over (with a fresh\n" +
-                "    shuffle if 'Random playlist order' is on).\n" +
-                "Off = playlist plays through once and stops.\n" +
-                "Indefinite streams (Twitch, Icecast) never reach a\n" +
-                "natural end, so this setting is a no-op for them.");
-
-        var random = plugin.Config.PlaylistRandom;
-        if (ImGui.Checkbox("Random playlist order", ref random))
-        {
-            plugin.Config.PlaylistRandom = random;
-            plugin.Config.Save();
-            plugin.SyncYtDlpOptions();
-        }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "How playlist items are ordered:\n" +
-                "  • Off: original playlist order.\n" +
-                "  • On: yt-dlp shuffles the playlist before iteration.\n" +
-                "No effect on single videos or live streams.");
+        // Loop + Random playlist order live as icon toggles in the music
+        // player itself (next to Stop) — they're playback-mode controls, so
+        // they belong with the player chrome rather than buried in Settings.
 
         var showThumbs = plugin.Config.ShowNowPlayingThumbnails;
         if (ImGui.Checkbox("Show thumbnails in Now Playing", ref showThumbs))
