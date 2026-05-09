@@ -40,9 +40,21 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         SizeCondition = ImGuiCond.FirstUseEver;
         urlInput = plugin.Config.LastStreamUrl;
 
-        // Gear button in the title bar → toggles the settings window. Living
-        // here (not in ConfigWindow) keeps the music-player as the user's
-        // single point of entry: open /pclub, click the gear when needed.
+        // Title-bar buttons render right-to-left next to the close button, in
+        // the order they're added. Adding Help first then Cog puts the gear
+        // closest to the close icon and the question mark just inside of it —
+        // matches the typical [help] [settings] [close] convention.
+        TitleBarButtons.Add(new TitleBarButton
+        {
+            Icon = FontAwesomeIcon.QuestionCircle,
+            Click = _ => plugin.ToggleHelp(),
+            ShowTooltip = () =>
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted("Getting Started");
+                ImGui.EndTooltip();
+            },
+        });
         TitleBarButtons.Add(new TitleBarButton
         {
             Icon = FontAwesomeIcon.Cog,
@@ -60,7 +72,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
 
     public override void Draw()
     {
-        DrawHelpBar();
+        DrawFirstRunBanner();
         DrawNowPlayingHeader();
         ImGui.Spacing();
         DrawStreamSection();
@@ -70,32 +82,26 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         DrawProximityStatusSection();
     }
 
-    private void DrawHelpBar()
+    /// <summary>
+    /// Onboarding nudge shown only on the very first launch (no last-stream
+    /// URL persisted). The always-visible help affordance is a question-mark
+    /// button in the title bar — added in the constructor — so the banner
+    /// disappears as soon as the user plays anything.
+    /// </summary>
+    private void DrawFirstRunBanner()
     {
-        var firstRun = string.IsNullOrEmpty(plugin.Config.LastStreamUrl);
+        if (!string.IsNullOrEmpty(plugin.Config.LastStreamUrl)) return;
 
-        if (firstRun)
-        {
-            ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.25f, 0.35f, 0.6f));
-            ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), true);
-            ImGui.Spacing();
-            ImGui.TextWrapped("First time? Click \"Getting Started\" for a 30-second walkthrough.");
-            ImGui.Spacing();
-            if (ImGui.Button("Getting Started"))
-                plugin.ToggleHelp();
-            ImGui.EndChild();
-            ImGui.PopStyleColor();
-            ImGui.Spacing();
-        }
-        else
-        {
-            // Subtle help button on the right; doesn't take a full row.
-            var label = "? Help";
-            var btnW = ImGui.CalcTextSize(label).X + ImGui.GetStyle().FramePadding.X * 2 + 4;
-            ImGui.SetCursorPosX(ImGui.GetContentRegionAvail().X - btnW + ImGui.GetCursorPosX());
-            if (ImGui.SmallButton(label))
-                plugin.ToggleHelp();
-        }
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.25f, 0.35f, 0.6f));
+        ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), true);
+        ImGui.Spacing();
+        ImGui.TextWrapped("First time? Click \"Getting Started\" for a 30-second walkthrough.");
+        ImGui.Spacing();
+        if (ImGui.Button("Getting Started"))
+            plugin.ToggleHelp();
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+        ImGui.Spacing();
     }
 
     private void DrawNowPlayingHeader()
