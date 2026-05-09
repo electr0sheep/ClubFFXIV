@@ -31,18 +31,28 @@ internal static class TitleCache
 }
 
 /// <summary>
-/// Per-URL artwork URL cache, populated by <see cref="YtDlpDisplayTitle"/>
-/// from yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams
-/// don't expose artwork, so most non-yt-dlp URLs simply have no entry —
-/// callers treat absence as "no thumbnail" and render a placeholder. The
-/// stored value is a remote URL (http/https); the actual texture is fetched
-/// and cached at render time by <c>UI.NowPlayingThumbnails</c>.
+/// Cached thumbnail metadata for a stream URL. <c>Url</c> is the remote
+/// artwork URL; <c>CropToSquare</c> tells the renderer to cover-crop the
+/// centre square out of a non-square image. Set true for sources known to
+/// pad square album art into a 16:9 frame (YouTube Music, YouTube Topic
+/// channels) — those pad bars are wasted slot space, not part of the art.
+/// </summary>
+internal readonly record struct ThumbnailInfo(string Url, bool CropToSquare);
+
+/// <summary>
+/// Per-URL artwork cache, populated by <see cref="YtDlpDisplayTitle"/> from
+/// yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams don't
+/// expose artwork, so most non-yt-dlp URLs simply have no entry — callers
+/// treat absence as "no thumbnail" and render a placeholder. The stored
+/// value carries both the remote URL and a per-source render policy
+/// (see <see cref="ThumbnailInfo"/>); the actual texture is fetched and
+/// cached at render time by <c>UI.NowPlayingThumbnails</c>.
 /// </summary>
 internal static class ThumbnailCache
 {
-    private static readonly ConcurrentDictionary<string, string> map = new();
+    private static readonly ConcurrentDictionary<string, ThumbnailInfo> map = new();
 
-    public static void Set(string url, string thumbUrl)
+    public static void Set(string url, string thumbUrl, bool cropToSquare)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
         var trimmed = thumbUrl?.Trim();
@@ -53,11 +63,11 @@ internal static class ThumbnailCache
         if (string.Equals(trimmed, "NA", StringComparison.Ordinal)) return;
         if (!trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             && !trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
-        map[url] = trimmed;
+        map[url] = new ThumbnailInfo(trimmed, cropToSquare);
     }
 
-    public static string? Get(string url) =>
-        url != null && map.TryGetValue(url, out var t) ? t : null;
+    public static ThumbnailInfo? Get(string url) =>
+        url != null && map.TryGetValue(url, out var info) ? info : null;
 }
 
 /// <summary>
@@ -99,17 +109,17 @@ internal static class YtDlpDisplayTitle
     /// </summary>
     public static string? ParseAndCache(string line, string userUrlForCache)
     {
-        var (url, label, thumb) = Parse(line.Trim());
+        var (url, label, thumb, cropSquare) = Parse(line.Trim());
         if (string.IsNullOrEmpty(url)) return null;
         if (!string.IsNullOrEmpty(label)) TitleCache.Set(userUrlForCache, label);
-        if (!string.IsNullOrEmpty(thumb)) ThumbnailCache.Set(userUrlForCache, thumb!);
+        if (!string.IsNullOrEmpty(thumb)) ThumbnailCache.Set(userUrlForCache, thumb!, cropSquare);
         return url;
     }
 
-    public static (string Url, string? Label, string? Thumbnail) Parse(string line)
+    public static (string Url, string? Label, string? Thumbnail, bool CropSquare) Parse(string line)
     {
         var parts = line.Split(Sep);
-        if (parts.Length == 0) return ("", null, null);
+        if (parts.Length == 0) return ("", null, null, false);
         var url = parts[0].Trim();
 
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -121,7 +131,14 @@ internal static class YtDlpDisplayTitle
             fields[p[..colon]] = p[(colon + 1)..].Trim();
         }
         var thumb = Get(fields, "THUMB");
-        return (url, BuildLabel(fields), thumb.Length > 0 ? thumb : null);
+        // YouTube Music URLs and YouTube Topic-channel auto-generated music
+        // videos both populate artist + track; the same family of sources is
+        // also where YouTube's CDN pads square album art into a 16:9 frame.
+        // Real video uploads don't populate these fields, so this is a tight
+        // signal for "the bars on this thumbnail are container, not content".
+        var cropSquare = Get(fields, "ARTIST").Length > 0
+            && Get(fields, "TRACK").Length > 0;
+        return (url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare);
     }
 
     private static string? BuildLabel(Dictionary<string, string> f)

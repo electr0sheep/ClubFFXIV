@@ -572,14 +572,18 @@ public sealed class Plugin : IDalamudPlugin
     /// null for the single-stream row, set for multi-stream voices.
     /// ThumbnailUrl is null for sources that don't expose artwork (Icecast,
     /// raw HTTP MP3) or before yt-dlp's first --print line lands; the UI
-    /// falls back to a placeholder square in that case.
+    /// falls back to a placeholder square in that case. CropThumbToSquare
+    /// is true when the source is known to pad square content into a wider
+    /// frame (YouTube Music / Topic channels) — the renderer cover-crops
+    /// the centre square instead of stretching the full image.
     /// </summary>
     public readonly record struct NowPlayingEntry(
         string Url,
         string Label,
         bool Muted,
         string? PlotKey,
-        string? ThumbnailUrl);
+        string? ThumbnailUrl,
+        bool CropThumbToSquare);
 
     /// <summary>
     /// Snapshot of every audio source currently producing (or about to produce)
@@ -595,9 +599,12 @@ public sealed class Plugin : IDalamudPlugin
 
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
+            var thumb = ThumbnailCache.Get(url);
             result.Add(new NowPlayingEntry(
                 url, GetDisplayLabel(url), streamPlayer.UserMuted,
-                PlotKey: null, ThumbnailUrl: ThumbnailCache.Get(url)));
+                PlotKey: null,
+                ThumbnailUrl: thumb?.Url,
+                CropThumbToSquare: thumb?.CropToSquare ?? false));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
@@ -605,9 +612,12 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var key in msp.ActiveKeys())
             {
                 var voiceUrl = msp.GetVoiceUrl(key) ?? "";
+                var voiceThumb = ThumbnailCache.Get(voiceUrl);
                 result.Add(new NowPlayingEntry(
                     voiceUrl, GetDisplayLabel(voiceUrl), msp.IsVoiceMuted(key),
-                    PlotKey: key, ThumbnailUrl: ThumbnailCache.Get(voiceUrl)));
+                    PlotKey: key,
+                    ThumbnailUrl: voiceThumb?.Url,
+                    CropThumbToSquare: voiceThumb?.CropToSquare ?? false));
             }
         }
 

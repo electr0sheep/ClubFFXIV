@@ -518,7 +518,9 @@ public sealed class ConfigWindow : Window, IDisposable
             // the mute icon and label to its right. The cursor advance for
             // both the loaded image and the placeholder is exactly thumbSize
             // square so loading-state transitions don't shift the layout.
-            NowPlayingThumbnails.Draw(entry.ThumbnailUrl, new Vector2(thumbSize, thumbSize));
+            NowPlayingThumbnails.Draw(
+                entry.ThumbnailUrl, entry.CropThumbToSquare,
+                new Vector2(thumbSize, thumbSize));
             ImGui.SameLine();
         }
 
