@@ -284,6 +284,12 @@ public sealed class Plugin : IDalamudPlugin
         WithPermission(url,
             onAllow: () =>
             {
+                // Manual play is "this is the only thing I want to hear":
+                // evict any proximity-discovered multi-stream voices so they
+                // don't keep mixing in alongside the user's chosen URL. The
+                // CurrentMode = Manual flag below prevents the next outdoor
+                // tick from re-adding them.
+                TearDownMultiStream();
                 streamPlayer.BypassSpatial();
                 CurrentMode = PlaybackMode.Manual;
                 userInhibitsAutoPlay = false;
