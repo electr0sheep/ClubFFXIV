@@ -80,6 +80,11 @@ public sealed class ConfigWindow : Window, IDisposable
                 DrawRegistryTab();
                 ImGui.EndTabItem();
             }
+            if (ImGui.BeginTabItem("Permissions"))
+            {
+                DrawPermissionsSection();
+                ImGui.EndTabItem();
+            }
             if (ImGui.BeginTabItem("Settings"))
             {
                 DrawSettingsTab();
@@ -182,10 +187,11 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         // Binaries is the most-likely-to-need section in Advanced (yt-dlp
         // updates, ffmpeg installs, and the cookies-from-browser auth knob
-        // all live there). Multi-stream and Permissions follow — Permissions
-        // moved here from Settings because allow/block lists are a power-
-        // user concern, not an everyday preference. All three sections are
-        // collapsible so the Advanced tab doesn't feel like a wall of text.
+        // all live there). Multi-stream follows. Permissions used to live
+        // here too but earned its own top-level tab — trust/safety is a
+        // distinct concern from install state and multi-voice mixing, and
+        // users hunting for "why did this domain get blocked" scan tab
+        // labels rather than expanding collapsed sections.
         if (ImGui.CollapsingHeader("External binaries (yt-dlp, ffmpeg, deno)",
                 ImGuiTreeNodeFlags.DefaultOpen))
         {
@@ -196,10 +202,6 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.CollapsingHeader("Multi-stream"))
         {
             DrawMultiStreamSection();
-        }
-        if (ImGui.CollapsingHeader("Permissions (allow / block lists)"))
-        {
-            DrawPermissionsSection();
         }
     }
 
@@ -270,7 +272,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawPermissionsSection()
     {
-        // Header is the CollapsingHeader in DrawAdvancedTab.
+        UiHelpers.SectionHeader("Permissions");
 
         ImGui.TextWrapped(
             "Streams from unfamiliar domains are blocked until you approve them. " +
