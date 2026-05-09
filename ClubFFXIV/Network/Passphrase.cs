@@ -228,7 +228,7 @@ public static class Passphrase
                 HashAlgorithmName.SHA256,
                 ikm: master,
                 outputLength: GcmKeySizeBytes,
-                salt: ReadOnlySpan<byte>.Empty,
+                salt: [],
                 info: EncKeyInfo);
         }
         finally
