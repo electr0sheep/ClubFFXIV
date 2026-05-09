@@ -184,6 +184,13 @@ public sealed class ConfigWindow : Window, IDisposable
                 "  • YouTube / SoundCloud / Twitch: thumbnail from yt-dlp.\n" +
                 "  • Icecast / direct MP3: placeholder square (no artwork available).\n" +
                 "Off = text-only rows.");
+
+        var keepInSub = plugin.Config.KeepPlayingInLinkedSubterritories;
+        if (ImGui.Checkbox("Keep playing in FC workshop / linked sub-rooms", ref keepInSub))
+        {
+            plugin.Config.KeepPlayingInLinkedSubterritories = keepInSub;
+            plugin.Config.Save();
+        }
     }
 
     private void DrawAdvancedTab()

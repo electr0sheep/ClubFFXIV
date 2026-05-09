@@ -29,6 +29,14 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     // the user every frame). Cleared on release in DrawNowPlayingRow.
     private readonly Dictionary<string, float> seekDragValues = new();
 
+    // Set by the title-bar "+" button's click handler; consumed on the next
+    // Draw() to call OpenPopup. Routed through this flag (rather than calling
+    // OpenPopup directly inside the click handler) because the title-bar
+    // button render runs outside this window's id stack — OpenPopup needs to
+    // resolve to the same scope as the matching BeginPopup, which only
+    // happens during Draw.
+    private bool openAddStreamRequested;
+
     public MusicPlayerWindow(Plugin plugin)
         : base("ClubFFXIV — Music Player##ClubFFXIVMusicPlayer", ImGuiWindowFlags.NoCollapse)
     {
@@ -41,9 +49,27 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         urlInput = plugin.Config.LastStreamUrl;
 
         // Title-bar buttons render right-to-left next to the close button, in
-        // the order they're added. Adding Help first then Cog puts the gear
-        // closest to the close icon and the question mark just inside of it —
-        // matches the typical [help] [settings] [close] convention.
+        // the order they're added. Order from leftmost to rightmost (as the
+        // user sees them): [+] [?] [⚙] [×]. The plus opens an "add stream"
+        // popup so the URL field doesn't permanently sit in the player body.
+        TitleBarButtons.Add(new TitleBarButton
+        {
+            Icon = FontAwesomeIcon.Plus,
+            Click = _ =>
+            {
+                // Pre-fill the input with the persisted last URL so a returning
+                // user can just hit Play. Always refresh on open in case the
+                // value changed via /pclub play <url> from chat.
+                urlInput = plugin.Config.LastStreamUrl;
+                openAddStreamRequested = true;
+            },
+            ShowTooltip = () =>
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted("Add stream");
+                ImGui.EndTooltip();
+            },
+        });
         TitleBarButtons.Add(new TitleBarButton
         {
             Icon = FontAwesomeIcon.QuestionCircle,
@@ -75,11 +101,20 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         DrawFirstRunBanner();
         DrawNowPlayingHeader();
         ImGui.Spacing();
-        DrawStreamSection();
+        DrawPlayerControls();
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
         DrawProximityStatusSection();
+
+        // The "+" title-bar click handler can't open the popup itself — it
+        // runs outside this window's id stack. We forward the intent here.
+        if (openAddStreamRequested)
+        {
+            ImGui.OpenPopup("##addStream");
+            openAddStreamRequested = false;
+        }
+        DrawAddStreamPopup();
     }
 
     /// <summary>
@@ -366,41 +401,15 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             : $"{minutes:D2}:{secs:D2}";
     }
 
-    private void DrawStreamSection()
+    /// <summary>
+    /// Always-on player controls: Stop + Volume. The URL paste UI (with hint,
+    /// description, and Play button) lives in the popup opened by the title-
+    /// bar "+" — see <see cref="DrawAddStreamPopup"/>. Keeping Stop in the
+    /// body means the user can halt the current stream without first opening
+    /// the popup, which is the common case after walking away from a club.
+    /// </summary>
+    private void DrawPlayerControls()
     {
-        ImGui.TextWrapped("Paste a Twitch / YouTube / Icecast / Shoutcast / MP3 stream URL.");
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Need a URL?\n" +
-                "  • Listener: ask a DJ for their Twitch / YouTube channel or stream URL\n" +
-                "  • DJ: see Help → \"I want to DJ\"\n" +
-                "  • Just testing: try https://www.youtube.com/watch?v=9Tzc3ybp8vA\n" +
-                "    or https://ice1.somafm.com/groovesalad-128-mp3");
-        ImGui.Spacing();
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputText("##url", ref urlInput, 1024);
-        ImGui.Spacing();
-
-        if (ImGui.Button("Play", new Vector2(80, 0)))
-        {
-            try
-            {
-                plugin.Config.LastStreamUrl = urlInput;
-                plugin.Config.Save();
-                plugin.PlayStream(urlInput);
-                // Now Playing header + chat ("Playing: ...") already cover the
-                // visual feedback for a successful start.
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.Error(ex, "Play failed from MusicPlayerWindow");
-                plugin.Notify("ClubFFXIV: play failed",
-                    ex.Message, NotificationType.Error, durationSeconds: 8);
-            }
-        }
-        ImGui.SameLine();
         if (ImGui.Button("Stop", new Vector2(80, 0)))
         {
             plugin.StopStream();
@@ -415,14 +424,77 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             plugin.Config.Save();
             plugin.SetStreamVolume(volume);
         }
+    }
+
+    /// <summary>
+    /// Modal-style popup for adding a stream. Opened by the title-bar "+"
+    /// (via <see cref="openAddStreamRequested"/>). Auto-closes on Play
+    /// success, Cancel, click-outside, or Esc — all standard ImGui popup
+    /// behavior. The popup re-uses the persistent <see cref="urlInput"/>
+    /// buffer so a half-typed URL survives an accidental dismissal.
+    /// </summary>
+    private void DrawAddStreamPopup()
+    {
+        // 420px is wide enough for a typical YouTube URL plus the trailing
+        // playlist params without horizontal scroll on the input field.
+        ImGui.SetNextWindowSize(new Vector2(420, 0), ImGuiCond.Appearing);
+        if (!ImGui.BeginPopup("##addStream")) return;
+
+        ImGui.TextUnformatted("Add stream");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        ImGui.TextWrapped("Paste a Twitch / YouTube / Icecast / Shoutcast / MP3 stream URL.");
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Need a URL?\n" +
+                "  • Listener: ask a DJ for their Twitch / YouTube channel or stream URL\n" +
+                "  • DJ: see Help → \"I want to DJ\"\n" +
+                "  • Just testing: try https://www.youtube.com/watch?v=9Tzc3ybp8vA\n" +
+                "    or https://ice1.somafm.com/groovesalad-128-mp3");
+        ImGui.Spacing();
+
+        // Auto-focus the input on first frame of the popup so the user can
+        // immediately paste without an extra click. SetKeyboardFocusHere
+        // applies to the next item; without it the popup would steal focus
+        // but leave no widget claimed.
+        if (ImGui.IsWindowAppearing()) ImGui.SetKeyboardFocusHere();
+        ImGui.SetNextItemWidth(-1);
+        var enterPressed = ImGui.InputText("##url", ref urlInput, 1024,
+            ImGuiInputTextFlags.EnterReturnsTrue);
 
         ImGui.Spacing();
-        var keepInSub = plugin.Config.KeepPlayingInLinkedSubterritories;
-        if (ImGui.Checkbox("Keep playing in FC workshop / linked sub-rooms", ref keepInSub))
+        var playClicked = ImGui.Button("Play", new Vector2(80, 0));
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel", new Vector2(80, 0)))
         {
-            plugin.Config.KeepPlayingInLinkedSubterritories = keepInSub;
-            plugin.Config.Save();
+            ImGui.CloseCurrentPopup();
         }
+
+        if (playClicked || enterPressed)
+        {
+            try
+            {
+                plugin.Config.LastStreamUrl = urlInput;
+                plugin.Config.Save();
+                plugin.PlayStream(urlInput);
+                ImGui.CloseCurrentPopup();
+                // Now Playing header + chat ("Playing: ...") already cover the
+                // visual feedback for a successful start.
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Error(ex, "Play failed from MusicPlayerWindow");
+                plugin.Notify("ClubFFXIV: play failed",
+                    ex.Message, NotificationType.Error, durationSeconds: 8);
+                // Leave the popup open on error so the user can adjust the
+                // URL without retyping.
+            }
+        }
+
+        ImGui.EndPopup();
     }
 
     private void DrawProximityStatusSection()
