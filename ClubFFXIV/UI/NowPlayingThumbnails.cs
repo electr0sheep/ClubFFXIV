@@ -99,9 +99,51 @@ internal static class NowPlayingThumbnails
             {
                 ImGui.Image(wrap.Handle, size);
             }
+            // Hovering the row thumbnail surfaces a larger preview in a
+            // tooltip. Reuses the same wrap — already on the GPU, so it's
+            // just a scaled draw, no extra fetch.
+            if (ImGui.IsItemHovered())
+                DrawHoverPreview(wrap, cropToSquare);
             return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Render the loaded thumbnail at preview size inside an ImGui tooltip.
+    /// For cover-cropped sources (YouTube Music / Topic) the preview shows
+    /// the same cropped square the row shows, just larger — what the user
+    /// hovered is what they get a closer look at. For uncropped sources the
+    /// preview honours the source's native aspect ratio so the image isn't
+    /// stretched into a fixed shape.
+    /// </summary>
+    private static void DrawHoverPreview(IDalamudTextureWrap wrap, bool cropToSquare)
+    {
+        if (wrap.Width <= 0 || wrap.Height <= 0) return;
+        // 360 px on the longest edge keeps the popup useful on a 1080p
+        // window without dominating the screen on smaller resolutions.
+        const float MaxEdge = 360f;
+
+        Vector2 displaySize;
+        Vector2 uv0 = Vector2.Zero, uv1 = Vector2.One;
+
+        if (cropToSquare)
+        {
+            displaySize = new Vector2(MaxEdge, MaxEdge);
+            (uv0, uv1) = ComputeCoverCropUv(wrap.Width, wrap.Height, displaySize);
+        }
+        else
+        {
+            // Scale-to-fit: longest edge clamped to MaxEdge, other axis follows.
+            var aspect = (float)wrap.Width / wrap.Height;
+            displaySize = aspect >= 1f
+                ? new Vector2(MaxEdge, MaxEdge / aspect)
+                : new Vector2(MaxEdge * aspect, MaxEdge);
+        }
+
+        ImGui.BeginTooltip();
+        ImGui.Image(wrap.Handle, displaySize, uv0, uv1);
+        ImGui.EndTooltip();
     }
 
     /// <summary>
