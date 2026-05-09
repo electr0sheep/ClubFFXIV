@@ -52,6 +52,11 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     public HouseOwnership CurrentOwnership { get; private set; } = HouseOwnership.Unknown;
 
+    // Two top-level windows: the music player is the primary listener
+    // surface (Now Playing rows + URL input); ConfigWindow is the
+    // settings-only window reachable via the music player's title-bar
+    // gear or via "/pclub config".
+    private readonly MusicPlayerWindow musicPlayerWindow;
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
     private readonly UrlPermissionWindow permissionWindow;
@@ -190,6 +195,7 @@ public sealed class Plugin : IDalamudPlugin
         StartBackgroundRegistryProbe();
         TryLoadDjIdentity();
 
+        musicPlayerWindow = new MusicPlayerWindow(this);
         configWindow = new ConfigWindow(this);
         permissionWindow = new UrlPermissionWindow(Permissions);
         passphrasePromptWindow = new ClubPassphrasePromptWindow();
@@ -198,6 +204,7 @@ public sealed class Plugin : IDalamudPlugin
         ClubFormWindow = new ClubFormWindow(this);
         if (!Config.SetupWizardComplete) setupWizard.IsOpen = true;
 
+        WindowSystem.AddWindow(musicPlayerWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(helpWindow);
         WindowSystem.AddWindow(permissionWindow);
@@ -208,7 +215,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory",
+            HelpMessage = "/pclub (open music player) | play <url> | stop | calibrate <key> | config | directory",
         });
 
         // Seed from the persisted last-known value so alt-tab muting is
@@ -227,8 +234,12 @@ public sealed class Plugin : IDalamudPlugin
         RecomputeFocusMute();
 
         PluginInterface.UiBuilder.Draw += DrawUI;
+        // Dalamud routing convention: OpenMainUi → primary user surface
+        // (the music player); OpenConfigUi → settings (the gear icon in
+        // the Plugin Installer maps here). The music player itself carries
+        // a gear button that toggles the same settings window.
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
-        PluginInterface.UiBuilder.OpenMainUi += OpenConfig;
+        PluginInterface.UiBuilder.OpenMainUi += OpenMusicPlayer;
         Framework.Update += OnFrameworkUpdate;
         ClientState.TerritoryChanged += OnTerritoryChanged;
     }
@@ -241,10 +252,11 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.StreamNaturallyEnded -= OnStreamNaturallyEnded;
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
-        PluginInterface.UiBuilder.OpenMainUi -= OpenConfig;
+        PluginInterface.UiBuilder.OpenMainUi -= OpenMusicPlayer;
 
         CommandManager.RemoveHandler(CommandName);
         WindowSystem.RemoveAllWindows();
+        musicPlayerWindow.Dispose();
         configWindow.Dispose();
         helpWindow.Dispose();
         permissionWindow.Dispose();
@@ -2231,7 +2243,10 @@ public sealed class Plugin : IDalamudPlugin
         var trimmed = args.Trim();
         if (trimmed.Length == 0)
         {
-            OpenConfig();
+            // Bare /pclub opens the music player — the listener-facing
+            // surface. Settings live behind the title-bar gear or
+            // /pclub config.
+            OpenMusicPlayer();
             return;
         }
 
@@ -2285,7 +2300,7 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                ChatGui.Print("Usage: /pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory");
+                ChatGui.Print("Usage: /pclub (music player) | play <url> | stop | calibrate <key> | config | directory");
                 break;
         }
     }
@@ -2293,6 +2308,14 @@ public sealed class Plugin : IDalamudPlugin
     private void DrawUI() => WindowSystem.Draw();
 
     private void OpenConfig() => configWindow.Toggle();
+    private void OpenMusicPlayer() => musicPlayerWindow.Toggle();
+
+    /// <summary>
+    /// Toggle the settings window. Public so the music player's title-bar
+    /// gear button can route here without dragging the window reference
+    /// across the UI boundary.
+    /// </summary>
+    public void ToggleConfig() => configWindow.Toggle();
 
     private readonly record struct CachedWardListing(DateTime FetchedAt, WardListing Listing);
 }
