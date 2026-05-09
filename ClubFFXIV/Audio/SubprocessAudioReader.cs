@@ -236,7 +236,12 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        psi.ArgumentList.Add("-g");                   // print direct media URL only
+        // Combined URL+metadata template (replaces -g). yt-dlp's --print
+        // implies --simulate, so the format is selected and resolved but
+        // not downloaded. The metadata fields drive the Now Playing label
+        // (see YtDlpDisplayTitle.Parse).
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add(YtDlpDisplayTitle.PrintTemplate);
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
         // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
         // --no-playlist tells yt-dlp to download the video, not the playlist.
@@ -273,7 +278,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(TimeSpan.FromSeconds(20));
 
-        // Read just the first emitted URL line, then kill yt-dlp. Without
+        // Read just the first emitted line, then kill yt-dlp. Without
         // this, ReadToEndAsync would wait for stdout EOF — for a YouTube
         // playlist URL that means yt-dlp keeps resolving every item before
         // exiting (~1-2s/item with Deno-backed signature solving), blowing
@@ -282,10 +287,10 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // resolved; we don't need the rest. (PlaylistAudioReader is the
         // wrapper that DOES iterate playlists across multiple ffmpegs;
         // SubprocessAudioReader is the single-shot path.)
-        string? firstUrl;
+        string? firstLine;
         try
         {
-            firstUrl = await proc.StandardOutput.ReadLineAsync(cts.Token);
+            firstLine = await proc.StandardOutput.ReadLineAsync(cts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -295,7 +300,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
 
         try { proc.Kill(entireProcessTree: true); } catch { /* already exited */ }
 
-        if (string.IsNullOrEmpty(firstUrl))
+        if (string.IsNullOrEmpty(firstLine))
         {
             // yt-dlp emitted nothing — surface stderr for the actual error
             // (offline channel, private video, region lock, missing format).
@@ -306,6 +311,11 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             throw new InvalidOperationException($"yt-dlp: {msg}");
         }
 
-        return firstUrl.Trim();
+        var (resolvedUrl, label) = YtDlpDisplayTitle.Parse(firstLine.Trim());
+        if (string.IsNullOrEmpty(resolvedUrl))
+            throw new InvalidOperationException("yt-dlp: empty URL");
+        if (!string.IsNullOrEmpty(label))
+            TitleCache.Set(url, label);
+        return resolvedUrl;
     }
 }

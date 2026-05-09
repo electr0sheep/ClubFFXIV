@@ -35,6 +35,11 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     private readonly Process ytdlp;
     private readonly StreamReader ytdlpStdout;
     private readonly BinaryManager binaries;
+    // Original user-provided URL (the playlist URL). Per-item titles emitted
+    // by yt-dlp during AdvanceAsync are cached under this key, so the Now
+    // Playing header — which reads TitleCache by user URL — picks up the
+    // currently-playing track as the playlist progresses.
+    private readonly string userUrl;
     private readonly CancellationTokenSource cts = new();
 
     private SubprocessAudioReader? currentInner;
@@ -44,11 +49,14 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     private bool killedByUs;
     private bool disposed;
 
-    private PlaylistAudioReader(Process ytdlp, BinaryManager binaries, SubprocessAudioReader firstInner)
+    private PlaylistAudioReader(
+        Process ytdlp, BinaryManager binaries, string userUrl,
+        SubprocessAudioReader firstInner)
     {
         this.ytdlp = ytdlp;
         this.ytdlpStdout = ytdlp.StandardOutput;
         this.binaries = binaries;
+        this.userUrl = userUrl;
         this.currentInner = firstInner;
     }
 
@@ -68,7 +76,11 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        psi.ArgumentList.Add("-g");
+        // Combined URL+metadata template (replaces -g). Each playlist item
+        // emits one line containing the resolved URL and yt-dlp's metadata
+        // fields, parsed by YtDlpDisplayTitle on each lazy advance.
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add(YtDlpDisplayTitle.PrintTemplate);
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
         psi.ArgumentList.Add("--no-playlist");
         // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
@@ -141,8 +153,18 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             catch { /* exited or disposed */ }
         });
 
-        var firstInner = SubprocessAudioReader.FromResolvedUrl(firstLine.Trim(), binaries, ct);
-        return new PlaylistAudioReader(ytdlp, binaries, firstInner);
+        var (firstResolvedUrl, firstLabel) = YtDlpDisplayTitle.Parse(firstLine.Trim());
+        if (string.IsNullOrEmpty(firstResolvedUrl))
+        {
+            try { ytdlp.Kill(entireProcessTree: true); } catch { }
+            try { ytdlp.Dispose(); } catch { }
+            throw new InvalidOperationException("yt-dlp: empty URL");
+        }
+        if (!string.IsNullOrEmpty(firstLabel))
+            TitleCache.Set(url, firstLabel);
+
+        var firstInner = SubprocessAudioReader.FromResolvedUrl(firstResolvedUrl, binaries, ct);
+        return new PlaylistAudioReader(ytdlp, binaries, url, firstInner);
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -199,7 +221,17 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         {
             var line = await ytdlpStdout.ReadLineAsync(cts.Token);
             if (string.IsNullOrEmpty(line)) return null; // exhausted
-            return SubprocessAudioReader.FromResolvedUrl(line.Trim(), binaries, cts.Token);
+            var (resolvedUrl, label) = YtDlpDisplayTitle.Parse(line.Trim());
+            if (string.IsNullOrEmpty(resolvedUrl)) return null;
+            // Refresh the Now Playing label for the playlist's user URL
+            // before the next ffmpeg starts, so the header flips to the
+            // new track at the same time playback does (modulo a small
+            // ffmpeg-spawn gap). Empty label leaves the previous one in
+            // place, which is fine — the URL fallback only kicks in if no
+            // item ever populated a label.
+            if (!string.IsNullOrEmpty(label))
+                TitleCache.Set(userUrl, label);
+            return SubprocessAudioReader.FromResolvedUrl(resolvedUrl, binaries, cts.Token);
         }
         catch (OperationCanceledException)
         {
