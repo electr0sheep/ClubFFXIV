@@ -25,7 +25,6 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
-    [PluginService] internal static IChatGui ChatGui { get; private set; } = null!;
     [PluginService] internal static IClientState ClientState { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
     [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
@@ -304,7 +303,7 @@ public sealed class Plugin : IDalamudPlugin
                 userInhibitsAutoPlay = false;
                 _ = StartStreamAsync(url, PlaybackMode.Manual, $"Stream: {url}");
             },
-            onBlock: () => ChatGui.Print($"[ClubFFXIV] URL blocked: {url}"),
+            onBlock: () => Notify("ClubFFXIV: URL blocked", url, NotificationType.Warning),
             context: ctx);
     }
 
@@ -426,7 +425,7 @@ public sealed class Plugin : IDalamudPlugin
     /// <summary>
     /// Pre-flight check for auto-play (Indoor / Outdoor): if the URL needs
     /// yt-dlp + ffmpeg + Deno but those aren't installed, emit a one-time
-    /// chat warning and suppress this tick. Without this guard, the auto-play
+    /// toast and suppress this tick. Without this guard, the auto-play
     /// loop would re-attempt every 500ms and spam the log with bin-missing
     /// errors. Manual play already surfaces the error directly to the user
     /// via StartStreamAsync's catch.
@@ -438,9 +437,12 @@ public sealed class Plugin : IDalamudPlugin
         if (!warnedAboutMissingBinaries)
         {
             warnedAboutMissingBinaries = true;
-            ChatGui.PrintError(
-                "[ClubFFXIV] A nearby club's stream needs yt-dlp + ffmpeg + Deno, which haven't " +
-                "been installed yet. Open /pclub config → External binaries to download (~123 MB).");
+            Notify(
+                "ClubFFXIV: missing binaries",
+                "A nearby club's stream needs yt-dlp + ffmpeg + Deno, which haven't been installed yet. " +
+                "Open /pclub config → External binaries to download (~123 MB).",
+                NotificationType.Warning,
+                durationSeconds: 10);
         }
         return true;
     }
@@ -501,10 +503,10 @@ public sealed class Plugin : IDalamudPlugin
 
     /// <summary>
     /// Starts a stream off the framework thread. Cancels any prior in-flight start.
-    /// On completion, sets CurrentMode and prints a chat notification.
-    /// <paramref name="announce"/> = false suppresses chat prints for auto-play
+    /// On completion, sets CurrentMode and toasts a notification.
+    /// <paramref name="announce"/> = false suppresses toasts for auto-play
     /// (Indoor/Outdoor are gated by targetMode; the loop path is also auto and
-    /// passes false to skip the per-iteration "Playing:" line).
+    /// passes false to skip the per-iteration "Playing:" toast).
     /// </summary>
     private async Task StartStreamAsync(string url, PlaybackMode targetMode, string displayName, bool announce = true)
     {
@@ -532,11 +534,11 @@ public sealed class Plugin : IDalamudPlugin
             ClearStreamFailure(url);
             CurrentMode = targetMode;
             Log.Info($"Stream ready in {sw.ElapsedMilliseconds}ms ({targetMode}): {displayName}");
-            // Only push to chat for explicit user action — auto-play (Indoor/Outdoor)
-            // would spam chat every time you walk past a club. Loop iterations
-            // pass announce=false for the same reason.
+            // Only toast for explicit user action — auto-play (Indoor/Outdoor)
+            // would spam notifications every time you walk past a club. Loop
+            // iterations pass announce=false for the same reason.
             if (targetMode == PlaybackMode.Manual && announce)
-                ChatGui.Print($"Playing: {displayName}");
+                Notify("ClubFFXIV", $"Playing: {displayName}", NotificationType.Info);
         }
         catch (OperationCanceledException)
         {
@@ -557,11 +559,11 @@ public sealed class Plugin : IDalamudPlugin
 
             if (targetMode == PlaybackMode.Manual && announce)
             {
-                // Manual play already surfaces in chat — no extra notification
-                // needed. The chat error is what the user is looking at right
-                // after clicking Play. Loop iterations skip this so a transient
-                // failure mid-loop doesn't spam.
-                ChatGui.PrintError($"{ex.Message}");
+                // Manual play surfaces the failure as an error toast right after
+                // the user clicked Play, so they see *why* nothing started.
+                // Loop iterations skip this so a transient failure mid-loop
+                // doesn't spam.
+                Notify("ClubFFXIV: stream failed", ex.Message, NotificationType.Error);
             }
             else if (failureCount == NotifyAfterFailures)
             {
@@ -1180,7 +1182,7 @@ public sealed class Plugin : IDalamudPlugin
         var pos = HousingDetector.PlayerPosition();
         if (ward == null || pos == null)
         {
-            ChatGui.PrintError("Calibrate: must be standing in an outdoor ward.");
+            Notify("ClubFFXIV: calibrate failed", "Must be standing in an outdoor ward.", NotificationType.Error);
             return false;
         }
 
@@ -1236,12 +1238,15 @@ public sealed class Plugin : IDalamudPlugin
 
         if (!wrote)
         {
-            ChatGui.PrintError($"Calibrate: no house with key {canonicalKey}");
+            Notify("ClubFFXIV: calibrate failed", $"No house with key {canonicalKey}", NotificationType.Error);
             return false;
         }
 
         Config.Save();
-        ChatGui.Print($"Door calibrated at ({pos.Value.X:F1}, {pos.Value.Y:F1}, {pos.Value.Z:F1})");
+        Notify(
+            "ClubFFXIV: door calibrated",
+            $"Position: ({pos.Value.X:F1}, {pos.Value.Y:F1}, {pos.Value.Z:F1})",
+            NotificationType.Success);
         return true;
     }
 
@@ -2419,7 +2424,7 @@ public sealed class Plugin : IDalamudPlugin
             case "play":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("Usage: /pclub play <stream-url>");
+                    Notify("ClubFFXIV", "Usage: /pclub play <stream-url>", NotificationType.Info);
                     return;
                 }
                 try
@@ -2427,24 +2432,24 @@ public sealed class Plugin : IDalamudPlugin
                     Config.LastStreamUrl = rest;
                     Config.Save();
                     PlayStream(rest);
-                    ChatGui.Print($"Playing {rest}");
+                    Notify("ClubFFXIV", $"Playing {rest}", NotificationType.Info);
                 }
                 catch (Exception ex)
                 {
                     Log.Error(ex, "Failed to start stream");
-                    ChatGui.PrintError($"{ex.Message}");
+                    Notify("ClubFFXIV: stream failed", ex.Message, NotificationType.Error);
                 }
                 break;
 
             case "stop":
                 StopStream();
-                ChatGui.Print("Stopped");
+                Notify("ClubFFXIV", "Stopped", NotificationType.Info);
                 break;
 
             case "calibrate":
                 if (string.IsNullOrWhiteSpace(rest))
                 {
-                    ChatGui.Print("Usage: /pclub calibrate <plotKey>");
+                    Notify("ClubFFXIV", "Usage: /pclub calibrate <plotKey>", NotificationType.Info);
                     return;
                 }
                 CalibrateDoor(rest);
@@ -2460,7 +2465,10 @@ public sealed class Plugin : IDalamudPlugin
                 break;
 
             default:
-                ChatGui.Print("Usage: /pclub (music player) | play <url> | stop | calibrate <key> | config | directory");
+                Notify(
+                    "ClubFFXIV",
+                    "Usage: /pclub (music player) | play <url> | stop | calibrate <key> | config | directory",
+                    NotificationType.Info);
                 break;
         }
     }
