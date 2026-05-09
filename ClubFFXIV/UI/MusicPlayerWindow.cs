@@ -102,10 +102,18 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         DrawNowPlayingHeader();
         ImGui.Spacing();
         DrawPlayerControls();
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawProximityStatusSection();
+
+        // Playback mode + proximity readout is gated behind a setting — by
+        // default the player stays focused on what's actually playing. The
+        // separator is drawn as part of the same gate so we don't leave an
+        // orphan rule above empty space when the section is hidden.
+        if (plugin.Config.ShowPlaybackModeAndProximity)
+        {
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+            DrawProximityStatusSection();
+        }
 
         // The "+" title-bar click handler can't open the popup itself — it
         // runs outside this window's id stack. We forward the intent here.

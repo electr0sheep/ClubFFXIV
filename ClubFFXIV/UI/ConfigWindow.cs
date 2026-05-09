@@ -161,6 +161,22 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.KeepPlayingInLinkedSubterritories = keepInSub;
             plugin.Config.Save();
         }
+
+        var showProx = plugin.Config.ShowPlaybackModeAndProximity;
+        if (ImGui.Checkbox("Show playback mode and proximity details", ref showProx))
+        {
+            plugin.Config.ShowPlaybackModeAndProximity = showProx;
+            plugin.Config.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Show the diagnostic readout at the bottom of the music player:\n" +
+                "  • Playback mode (Spatial outdoor / Indoor solo / etc.)\n" +
+                "  • Closest club + distance in yalms\n" +
+                "  • L/R balance and front/back fade bars\n" +
+                "Off (default) = player shows only Now Playing + transport controls.");
     }
 
     private void DrawAdvancedTab()

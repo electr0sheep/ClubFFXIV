@@ -197,6 +197,14 @@ public class Configuration : IPluginConfiguration
     public bool ShowNowPlayingThumbnails { get; set; } = true;
 
     /// <summary>
+    /// Show the "Playback: {mode}" line and proximity readout (distance, L/R
+    /// balance, F/B fade) at the bottom of the music player. Default off keeps
+    /// the player focused on what's actually playing; users who want the
+    /// spatial diagnostic view opt in via Settings.
+    /// </summary>
+    public bool ShowPlaybackModeAndProximity { get; set; } = false;
+
+    /// <summary>
     /// Cached copy of FFXIV's "Play sounds when window is not active" policy
     /// (the AND of IsSoundAlways and IsSoundBgmAlways). Updated whenever
     /// IGameConfig.SystemChanged fires for either option, and persisted so
