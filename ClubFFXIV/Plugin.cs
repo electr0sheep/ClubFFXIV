@@ -1924,7 +1924,6 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void RefreshSpatialPose()
     {
-        if (!Config.SpatialDirectionalAudio) return;
         if (CurrentMode != PlaybackMode.Outdoor) return;
 
         var hasMulti = MultiStreamActive && multiStreamPlayer != null && activeMultiDoorPos.Count > 0;
@@ -1935,8 +1934,13 @@ public sealed class Plugin : IDalamudPlugin
         if (posOpt == null) return;
         var pos = posOpt.Value;
 
-        var orientation = ListenerOrientationProvider.Get(Config.SpatialInvertPan);
-        if (orientation == null) return;
+        // Orientation is only needed for the directional cue (pan + rear-muffle).
+        // When directional audio is off, leaving it null means ComputeDirection
+        // returns (0, 0) — pan stays centered, rear-muffle is bypassed — but
+        // distance-driven volume + cutoff still update at frame rate.
+        var orientation = Config.SpatialDirectionalAudio
+            ? ListenerOrientationProvider.Get(Config.SpatialInvertPan)
+            : null;
 
         if (hasMulti)
         {
