@@ -203,17 +203,6 @@ internal static class YtDlpDisplayTitle
         var cropSquare = Get(fields, "ARTIST").Length > 0
             && Get(fields, "TRACK").Length > 0;
 
-        // live_status values from yt-dlp: not_live, is_live, is_upcoming,
-        // was_live, post_live. Treat in-flight live states as live (no
-        // transport); the rest become seekable VOD. Empty / unknown leaves
-        // IsLive null so the cache default ("assume live") wins.
-        bool? isLive = Get(fields, "LIVE") switch
-        {
-            "is_live" or "is_upcoming" or "post_live" => true,
-            "not_live" or "was_live" => false,
-            _ => null,
-        };
-
         // Duration is a number-as-string; "NA" defaulted to "" by our
         // alternation operator parses as 0 and is filtered by DurationCache.Set.
         double durationSeconds = 0;
@@ -224,6 +213,22 @@ internal static class YtDlpDisplayTitle
         {
             durationSeconds = d;
         }
+
+        // live_status values from yt-dlp: not_live, is_live, is_upcoming,
+        // was_live, post_live. Treat in-flight live states as live (no
+        // transport); the rest become seekable VOD. When the field is
+        // missing/empty/unknown (older yt-dlp, certain video types), fall
+        // back on duration: a finite duration > 0 means a VOD by definition,
+        // so default to non-live in that case. Without this fallback, any
+        // source that didn't surface live_status would default to "assume
+        // live" via the cache's default and lose all transport controls,
+        // including skip-next.
+        bool? isLive = Get(fields, "LIVE") switch
+        {
+            "is_live" or "is_upcoming" or "post_live" => true,
+            "not_live" or "was_live" => false,
+            _ => durationSeconds > 0 ? (bool?)false : null,
+        };
 
         return new ParsedLine(
             url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare,

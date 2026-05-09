@@ -427,24 +427,72 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     /// </summary>
     private void DrawPlayerControls()
     {
-        if (ImGui.Button("Stop", new Vector2(80, 0)))
-        {
-            plugin.StopStream();
-            // Now Playing header reflects "stopped" — no extra status needed.
-        }
-
+        DrawStopIcon();
         ImGui.SameLine();
         DrawLoopToggle();
         ImGui.SameLine();
         DrawRandomToggle();
 
         ImGui.Spacing();
+        DrawVolumeRow();
+    }
+
+    /// <summary>
+    /// Volume slider with a FontAwesome glyph instead of a "Volume" label.
+    /// The icon switches across three states so the row carries volume
+    /// state at a glance — zero, low, high — even when the user can't read
+    /// the slider value precisely. Slider takes the remaining width via
+    /// SetNextItemWidth(-1) so the row stays one-line on narrow windows;
+    /// the inline "%.2f" overlay sits inside the bar where ImGui draws it.
+    /// </summary>
+    private void DrawVolumeRow()
+    {
         var volume = plugin.Config.Volume;
-        if (ImGui.SliderFloat("Volume", ref volume, 0f, 1f, "%.2f"))
+
+        // Bands: exact-zero is "off"; below the midpoint is "down"; at-or-
+        // above midpoint is "up". The 0.001 threshold absorbs float-rounding
+        // when the user drags to the leftmost stop and the slider lands a
+        // hair off zero.
+        var icon = volume <= 0.001f
+            ? FontAwesomeIcon.VolumeOff
+            : volume < 0.5f
+                ? FontAwesomeIcon.VolumeDown
+                : FontAwesomeIcon.VolumeUp;
+
+        ImGui.AlignTextToFramePadding();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        ImGui.TextUnformatted(icon.ToIconString());
+        ImGui.PopFont();
+
+        ImGui.SameLine();
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.SliderFloat("##volume", ref volume, 0f, 1f, "%.2f"))
         {
             plugin.Config.Volume = volume;
             plugin.Config.Save();
             plugin.SetStreamVolume(volume);
+        }
+    }
+
+    /// <summary>
+    /// Stop icon — same TextColored + IsItemClicked pattern as the per-row
+    /// transport icons, so the player-controls strip reads as one row of
+    /// FontAwesome glyphs rather than mixing a text button with icon
+    /// toggles. Always rendered at active brightness; this isn't a toggle.
+    /// </summary>
+    private void DrawStopIcon()
+    {
+        ImGui.AlignTextToFramePadding();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f),
+            FontAwesomeIcon.Stop.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Stop");
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+        {
+            plugin.StopStream();
+            // Now Playing header reflects "stopped" — no extra status needed.
         }
     }
 

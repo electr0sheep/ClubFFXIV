@@ -293,6 +293,15 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         {
             pendingSeekSeconds = clamped;
         }
+        // Re-anchor the position counter immediately, not only after the
+        // audio thread services the pending seek. While paused, Read isn't
+        // being called, so ApplyPendingSeekIfAny doesn't run until the user
+        // presses play — without this pre-write, PositionSeconds keeps
+        // returning the pre-seek value, and the next ImGui frame snaps the
+        // slider back to where it was. The same write happens again inside
+        // ApplyPendingSeekIfAny on the audio thread; it's idempotent.
+        Interlocked.Exchange(ref samplesPlayed,
+            (long)(clamped * WaveFormat.SampleRate * WaveFormat.Channels));
         // Kill the current ffmpeg so any in-flight or about-to-block Read
         // returns 0 quickly — the subsequent Read will pick up the pending
         // seek and respawn. Without this kill, a Read blocked on stdout

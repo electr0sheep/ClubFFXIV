@@ -340,7 +340,14 @@ internal sealed class MultiStreamPlayer : IDisposable
                         $"MultiStreamPlayer: skipping {url} — yt-dlp/ffmpeg not installed.");
                     return false;
                 }
-                var sub = await SubprocessAudioReader.CreateAsync(
+                // Route through PlaylistAudioReader so a DJ publishing a
+                // playlist URL actually iterates items as listeners stand
+                // nearby (single videos still work — they degenerate to a
+                // 1-item playlist), and so the voice picks up the
+                // ISeekableSource + ISkippableSource interfaces. Without
+                // this, multi-stream voices got stuck on the first track
+                // and couldn't expose skip-next in the Now Playing UI.
+                var sub = await PlaylistAudioReader.CreateAsync(
                     url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, cts.Token).ConfigureAwait(false);
                 source = sub;
                 disposable = sub;
