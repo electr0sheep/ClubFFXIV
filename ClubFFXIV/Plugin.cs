@@ -7,6 +7,7 @@ using ClubFFXIV.Game;
 using ClubFFXIV.Network;
 using ClubFFXIV.UI;
 using Dalamud.Game.Command;
+using Dalamud.Game.Config;
 using Dalamud.Interface.ImGuiNotification;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -75,6 +76,18 @@ public sealed class Plugin : IDalamudPlugin
     private DjIdentity? djIdentity;
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
+
+    // Focus-mute policy state. Both values are cached so we never read them
+    // on the hot path: soundsPlayWhenInactive is fed by IGameConfig.SystemChanged,
+    // gameFocused by per-tick edge detection in OnFrameworkUpdate. The mute is
+    // recomputed (and AutoMuted written) only when one of them actually
+    // transitions, so quiet ticks do nothing.
+    //
+    // The plugin's stream is meant to feel diegetic — like the music belongs to
+    // the game world — so it follows FFXIV's own "Play sounds when window is
+    // not active" setting rather than carrying a redundant toggle of its own.
+    private bool soundsPlayWhenInactive = true;
+    private bool gameFocused = true;
 
     // Cancels any in-flight stream construction when a newer one starts.
     private System.Threading.CancellationTokenSource? streamStartCts;
@@ -187,6 +200,14 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = "/pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory",
         });
 
+        // Seed focus-mute state before subscribing so the first SystemChanged
+        // event (or the first OnFrameworkUpdate tick) sees correct cached values
+        // and only fires a recompute on a real transition.
+        if (GameConfig.System.TryGet(SystemConfigOption.IsSoundAlways, out uint sndAlways))
+            soundsPlayWhenInactive = sndAlways != 0;
+        gameFocused = WindowFocus.IsGameFocused();
+        GameConfig.SystemChanged += OnSystemConfigChanged;
+
         PluginInterface.UiBuilder.Draw += DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
         PluginInterface.UiBuilder.OpenMainUi += OpenConfig;
@@ -198,6 +219,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         ClientState.TerritoryChanged -= OnTerritoryChanged;
         Framework.Update -= OnFrameworkUpdate;
+        GameConfig.SystemChanged -= OnSystemConfigChanged;
         streamPlayer.StreamNaturallyEnded -= OnStreamNaturallyEnded;
         PluginInterface.UiBuilder.Draw -= DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenConfig;
@@ -607,6 +629,10 @@ public sealed class Plugin : IDalamudPlugin
         {
             multiStreamPlayer = new MultiStreamPlayer(Binaries);
             multiStreamPlayer.MasterVolume = Config.Volume;
+            // Inherit current focus-mute state — RecomputeFocusMute is event-
+            // driven, so a freshly-created player constructed while the user is
+            // alt-tabbed would otherwise stay unmuted until the next transition.
+            multiStreamPlayer.AutoMuted = !soundsPlayWhenInactive && !gameFocused;
             // Single-stream's loop is wired via streamPlayer.StreamNaturallyEnded;
             // multi-stream needs its own per-voice path. The mixer auto-removes
             // voices that EOF, so the framework's outdoor proximity loop will
@@ -1074,6 +1100,17 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        // Focus-edge detection runs every frame (not gated by HousingCheckInterval)
+        // so alt-tabbing mutes within ~16ms instead of up to 500ms. The check is
+        // a single GetForegroundWindow syscall + pointer compare; recompute only
+        // fires on an actual transition.
+        var nowFocused = WindowFocus.IsGameFocused();
+        if (nowFocused != gameFocused)
+        {
+            gameFocused = nowFocused;
+            RecomputeFocusMute();
+        }
+
         if (DateTime.UtcNow - lastHousingCheck < HousingCheckInterval) return;
         lastHousingCheck = DateTime.UtcNow;
 
@@ -1145,10 +1182,6 @@ public sealed class Plugin : IDalamudPlugin
     }
 
     /// <summary>
-    /// After audio state is settled for the tick, apply cross-cutting policies:
-    /// game BGM muting (when our stream plays) and focus muting (when game unfocused).
-    /// </summary>
-    /// <summary>
     /// Force the next framework tick to refresh housing state immediately rather
     /// than waiting up to 500ms. Called on territory change so BGM mute / auto-play
     /// kicks in within ~1 frame of crossing the instance boundary instead of
@@ -1162,13 +1195,41 @@ public sealed class Plugin : IDalamudPlugin
         skippedPasswordedPlots.Clear();
     }
 
-    private void ApplyAudioPolicy()
+    /// <summary>
+    /// Re-reads FFXIV's "Play sounds when window is not active" toggle when the
+    /// user changes it in System Configuration. Fed by IGameConfig.SystemChanged
+    /// rather than polled per-tick.
+    /// </summary>
+    private void OnSystemConfigChanged(object? sender, ConfigChangeEvent e)
     {
-        // Stream output mute when game is unfocused.
-        var shouldMute = Config.MuteStreamWhenUnfocused && !WindowFocus.IsGameFocused();
+        if (e.Option is not SystemConfigOption.IsSoundAlways) return;
+        if (!GameConfig.System.TryGet(SystemConfigOption.IsSoundAlways, out uint v)) return;
+        var nv = v != 0;
+        if (nv == soundsPlayWhenInactive) return;
+        soundsPlayWhenInactive = nv;
+        RecomputeFocusMute();
+    }
+
+    /// <summary>
+    /// Apply the cached focus-mute state to both stream players. Called only on
+    /// transitions (focus change, FFXIV setting toggle, multi-stream player
+    /// creation), so we don't write AutoMuted on quiet ticks. AutoMuted setters
+    /// short-circuit on equal values, but skipping the call is cheaper still.
+    /// </summary>
+    private void RecomputeFocusMute()
+    {
+        var shouldMute = !soundsPlayWhenInactive && !gameFocused;
         streamPlayer.AutoMuted = shouldMute;
         if (multiStreamPlayer != null) multiStreamPlayer.AutoMuted = shouldMute;
+    }
 
+    /// <summary>
+    /// After audio state is settled for the tick, apply cross-cutting policies:
+    /// game BGM muting (when our stream plays) and yt-dlp option sync. Focus
+    /// muting lives in <see cref="RecomputeFocusMute"/>, fired by event/edge.
+    /// </summary>
+    private void ApplyAudioPolicy()
+    {
         // Keep yt-dlp playlist-random in sync each tick. The flag is read at
         // the next CreateAsync call (i.e. next stream start / next loop), so
         // toggling it in the UI applies on the following start without any

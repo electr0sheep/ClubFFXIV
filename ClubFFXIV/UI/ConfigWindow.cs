@@ -602,13 +602,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        var followFocus = plugin.Config.MuteStreamWhenUnfocused;
-        if (ImGui.Checkbox("Mute stream when FFXIV is not focused", ref followFocus))
-        {
-            plugin.Config.MuteStreamWhenUnfocused = followFocus;
-            plugin.Config.Save();
-        }
-
         var keepInSub = plugin.Config.KeepPlayingInLinkedSubterritories;
         if (ImGui.Checkbox("Keep playing in FC workshop / linked sub-rooms", ref keepInSub))
         {

@@ -71,9 +71,6 @@ public class Configuration : IPluginConfiguration
         SpatialMaxCutoffHz = DefaultSpatialMaxCutoffHz;
     }
 
-    /// <summary>Mute our stream when the FFXIV window loses focus.</summary>
-    public bool MuteStreamWhenUnfocused { get; set; } = true;
-
     /// <summary>
     /// Keep the stream playing when entering FC sub-territories (Company Workshop,
     /// basement / private chamber). The game treats these as separate territories
