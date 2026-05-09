@@ -144,6 +144,17 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public int MaxConcurrentStreams { get; set; } = 2;
 
+    /// <summary>
+    /// Cached copy of FFXIV's "Play sounds when window is not active" policy
+    /// (the AND of IsSoundAlways and IsSoundBgmAlways). Updated whenever
+    /// IGameConfig.SystemChanged fires for either option, and persisted so
+    /// alt-tab muting works at startup before GameConfig is readable
+    /// (early plugin load, title screen, etc.). NOT exposed in the UI —
+    /// the policy mirrors FFXIV's own setting; this is just a durable
+    /// last-known value, not a user-tunable knob.
+    /// </summary>
+    public bool SoundsPlayWhenInactive { get; set; } = true;
+
     [NonSerialized]
     private IDalamudPluginInterface? pluginInterface;
 

@@ -78,16 +78,24 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
 
     // Focus-mute policy state. Both values are cached so we never read them
-    // on the hot path: soundsPlayWhenInactive is fed by IGameConfig.SystemChanged,
-    // gameFocused by per-tick edge detection in OnFrameworkUpdate. The mute is
-    // recomputed (and AutoMuted written) only when one of them actually
-    // transitions, so quiet ticks do nothing.
+    // on the hot path: soundsPlayWhenInactive is fed by IGameConfig.SystemChanged
+    // and persisted in Config so alt-tab muting works at startup before
+    // GameConfig becomes readable; gameFocused is fed by per-tick edge
+    // detection in OnFrameworkUpdate. The mute is recomputed (and AutoMuted
+    // written) only when one of them actually transitions, so quiet ticks
+    // do nothing.
     //
     // The plugin's stream is meant to feel diegetic — like the music belongs to
     // the game world — so it follows FFXIV's own "Play sounds when window is
     // not active" setting rather than carrying a redundant toggle of its own.
     private bool soundsPlayWhenInactive = true;
     private bool gameFocused = true;
+    // Once true, we've successfully read both system options at least once
+    // this session; OnFrameworkUpdate stops retrying. Without this, an early
+    // plugin load (title screen, before login) leaves Config as the only
+    // source of truth — fine across sessions, but if the user changed the
+    // FFXIV setting outside the game we'd never pick it up otherwise.
+    private bool soundsPlayWhenInactiveSeeded;
 
     // Cancels any in-flight stream construction when a newer one starts.
     private System.Threading.CancellationTokenSource? streamStartCts;
@@ -202,13 +210,20 @@ public sealed class Plugin : IDalamudPlugin
             HelpMessage = "/pclub play <url> | /pclub stop | /pclub calibrate <key> | /pclub config | /pclub directory",
         });
 
-        // Seed focus-mute state before subscribing so the first SystemChanged
-        // event (or the first OnFrameworkUpdate tick) sees correct cached values
-        // and only fires a recompute on a real transition.
-        if (GameConfig.TryGet(SystemConfigOption.IsSoundBgmAlways, out uint sndAlways))
-            soundsPlayWhenInactive = sndAlways != 0;
+        // Seed from the persisted last-known value so alt-tab muting is
+        // correct even if GameConfig isn't readable yet (early plugin load,
+        // title screen). TryRefresh… below promotes to the live value when
+        // available; if it fails, OnFrameworkUpdate keeps retrying until
+        // the option becomes readable post-login.
+        soundsPlayWhenInactive = Config.SoundsPlayWhenInactive;
         gameFocused = WindowFocus.IsGameFocused();
         GameConfig.SystemChanged += OnSystemConfigChanged;
+        TryRefreshSoundsPlayWhenInactiveFromGameConfig();
+        // Apply the seeded policy to streamPlayer now — RecomputeFocusMute is
+        // edge-driven (only fires on transitions), so without this a plugin
+        // loaded while the user is alt-tabbed would leave AutoMuted=false on
+        // streamPlayer until the first focus toggle.
+        RecomputeFocusMute();
 
         PluginInterface.UiBuilder.Draw += DrawUI;
         PluginInterface.UiBuilder.OpenConfigUi += OpenConfig;
@@ -1106,6 +1121,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnFrameworkUpdate(IFramework framework)
     {
+        // If GameConfig wasn't readable at construction (early plugin load,
+        // pre-login), retry per-tick until it is. Stops once seeded — typical
+        // cost is one TryGet pair per tick for the first few seconds, then
+        // zero. Without this we'd be stuck on the persisted Config value
+        // (correct across sessions, but stale if the user changed the FFXIV
+        // setting outside the game).
+        if (!soundsPlayWhenInactiveSeeded)
+            TryRefreshSoundsPlayWhenInactiveFromGameConfig();
+
         // Focus-edge detection runs every frame (not gated by HousingCheckInterval)
         // so alt-tabbing mutes within ~16ms instead of up to 500ms. The check is
         // a single GetForegroundWindow syscall + pointer compare; recompute only
@@ -1210,13 +1234,34 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (e.Option is not SystemConfigOption.IsSoundAlways && e.Option is not SystemConfigOption.IsSoundBgmAlways)
             return;
+        TryRefreshSoundsPlayWhenInactiveFromGameConfig();
+    }
 
-        if (!GameConfig.TryGet(SystemConfigOption.IsSoundAlways, out uint soundAlways)) return;
-        if (!GameConfig.TryGet(SystemConfigOption.IsSoundBgmAlways, out uint soundBgmAlways)) return;
+    /// <summary>
+    /// Reads the "Play sounds when window is not active" policy from FFXIV's
+    /// system config — the AND of IsSoundAlways and IsSoundBgmAlways. On a real
+    /// change, updates the runtime cache, persists to Config (so the next plugin
+    /// launch starts with the right value before GameConfig is readable), and
+    /// recomputes the focus-mute policy. Returns false if either option wasn't
+    /// readable; OnFrameworkUpdate keeps retrying until it succeeds.
+    /// </summary>
+    private bool TryRefreshSoundsPlayWhenInactiveFromGameConfig()
+    {
+        if (!GameConfig.TryGet(SystemConfigOption.IsSoundAlways, out uint soundAlways)) return false;
+        if (!GameConfig.TryGet(SystemConfigOption.IsSoundBgmAlways, out uint soundBgmAlways)) return false;
+        soundsPlayWhenInactiveSeeded = true;
         var nv = soundAlways != 0 && soundBgmAlways != 0;
-        if (nv == soundsPlayWhenInactive) return;
-        soundsPlayWhenInactive = nv;
-        RecomputeFocusMute();
+        if (nv != soundsPlayWhenInactive)
+        {
+            soundsPlayWhenInactive = nv;
+            RecomputeFocusMute();
+        }
+        if (Config.SoundsPlayWhenInactive != nv)
+        {
+            Config.SoundsPlayWhenInactive = nv;
+            Config.Save();
+        }
+        return true;
     }
 
     /// <summary>
