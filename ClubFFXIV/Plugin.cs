@@ -1943,6 +1943,10 @@ public sealed class Plugin : IDalamudPlugin
             : null;
 
         var panStrength = Config.SpatialPanStrength;
+        // Live-update the UI's proximity readout for the voice the 500ms tick
+        // already chose to display. Other fields (Audible/Streaming/Candidate)
+        // only flip at the proximity tick — those still come from there.
+        var proxKey = CurrentProximity?.Candidate.CanonicalKey;
 
         if (hasMulti)
         {
@@ -1956,6 +1960,17 @@ public sealed class Plugin : IDalamudPlugin
                     nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
                 cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
                 multiStreamPlayer!.SetSpatial(key, nearness, cutoff, pan * panStrength);
+
+                if (key == proxKey && CurrentProximity is { } cp)
+                {
+                    CurrentProximity = cp with
+                    {
+                        Distance = distance,
+                        NormalizedNearness = nearness,
+                        Pan = pan,
+                        Rearness = rearness,
+                    };
+                }
             }
         }
         else
@@ -1969,6 +1984,17 @@ public sealed class Plugin : IDalamudPlugin
                 nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
             cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
             streamPlayer.SetSpatial(nearness, cutoff, pan * panStrength);
+
+            if (CurrentProximity is { } cp)
+            {
+                CurrentProximity = cp with
+                {
+                    Distance = distance,
+                    NormalizedNearness = nearness,
+                    Pan = pan,
+                    Rearness = rearness,
+                };
+            }
         }
     }
 
