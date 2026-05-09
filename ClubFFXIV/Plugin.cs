@@ -83,6 +83,15 @@ public sealed class Plugin : IDalamudPlugin
     private DateTime lastHousingCheck = DateTime.MinValue;
     private static readonly TimeSpan HousingCheckInterval = TimeSpan.FromMilliseconds(500);
 
+    // Cached door positions for currently-active outdoor voices. Populated by
+    // the proximity tick (HandleOutdoorMode/Multi); read by RefreshSpatialPose
+    // every framework frame to update pan + cutoff without re-running the
+    // full candidate sweep. The proximity tick stays at HousingCheckInterval
+    // (heavy: dict iteration, registry filter, voice add/remove) but the
+    // directional cue follows the camera at frame rate.
+    private readonly Dictionary<string, Vector3> activeMultiDoorPos = new();
+    private Vector3? activeSingleDoorPos;
+
     // Focus-mute policy state. Both values are cached so we never read them
     // on the hot path: soundsPlayWhenInactive is fed by IGameConfig.SystemChanged
     // and persisted in Config so alt-tab muting works at startup before
@@ -814,6 +823,7 @@ public sealed class Plugin : IDalamudPlugin
     private void TearDownMultiStream()
     {
         multiStreamPlayer?.StopAll();
+        activeMultiDoorPos.Clear();
     }
 
     /// <summary>
@@ -1271,6 +1281,15 @@ public sealed class Plugin : IDalamudPlugin
             gameFocused = nowFocused;
             RecomputeFocusMute();
         }
+
+        // Frame-rate spatial refresh runs OUTSIDE the housing throttle. The
+        // proximity tick at 500ms drives voice add/remove and caches each
+        // active door's position; this path uses that cache to update pan +
+        // cutoff every frame so camera rotation tracks instantly. Cheap:
+        // 1 ObjectTable read + 1 orientation read + (1..N) tiny vec math
+        // calls + (1..N) field assignments. Sub-millisecond at any voice
+        // count we'll ever have.
+        RefreshSpatialPose();
 
         if (DateTime.UtcNow - lastHousingCheck < HousingCheckInterval) return;
         lastHousingCheck = DateTime.UtcNow;
@@ -1893,6 +1912,60 @@ public sealed class Plugin : IDalamudPlugin
         _ = player.AddVoiceAsync(canonical, url, MultiStreamPlayer.BypassCutoffHz);
     }
 
+    /// <summary>
+    /// Per-frame refresh of the directional cue (pan + rear-muffled cutoff)
+    /// for already-active outdoor voices. Uses door positions cached by the
+    /// proximity tick so we skip the candidate enumeration / range filtering
+    /// and just rerun the cheap math. Bypassed when directional audio is off,
+    /// when the player isn't outdoors, or when no voices are active — the
+    /// 500ms proximity tick continues to handle volume falloff at its own
+    /// cadence (which has always felt fluid because walking changes distance
+    /// slowly).
+    /// </summary>
+    private void RefreshSpatialPose()
+    {
+        if (!Config.SpatialDirectionalAudio) return;
+        if (CurrentMode != PlaybackMode.Outdoor) return;
+
+        var hasMulti = MultiStreamActive && multiStreamPlayer != null && activeMultiDoorPos.Count > 0;
+        var hasSingle = !MultiStreamActive && activeSingleDoorPos.HasValue;
+        if (!hasMulti && !hasSingle) return;
+
+        var posOpt = HousingDetector.PlayerPosition();
+        if (posOpt == null) return;
+        var pos = posOpt.Value;
+
+        var orientation = ListenerOrientationProvider.Get(Config.SpatialInvertPan);
+        if (orientation == null) return;
+
+        if (hasMulti)
+        {
+            foreach (var (key, doorPos) in activeMultiDoorPos)
+            {
+                var distance = Vector3.Distance(pos, doorPos);
+                var nearness = WardProximity.Normalize(
+                    distance, Config.SpatialFalloffDistance, Config.SpatialFullVolumeDistance);
+                var (pan, rearness) = WardProximity.ComputeDirection(pos, doorPos, orientation);
+                var cutoff = WardProximity.NearnessToCutoff(
+                    nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
+                cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
+                multiStreamPlayer!.SetSpatial(key, nearness, cutoff, pan);
+            }
+        }
+        else
+        {
+            var doorPos = activeSingleDoorPos!.Value;
+            var distance = Vector3.Distance(pos, doorPos);
+            var nearness = WardProximity.Normalize(
+                distance, Config.SpatialFalloffDistance, Config.SpatialFullVolumeDistance);
+            var (pan, rearness) = WardProximity.ComputeDirection(pos, doorPos, orientation);
+            var cutoff = WardProximity.NearnessToCutoff(
+                nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
+            cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
+            streamPlayer.SetSpatial(nearness, cutoff, pan);
+        }
+    }
+
     private void HandleOutdoorMode(WardLocation ward)
     {
         var pos = HousingDetector.PlayerPosition();
@@ -1930,6 +2003,7 @@ public sealed class Plugin : IDalamudPlugin
                 streamPlayer.Stop();
                 CurrentMode = PlaybackMode.Off;
             }
+            activeSingleDoorPos = null;
             return;
         }
 
@@ -1941,6 +2015,7 @@ public sealed class Plugin : IDalamudPlugin
         cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
 
         streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Pan);
+        activeSingleDoorPos = r.Candidate.DoorPosition;
 
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
             || (CurrentMode != PlaybackMode.Outdoor && !streamPlayer.IsPlaying);
@@ -1998,6 +2073,7 @@ public sealed class Plugin : IDalamudPlugin
                 if (player != null) TearDownMultiStream();
                 CurrentMode = PlaybackMode.Off;
             }
+            activeMultiDoorPos.Clear();
             return;
         }
 
@@ -2029,8 +2105,15 @@ public sealed class Plugin : IDalamudPlugin
             if (!desiredKeys.Contains(key)) player.RemoveVoice(key);
         }
 
+        // Refresh the per-frame spatial cache from the desired set. Voices
+        // that aren't yet alive (still inside AddVoiceAsync) are included so
+        // they pick up the right pan the moment the mixer starts pulling
+        // samples from them.
+        activeMultiDoorPos.Clear();
         foreach (var r in desired)
         {
+            activeMultiDoorPos[r.Candidate.CanonicalKey] = r.Candidate.DoorPosition;
+
             var url = r.Candidate.StreamUrl;
             var key = r.Candidate.CanonicalKey;
             var cutoff = WardProximity.NearnessToCutoff(
@@ -2051,8 +2134,8 @@ public sealed class Plugin : IDalamudPlugin
             if (BinariesMissingForUrl(url)) continue;
             if (IsStreamInCooldown(url)) continue;
 
-            // Newly-added voices come up centered (pan=0); the next proximity
-            // tick will SetSpatial them to the correct angle once they're live.
+            // Newly-added voices come up centered (pan=0); RefreshSpatialPose
+            // will fix them on the very next frame after they go live.
             _ = player.AddVoiceAsync(key, url, cutoff);
         }
 

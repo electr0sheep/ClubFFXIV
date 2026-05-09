@@ -149,8 +149,10 @@ public static class WardProximity
     /// Project the door's horizontal offset from the player onto the listener's
     /// right and forward axes to get pan ∈ [-1,+1] and rearness ∈ [0,1].
     /// Vertical (Y) component is dropped — stereo can't reproduce height anyway.
+    /// Public so the per-frame spatial-pose refresh can recompute pan from a
+    /// cached door position without re-running the whole proximity sweep.
     /// </summary>
-    private static (float Pan, float Rearness) ComputeDirection(
+    public static (float Pan, float Rearness) ComputeDirection(
         Vector3 playerPos, Vector3 doorPos, ListenerOrientation? orientation)
     {
         if (orientation == null) return (0f, 0f);
