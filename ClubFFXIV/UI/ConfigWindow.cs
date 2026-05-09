@@ -95,13 +95,16 @@ public sealed class ConfigWindow : Window, IDisposable
 
         // Inflight progress indicator at the bottom — only visible during
         // an active async op (Publishing... / Saving... / Unpublishing...).
-        // Empty most of the time; final results go to Dalamud notifications.
+        // The row is *always* reserved (separator + frame-height row) so the
+        // tab body doesn't reflow each time a network call kicks off; the
+        // text just appears in the pre-allocated space. Final results go to
+        // Dalamud notifications, not here.
+        ImGui.Spacing();
+        ImGui.Separator();
         if (!string.IsNullOrEmpty(inflightStatus))
-        {
-            ImGui.Spacing();
-            ImGui.Separator();
             ImGui.TextDisabled(inflightStatus);
-        }
+        else
+            ImGui.Dummy(new Vector2(0, ImGui.GetTextLineHeight()));
     }
 
     private void DrawMyClubsTab()
@@ -120,21 +123,23 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSettingsTab()
     {
+        // Playback is small (a handful of toggles) — render inline as the
+        // landing content so the tab isn't a wall of collapsed sections on
+        // open. Spatial tuning is the heavy section and is collapsible
+        // (default-open) so users who don't tweak it can fold it away.
         DrawPlaybackSection();
         ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawSpatialTuningSection();
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawPermissionsSection();
+
+        if (ImGui.CollapsingHeader("Spatial audio tuning",
+                ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            DrawSpatialTuningSection();
+        }
     }
 
     private void DrawPlaybackSection()
     {
-        ImGui.TextUnformatted("Playback");
-        ImGui.Spacing();
+        UiHelpers.SectionHeader("Playback");
 
         // Loop + Random playlist order live as icon toggles in the music
         // player itself (next to Stop) — they're playback-mode controls, so
@@ -146,14 +151,11 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.ShowNowPlayingThumbnails = showThumbs;
             plugin.Config.Save();
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Render album / video artwork beside each Now Playing row.\n" +
-                "  • YouTube / SoundCloud / Twitch: thumbnail from yt-dlp.\n" +
-                "  • Icecast / direct MP3: placeholder square (no artwork available).\n" +
-                "Off = text-only rows.");
+        UiHelpers.HelpMarker(
+            "Render album / video artwork beside each Now Playing row.\n" +
+            "  • YouTube / SoundCloud / Twitch: thumbnail from yt-dlp.\n" +
+            "  • Icecast / direct MP3: placeholder square (no artwork available).\n" +
+            "Off = text-only rows.");
 
         var keepInSub = plugin.Config.KeepPlayingInLinkedSubterritories;
         if (ImGui.Checkbox("Keep playing in FC workshop / linked sub-rooms", ref keepInSub))
@@ -168,31 +170,45 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.ShowPlaybackModeAndProximity = showProx;
             plugin.Config.Save();
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Show the diagnostic readout at the bottom of the music player:\n" +
-                "  • Playback mode (Spatial outdoor / Indoor solo / etc.)\n" +
-                "  • Closest club + distance in yalms\n" +
-                "  • L/R balance and front/back fade bars\n" +
-                "Off (default) = player shows only Now Playing + transport controls.");
+        UiHelpers.HelpMarker(
+            "Show the diagnostic readout at the bottom of the music player:\n" +
+            "  • Playback mode (Spatial outdoor / Indoor solo / etc.)\n" +
+            "  • Closest club + distance in yalms\n" +
+            "  • L/R balance and front/back fade bars\n" +
+            "Off (default) = player shows only Now Playing + transport controls.");
     }
 
     private void DrawAdvancedTab()
     {
-        DrawBinariesSection();
-        ImGui.Spacing();
-        DrawMultiStreamSection();
-        ImGui.Spacing();
-        DrawYtDlpSection();
+        // Binaries is the most-likely-to-need section in Advanced (yt-dlp
+        // updates, ffmpeg installs, and the cookies-from-browser auth knob
+        // all live there). Multi-stream and Permissions follow — Permissions
+        // moved here from Settings because allow/block lists are a power-
+        // user concern, not an everyday preference. All three sections are
+        // collapsible so the Advanced tab doesn't feel like a wall of text.
+        if (ImGui.CollapsingHeader("External binaries (yt-dlp, ffmpeg, deno)",
+                ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            DrawBinariesSection();
+            ImGui.Spacing();
+            DrawYtDlpSection();
+        }
+        if (ImGui.CollapsingHeader("Multi-stream"))
+        {
+            DrawMultiStreamSection();
+        }
+        if (ImGui.CollapsingHeader("Permissions (allow / block lists)"))
+        {
+            DrawPermissionsSection();
+        }
     }
 
     private void DrawYtDlpSection()
     {
-        ImGui.TextUnformatted("yt-dlp");
-        ImGui.Separator();
-        ImGui.Spacing();
+        // Sub-section header inside the Binaries CollapsingHeader — yt-dlp's
+        // browser-cookie auth setting belongs alongside the install/update
+        // controls, but visually wants its own subtitle.
+        UiHelpers.SectionHeader("yt-dlp authentication");
 
         ImGui.TextWrapped(
             "If YouTube starts showing \"Sign in to confirm you're not a bot\" errors, " +
@@ -202,18 +218,15 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
 
         ImGui.TextUnformatted("Cookies from browser:");
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Recommended: firefox\n\n" +
-                "Chromium-based browsers (Chrome, Edge, Brave,\n" +
-                "Vivaldi, Opera) encrypt cookies with app-bound\n" +
-                "encryption that yt-dlp cannot decrypt without\n" +
-                "additional setup. Use Firefox.\n\n" +
-                "You must be logged into YouTube (or whichever\n" +
-                "site is gating you) in Firefox.\n\n" +
-                "Saved on lose-focus.");
+        UiHelpers.HelpMarker(
+            "Recommended: firefox\n\n" +
+            "Chromium-based browsers (Chrome, Edge, Brave,\n" +
+            "Vivaldi, Opera) encrypt cookies with app-bound\n" +
+            "encryption that yt-dlp cannot decrypt without\n" +
+            "additional setup. Use Firefox.\n\n" +
+            "You must be logged into YouTube (or whichever\n" +
+            "site is gating you) in Firefox.\n\n" +
+            "Saved on lose-focus.");
 
         ImGui.SetNextItemWidth(200);
         ImGui.InputText("##ytDlpCookies", ref ytDlpCookiesInput, 32);
@@ -227,9 +240,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawMultiStreamSection()
     {
-        ImGui.TextUnformatted("Multi-stream");
-        ImGui.Separator();
-        ImGui.Spacing();
+        // Header is the CollapsingHeader in DrawAdvancedTab.
 
         ImGui.TextWrapped(
             "Outdoor proximity keeps multiple nearby clubs streaming at once, " +
@@ -259,9 +270,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawPermissionsSection()
     {
-        ImGui.TextUnformatted("Permissions (allow / block lists)");
-        ImGui.Separator();
-        ImGui.Spacing();
+        // Header is the CollapsingHeader in DrawAdvancedTab.
 
         ImGui.TextWrapped(
             "Streams from unfamiliar domains are blocked until you approve them. " +
@@ -324,9 +333,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawBinariesSection()
     {
-        ImGui.TextUnformatted("External binaries (yt-dlp, ffmpeg, deno)");
-        ImGui.Separator();
-        ImGui.Spacing();
+        // Header is the CollapsingHeader in DrawAdvancedTab.
 
         // Lazy-resolve versions on first display so we don't spawn processes
         // on every plugin start.
@@ -421,8 +428,12 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawBinaryRow(string name, bool installed, string version, Func<Task> onUpdate)
     {
         ImGui.PushID("bin-" + name);
-        var icon = installed ? "✓" : "—";
-        ImGui.TextUnformatted($"{icon} {name}:");
+        // Coloured status glyph keeps install state scannable across the
+        // three rows; the SetupWizard uses the same colours so the visual
+        // language matches.
+        var color = installed ? UiColors.Success : UiColors.Pending;
+        var glyph = installed ? "✓" : "—";
+        ImGui.TextColored(color, $"{glyph} {name}:");
         ImGui.SameLine();
         ImGui.TextDisabled(version);
         ImGui.SameLine();
@@ -442,8 +453,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawRegistrySection()
     {
-        ImGui.TextUnformatted("Registry");
-        ImGui.Spacing();
+        UiHelpers.SectionHeader("Registry");
         ImGui.TextWrapped("Backend URL (e.g. https://registry.clubffxiv.workers.dev):");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputText("##registryUrl", ref registryUrlInput, 512);
@@ -507,11 +517,14 @@ public sealed class ConfigWindow : Window, IDisposable
             }
         }
         ImGui.SameLine();
-        ImGui.TextDisabled(
-            !plugin.RegistryEnabled ? "○ disabled" :
-            plugin.RegistryConnected == true ? "● connected" :
-            plugin.RegistryConnected == false ? "○ not connected" :
-            "○ checking...");
+        if (!plugin.RegistryEnabled)
+            UiHelpers.StatusDot(UiHelpers.Status.Disabled, "disabled");
+        else if (plugin.RegistryConnected == true)
+            UiHelpers.StatusDot(UiHelpers.Status.Ok, "connected");
+        else if (plugin.RegistryConnected == false)
+            UiHelpers.StatusDot(UiHelpers.Status.Bad, "not connected");
+        else
+            UiHelpers.StatusDot(UiHelpers.Status.Pending, "checking...");
 
         // Only offer Browse when the probe says the registry is actually
         // reachable. Disabled / unverified / failed states all hide the entry
@@ -577,8 +590,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawCurrentLocationSection()
     {
-        ImGui.TextUnformatted("Current Location");
-        ImGui.Spacing();
+        UiHelpers.SectionHeader("Current Location");
 
         var key = plugin.CurrentPlotKey;
         var ward = plugin.CurrentWard;
@@ -597,11 +609,10 @@ public sealed class ConfigWindow : Window, IDisposable
             switch (ownership)
             {
                 case Game.HouseOwnership.Owner:
-                    ImGui.TextColored(new Vector4(0.4f, 0.85f, 0.4f, 1f),
-                        "✓ You own this plot");
+                    ImGui.TextColored(UiColors.Success, "✓ You own this plot");
                     break;
                 case Game.HouseOwnership.NotOwner:
-                    ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                    ImGui.TextColored(UiColors.Warning,
                         "⚠ You don't appear to own this plot");
                     break;
                 case Game.HouseOwnership.Unknown:
@@ -623,14 +634,11 @@ public sealed class ConfigWindow : Window, IDisposable
                 if (ImGui.Button("Create local override"))
                     plugin.ClubFormWindow.OpenLocalCreate(plot);
             }
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "A local override is a private URL stored on your client only.\n" +
-                    "When you walk into this plot, your override plays — even if the\n" +
-                    "registry has a different URL for the plot. Visible to no one\n" +
-                    "but you.");
+            UiHelpers.HelpMarker(
+                "A local override is a private URL stored on your client only.\n" +
+                "When you walk into this plot, your override plays — even if the\n" +
+                "registry has a different URL for the plot. Visible to no one\n" +
+                "but you.");
 
             // --- Path 2: Registry (publish if owner & new; edit if has key) -
             var hasPublishedKey = plugin.Config.PublishedHouses.TryGetValue(canonical, out var publishedEntry);
@@ -669,8 +677,7 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         var rows = new System.Collections.Generic.List<UnifiedHouseRow>(EnumerateMyHouses());
 
-        ImGui.TextUnformatted($"My Houses — {rows.Count}");
-        ImGui.Spacing();
+        UiHelpers.SectionHeader($"My Houses — {rows.Count}");
 
         if (rows.Count == 0)
         {
@@ -951,10 +958,11 @@ public sealed class ConfigWindow : Window, IDisposable
         var entry = row.Primary;
 
         // Two distinct edit paths matching the Current Location flow:
-        //   • Edit local — opens the local override form (any user, any plot)
-        //   • Edit club  — opens the registry edit form (we hold the DJ key
-        //                  for this plot, i.e. row.IsPublished)
-        // Rows with both copies show both buttons; the user picks which to edit.
+        //   • Pen   — local override form (any user, any plot)
+        //   • Globe — registry edit form (we hold the DJ key for this plot,
+        //             i.e. row.IsPublished). Globe instead of a second Pen
+        //             so a row that shows both buttons is visually
+        //             unambiguous; the registry copy is the "globe-y" one.
         if (row.HasSavedCopy && row.Saved != null)
         {
             if (IconSmallButton(FontAwesomeIcon.Pen, "edit-local", "Edit local override"))
@@ -964,7 +972,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (row.IsPublished && row.Published != null)
         {
             if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-            if (IconSmallButton(FontAwesomeIcon.Pen, "edit-club", "Edit club listing"))
+            if (IconSmallButton(FontAwesomeIcon.Globe, "edit-club", "Edit club listing"))
                 plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
             if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             ImGui.SameLine();
@@ -1023,10 +1031,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSpatialTuningSection()
     {
-        ImGui.TextUnformatted("Spatial audio tuning");
-        ImGui.Separator();
-        ImGui.Spacing();
-
+        // Header is the CollapsingHeader in DrawSettingsTab — no internal
+        // title needed here.
         var changed = false;
 
         var directional = plugin.Config.SpatialDirectionalAudio;
@@ -1035,12 +1041,9 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.SpatialDirectionalAudio = directional;
             changed = true;
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Pans each club's audio left/right based on where its door sits\n" +
-                "relative to the camera. Off = every voice plays centered.");
+        UiHelpers.HelpMarker(
+            "Pans each club's audio left/right based on where its door sits\n" +
+            "relative to the camera. Off = every voice plays centered.");
 
         if (directional)
         {
@@ -1052,15 +1055,12 @@ public sealed class ConfigWindow : Window, IDisposable
                 plugin.Config.SpatialPanStrength = panStrength;
                 changed = true;
             }
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "How dramatically audio pans toward each side. 1 = ping-pong\n" +
-                    "stereo (far ear silent at full pan); 0 = no panning at all.\n" +
-                    "Default 0.7 leaves about 30% of the source audible in the far\n" +
-                    "ear at the extremes, which roughly matches how real ears\n" +
-                    "actually localize sounds at 90°.");
+            UiHelpers.HelpMarker(
+                "How dramatically audio pans toward each side. 1 = ping-pong\n" +
+                "stereo (far ear silent at full pan); 0 = no panning at all.\n" +
+                "Default 0.7 leaves about 30% of the source audible in the far\n" +
+                "ear at the extremes, which roughly matches how real ears\n" +
+                "actually localize sounds at 90°.");
 
             var rearMuffle = plugin.Config.SpatialRearMuffleStrength;
             if (ImGui.SliderFloat("Rear-muffle strength", ref rearMuffle, 0f, 1f, "%.2f"))
@@ -1068,13 +1068,10 @@ public sealed class ConfigWindow : Window, IDisposable
                 plugin.Config.SpatialRearMuffleStrength = rearMuffle;
                 changed = true;
             }
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "How much extra muffle (lowpass) doors pick up when they're\n" +
-                    "directly behind you — a subtle front/back cue. 0 disables it,\n" +
-                    "1 halves the cutoff at full rear.");
+            UiHelpers.HelpMarker(
+                "How much extra muffle (lowpass) doors pick up when they're\n" +
+                "directly behind you — a subtle front/back cue. 0 disables it,\n" +
+                "1 halves the cutoff at full rear.");
 
             var invert = plugin.Config.SpatialInvertPan;
             if (ImGui.Checkbox("Invert L/R", ref invert))
@@ -1082,31 +1079,29 @@ public sealed class ConfigWindow : Window, IDisposable
                 plugin.Config.SpatialInvertPan = invert;
                 changed = true;
             }
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Flip the pan sign if doors on your left sound like they're\n" +
-                    "on your right. Should not normally be needed.");
+            UiHelpers.HelpMarker(
+                "Flip the pan sign if doors on your left sound like they're\n" +
+                "on your right. Should not normally be needed.");
 
             ImGui.Unindent();
         }
 
         ImGui.Spacing();
 
+        // Distance sliders. The three values must satisfy
+        // pre-buffer ≥ falloff ≥ full-volume; if a user drags them out of
+        // order the section below renders an inline warning rather than
+        // silently snapping the values.
         var streamDist = plugin.Config.SpatialStreamDistance;
         if (ImGui.SliderFloat("Pre-buffer distance (yalms)", ref streamDist, 5f, 200f, "%.0f"))
         {
             plugin.Config.SpatialStreamDistance = streamDist;
             changed = true;
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Within this distance the stream connects and pre-buffers (silently).\n" +
-                "Hides the 1-3s connect delay so audio is ready when you cross the\n" +
-                "audible threshold. Should be larger than Falloff distance.");
+        UiHelpers.HelpMarker(
+            "Within this distance the stream connects and pre-buffers (silently).\n" +
+            "Hides the 1-3s connect delay so audio is ready when you cross the\n" +
+            "audible threshold. Should be larger than Falloff distance.");
 
         var falloff = plugin.Config.SpatialFalloffDistance;
         if (ImGui.SliderFloat("Falloff distance (yalms)", ref falloff, 5f, 100f, "%.0f"))
@@ -1114,10 +1109,7 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.SpatialFalloffDistance = falloff;
             changed = true;
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Audible threshold — at this distance, volume = 0 but stream may still be pre-buffering.");
+        UiHelpers.HelpMarker("Audible threshold — at this distance, volume = 0 but stream may still be pre-buffering.");
 
         var full = plugin.Config.SpatialFullVolumeDistance;
         if (ImGui.SliderFloat("Full-volume distance (yalms)", ref full, 0.5f, 20f, "%.1f"))
@@ -1125,6 +1117,20 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.SpatialFullVolumeDistance = full;
             changed = true;
         }
+        UiHelpers.HelpMarker(
+            "Inside this distance the stream plays at full volume — the\n" +
+            "audio fades from 0 (at Falloff) to full as you approach.");
+
+        if (streamDist < falloff)
+            ImGui.TextColored(UiColors.Warning,
+                "  ⚠ Pre-buffer distance is shorter than Falloff distance — streams will\n" +
+                "    start mid-fade-in instead of pre-buffering silently.");
+        if (falloff < full)
+            ImGui.TextColored(UiColors.Warning,
+                "  ⚠ Falloff distance is shorter than Full-volume distance — audio will\n" +
+                "    never actually fade.");
+
+        ImGui.Spacing();
 
         var minHz = plugin.Config.SpatialMinCutoffHz;
         if (ImGui.SliderFloat("Min cutoff Hz (most muffled)", ref minHz, 100f, 2000f, "%.0f"))
@@ -1132,6 +1138,10 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.SpatialMinCutoffHz = minHz;
             changed = true;
         }
+        UiHelpers.HelpMarker(
+            "Lowpass cutoff applied when a club is at the far edge of the\n" +
+            "audible range — lower = more muffled, like the music is behind\n" +
+            "a wall. Must stay below Max cutoff Hz.");
 
         var maxHz = plugin.Config.SpatialMaxCutoffHz;
         if (ImGui.SliderFloat("Max cutoff Hz (clearest)", ref maxHz, 500f, 18000f, "%.0f"))
@@ -1139,6 +1149,15 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.Config.SpatialMaxCutoffHz = maxHz;
             changed = true;
         }
+        UiHelpers.HelpMarker(
+            "Lowpass cutoff at the closest distance — higher = clearer.\n" +
+            "Once you're inside the house the lowpass disappears entirely\n" +
+            "(20 kHz bypass) regardless of this value.");
+
+        if (minHz >= maxHz)
+            ImGui.TextColored(UiColors.Warning,
+                "  ⚠ Min cutoff is at or above Max cutoff — the lowpass will be inverted\n" +
+                "    or have no effect.");
 
         if (changed) plugin.Config.Save();
 
@@ -1151,20 +1170,17 @@ public sealed class ConfigWindow : Window, IDisposable
                 "Spatial tuning reset to defaults.",
                 NotificationType.Info);
         }
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Restores all spatial audio sliders to their factory values:\n" +
-                $"  Directional = {(Configuration.DefaultSpatialDirectionalAudio ? "on" : "off")}\n" +
-                $"  Pan strength = {Configuration.DefaultSpatialPanStrength:F2}\n" +
-                $"  Rear muffle = {Configuration.DefaultSpatialRearMuffleStrength:F2}\n" +
-                $"  Invert L/R = {(Configuration.DefaultSpatialInvertPan ? "on" : "off")}\n" +
-                $"  Pre-buffer = {Configuration.DefaultSpatialStreamDistance:F0} m\n" +
-                $"  Falloff = {Configuration.DefaultSpatialFalloffDistance:F0} m\n" +
-                $"  Full volume = {Configuration.DefaultSpatialFullVolumeDistance:F1} m\n" +
-                $"  Min cutoff = {Configuration.DefaultSpatialMinCutoffHz:F0} Hz\n" +
-                $"  Max cutoff = {Configuration.DefaultSpatialMaxCutoffHz:F0} Hz");
+        UiHelpers.HelpMarker(
+            "Restores all spatial audio sliders to their factory values:\n" +
+            $"  Directional = {(Configuration.DefaultSpatialDirectionalAudio ? "on" : "off")}\n" +
+            $"  Pan strength = {Configuration.DefaultSpatialPanStrength:F2}\n" +
+            $"  Rear muffle = {Configuration.DefaultSpatialRearMuffleStrength:F2}\n" +
+            $"  Invert L/R = {(Configuration.DefaultSpatialInvertPan ? "on" : "off")}\n" +
+            $"  Pre-buffer = {Configuration.DefaultSpatialStreamDistance:F0} m\n" +
+            $"  Falloff = {Configuration.DefaultSpatialFalloffDistance:F0} m\n" +
+            $"  Full volume = {Configuration.DefaultSpatialFullVolumeDistance:F1} m\n" +
+            $"  Min cutoff = {Configuration.DefaultSpatialMinCutoffHz:F0} Hz\n" +
+            $"  Max cutoff = {Configuration.DefaultSpatialMaxCutoffHz:F0} Hz");
     }
 
 }

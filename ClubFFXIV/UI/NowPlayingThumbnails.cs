@@ -226,8 +226,8 @@ internal static class NowPlayingThumbnails
         // Muted square sitting behind a one-pixel border. Same hue family as
         // the dark Now Playing strip so it reads as "reserved space" rather
         // than a UI element competing with the title text.
-        draw.AddRectFilled(min, max, ImGui.GetColorU32(new Vector4(0.18f, 0.18f, 0.20f, 1f)));
-        draw.AddRect(min, max, ImGui.GetColorU32(new Vector4(0.30f, 0.30f, 0.34f, 1f)));
+        draw.AddRectFilled(min, max, ImGui.GetColorU32(UiColors.ThumbPlaceholderFill));
+        draw.AddRect(min, max, ImGui.GetColorU32(UiColors.ThumbPlaceholderBorder));
         ImGui.Dummy(size);
     }
 }

@@ -279,14 +279,18 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.BulletText("Want it private? Set a passphrase on publish — listeners enter it once, then it's cached");
     }
 
+    // Help-window-local section header — distinct from UiHelpers.SectionHeader
+    // because this one omits the underline (HelpWindow's content is densely
+    // separated already, and the rule would compound). Same colour token,
+    // so headings still read as "headings" against the rest of the UI.
     private static void SectionHeader(string text)
     {
-        ImGui.TextColored(new Vector4(0.7f, 0.85f, 1f, 1f), text);
+        ImGui.TextColored(UiColors.SectionHeader, text);
     }
 
     private static void Hyperlink(string label, string url)
     {
-        ImGui.PushStyleColor(ImGuiCol.Text, new Vector4(0.45f, 0.7f, 1f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Text, UiColors.Hyperlink);
         ImGui.TextUnformatted(label);
         ImGui.PopStyleColor();
         if (ImGui.IsItemHovered())

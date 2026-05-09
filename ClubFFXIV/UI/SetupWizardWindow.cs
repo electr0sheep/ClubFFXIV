@@ -158,9 +158,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
 
     private static void DrawBinaryStatusLine(string name, bool installed)
     {
-        var color = installed
-            ? new Vector4(0.4f, 0.85f, 0.4f, 1f)
-            : new Vector4(0.85f, 0.5f, 0.4f, 1f);
+        var color = installed ? UiColors.Success : UiColors.Error;
         var prefix = installed ? "✓" : "✗";
         var suffix = installed ? "installed" : "not installed";
         ImGui.TextColored(color, $"  {prefix} {name} {suffix}");
@@ -213,7 +211,7 @@ public sealed class SetupWizardWindow : Window, IDisposable
         if (!wizardAutoUpdate)
         {
             ImGui.Spacing();
-            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+            ImGui.TextColored(UiColors.Warning,
                 "  ⚠ With auto-update off, expect Twitch / YouTube playback to " +
                 "break periodically.");
             ImGui.TextDisabled(

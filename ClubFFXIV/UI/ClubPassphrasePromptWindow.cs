@@ -102,7 +102,7 @@ public sealed class ClubPassphrasePromptWindow : Window, IDisposable
         if (!string.IsNullOrEmpty(statusMessage))
         {
             ImGui.Spacing();
-            ImGui.TextColored(new Vector4(0.85f, 0.5f, 0.4f, 1f), statusMessage);
+            ImGui.TextColored(UiColors.Error, statusMessage);
         }
 
         ImGui.Spacing();

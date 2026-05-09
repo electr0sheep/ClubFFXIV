@@ -135,7 +135,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     {
         if (!string.IsNullOrEmpty(plugin.Config.LastStreamUrl)) return;
 
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.15f, 0.25f, 0.35f, 0.6f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, UiColors.BannerInfo);
         ImGui.BeginChild("##firstRunBanner", new Vector2(-1, 56), true);
         ImGui.Spacing();
         ImGui.TextWrapped("First time? Click \"Getting Started\" for a 30-second walkthrough.");
@@ -184,7 +184,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         }
         var height = contentH + 12f;
 
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, UiColors.PanelDark);
         ImGui.BeginChild("##nowPlayingHeader", new Vector2(-1, height), true,
             ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
 
@@ -193,7 +193,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             // Static placeholder — no playback to act on.
             ImGui.AlignTextToFramePadding();
             ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-            ImGui.TextColored(new Vector4(0.6f, 0.6f, 0.6f, 1f), FontAwesomeIcon.Pause.ToIconString());
+            ImGui.TextColored(UiColors.IconPlaceholder, FontAwesomeIcon.Pause.ToIconString());
             ImGui.PopFont();
             ImGui.SameLine();
             ImGui.TextUnformatted("Not playing");
@@ -240,7 +240,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
 
         ImGui.AlignTextToFramePadding();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f), icon.ToIconString());
+        ImGui.TextColored(UiColors.IconActive, icon.ToIconString());
         ImGui.PopFont();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(muted ? "Click to unmute" : "Click to mute");
@@ -256,7 +256,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             ImGui.SameLine();
             var playIcon = entry.IsPaused ? FontAwesomeIcon.Play : FontAwesomeIcon.Pause;
             ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-            ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f), playIcon.ToIconString());
+            ImGui.TextColored(UiColors.IconActive, playIcon.ToIconString());
             ImGui.PopFont();
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip(entry.IsPaused ? "Click to play" : "Click to pause");
@@ -271,7 +271,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         {
             ImGui.SameLine();
             ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-            ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f),
+            ImGui.TextColored(UiColors.IconActive,
                 FontAwesomeIcon.AngleDoubleRight.ToIconString());
             ImGui.PopFont();
             if (ImGui.IsItemHovered())
@@ -492,7 +492,7 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     {
         ImGui.AlignTextToFramePadding();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(new Vector4(0.85f, 0.85f, 0.85f, 1f),
+        ImGui.TextColored(UiColors.IconActive,
             FontAwesomeIcon.Stop.ToIconString());
         ImGui.PopFont();
         if (ImGui.IsItemHovered())
@@ -513,8 +513,8 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     {
         var active = plugin.Config.LoopFinishedVideos;
         var color = active
-            ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
-            : new Vector4(0.45f, 0.45f, 0.50f, 1f);
+            ? UiColors.IconActive
+            : UiColors.IconInactive;
 
         ImGui.AlignTextToFramePadding();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
@@ -546,8 +546,8 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     {
         var active = plugin.Config.PlaylistRandom;
         var color = active
-            ? new Vector4(0.85f, 0.85f, 0.85f, 1f)
-            : new Vector4(0.45f, 0.45f, 0.50f, 1f);
+            ? UiColors.IconActive
+            : UiColors.IconInactive;
 
         ImGui.AlignTextToFramePadding();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
@@ -587,15 +587,12 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         ImGui.Spacing();
 
         ImGui.TextWrapped("Paste a Twitch / YouTube / Icecast / Shoutcast / MP3 stream URL.");
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Need a URL?\n" +
-                "  • Listener: ask a DJ for their Twitch / YouTube channel or stream URL\n" +
-                "  • DJ: see Help → \"I want to DJ\"\n" +
-                "  • Just testing: try https://www.youtube.com/watch?v=9Tzc3ybp8vA\n" +
-                "    or https://ice1.somafm.com/groovesalad-128-mp3");
+        UiHelpers.HelpMarker(
+            "Need a URL?\n" +
+            "  • Listener: ask a DJ for their Twitch / YouTube channel or stream URL\n" +
+            "  • DJ: see Help → \"I want to DJ\"\n" +
+            "  • Just testing: try https://www.youtube.com/watch?v=9Tzc3ybp8vA\n" +
+            "    or https://ice1.somafm.com/groovesalad-128-mp3");
         ImGui.Spacing();
 
         // Auto-focus the input on first frame of the popup so the user can

@@ -70,7 +70,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         ImGui.TextWrapped("A stream URL has been requested that isn't on your allow list:");
         ImGui.Spacing();
 
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, UiColors.PanelDark);
         ImGui.BeginChild("##permUrl", new Vector2(-1, 50), true);
         ImGui.Spacing();
         ImGui.TextWrapped(c.Url);
@@ -95,7 +95,7 @@ public sealed class UrlPermissionWindow : Window, IDisposable
             }
             if (!string.IsNullOrWhiteSpace(ctx.Description))
             {
-                ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
+                ImGui.PushStyleColor(ImGuiCol.ChildBg, UiColors.PanelDark);
                 ImGui.BeginChild("##permDesc", new Vector2(-1, 70), true);
                 ImGui.Spacing();
                 ImGui.TextWrapped(ctx.Description);
@@ -108,13 +108,13 @@ public sealed class UrlPermissionWindow : Window, IDisposable
             // are NOT proof of who's actually behind the URL. Frame the trust
             // model so users don't read the club info as verification.
             ImGui.Spacing();
-            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+            ImGui.TextColored(UiColors.Warning,
                 "⚠ Anyone can publish to the registry. The club name and description");
-            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+            ImGui.TextColored(UiColors.Warning,
                 "  above were written by whoever published this URL — they are not");
-            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+            ImGui.TextColored(UiColors.Warning,
                 "  verified. Don't 'Allow domain' for an unfamiliar host based on");
-            ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+            ImGui.TextColored(UiColors.Warning,
                 "  these alone.");
         }
 
@@ -122,6 +122,9 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         ImGui.Separator();
         ImGui.Spacing();
 
+        // Primary actions — narrow blast radius. "Allow this URL" only trusts
+        // this exact URL; "Skip" defers; "Block" hard-stops this URL from ever
+        // playing. None of these grant trust to other URLs from the same host.
         if (ImGui.Button("Allow this URL", new Vector2(140, 0)))
         {
             permissions.AllowUrl(c.Url);
@@ -129,14 +132,13 @@ public sealed class UrlPermissionWindow : Window, IDisposable
             return;
         }
         ImGui.SameLine();
-        if (ImGui.Button($"Allow {host}", new Vector2(180, 0)))
+        if (ImGui.Button("Skip (ask again later)", new Vector2(180, 0)))
         {
-            permissions.AllowDomain(c.Url);
-            Resolve(c, c.OnAllow);
+            Resolve(c, c.OnBlock);
             return;
         }
         ImGui.SameLine();
-        if (ImGui.Button("Block (don't ask again)", new Vector2(180, 0)))
+        if (ImGui.Button("Block this URL", new Vector2(140, 0)))
         {
             permissions.BlockUrl(c.Url);
             Resolve(c, c.OnBlock);
@@ -144,9 +146,25 @@ public sealed class UrlPermissionWindow : Window, IDisposable
         }
 
         ImGui.Spacing();
-        if (ImGui.Button("Skip (ask again later)"))
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        // Broader-trust action, segregated from the primary row so the wider
+        // blast radius (every future URL from this host, no further prompts)
+        // is a deliberate choice rather than a misclick. The amber warning
+        // text uses the same colour token as the registry-context disclaimer
+        // above; the host name is rendered in body text inside the button so
+        // the user reads exactly what they're trusting.
+        ImGui.TextColored(UiColors.Warning,
+            $"⚠ \"Allow {host}\" trusts every future URL from this host — no more");
+        ImGui.TextColored(UiColors.Warning,
+            "  prompts for anything on this domain. Use sparingly.");
+        ImGui.Spacing();
+        if (ImGui.Button($"Allow all URLs from {host}", new Vector2(280, 0)))
         {
-            Resolve(c, c.OnBlock);
+            permissions.AllowDomain(c.Url);
+            Resolve(c, c.OnAllow);
+            return;
         }
     }
 

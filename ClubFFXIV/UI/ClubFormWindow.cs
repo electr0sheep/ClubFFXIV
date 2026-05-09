@@ -131,13 +131,10 @@ public sealed class ClubFormWindow : Window, IDisposable
 
         ImGui.Spacing();
         ImGui.TextUnformatted("Description:");
-        ImGui.SameLine();
-        ImGui.TextDisabled("(?)");
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                "Optional. Shown to listeners in the Public Directory list\n" +
-                "and in the URL permission prompt when someone first plays\n" +
-                "your stream. Max 500 characters; line breaks supported.");
+        UiHelpers.HelpMarker(
+            "Optional. Shown to listeners in the Public Directory list\n" +
+            "and in the URL permission prompt when someone first plays\n" +
+            "your stream. Max 500 characters; line breaks supported.");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextMultiline("##cfDesc", ref descInput, 501, new Vector2(-1, 80));
 
@@ -150,29 +147,23 @@ public sealed class ClubFormWindow : Window, IDisposable
         {
             ImGui.Spacing();
             ImGui.Checkbox("Show in public directory", ref listedInput);
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Adds your club to the Public Directory browse list.\n\n" +
-                    "Unchecking only hides this club from the directory — anyone\n" +
-                    "who knows your plot key or walks past still discovers it.\n" +
-                    "For full privacy, don't publish (use a local override instead).");
+            UiHelpers.HelpMarker(
+                "Adds your club to the Public Directory browse list.\n\n" +
+                "Unchecking only hides this club from the directory — anyone\n" +
+                "who knows your plot key or walks past still discovers it.\n" +
+                "For full privacy, don't publish (use a local override instead).");
 
             ImGui.Spacing();
             var wasProtected = passwordProtectInput;
             ImGui.Checkbox("Password-protect this club", ref passwordProtectInput);
-            ImGui.SameLine();
-            ImGui.TextDisabled("(?)");
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(
-                    "Listeners need this passphrase before they can hear your\n" +
-                    "club. We auto-generate a 6-word passphrase from the EFF\n" +
-                    "long diceware list (~155 bits of entropy). Share it with\n" +
-                    "your friends in Discord, etc. — anyone without it gets\n" +
-                    "silence.\n\n" +
-                    "The plaintext stays on your machine; the registry only\n" +
-                    "stores an Argon2id hash + salt so we can verify listeners.");
+            UiHelpers.HelpMarker(
+                "Listeners need this passphrase before they can hear your\n" +
+                "club. We auto-generate a 6-word passphrase from the EFF\n" +
+                "long diceware list (~155 bits of entropy). Share it with\n" +
+                "your friends in Discord, etc. — anyone without it gets\n" +
+                "silence.\n\n" +
+                "The plaintext stays on your machine; the registry only\n" +
+                "stores an Argon2id hash + salt so we can verify listeners.");
 
             // Auto-generate on first toggle-on so the field is never empty
             // while the gate is enabled.
