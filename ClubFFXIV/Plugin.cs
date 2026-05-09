@@ -1942,6 +1942,8 @@ public sealed class Plugin : IDalamudPlugin
             ? ListenerOrientationProvider.Get(Config.SpatialInvertPan)
             : null;
 
+        var panStrength = Config.SpatialPanStrength;
+
         if (hasMulti)
         {
             foreach (var (key, doorPos) in activeMultiDoorPos)
@@ -1953,7 +1955,7 @@ public sealed class Plugin : IDalamudPlugin
                 var cutoff = WardProximity.NearnessToCutoff(
                     nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
                 cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
-                multiStreamPlayer!.SetSpatial(key, nearness, cutoff, pan);
+                multiStreamPlayer!.SetSpatial(key, nearness, cutoff, pan * panStrength);
             }
         }
         else
@@ -1966,7 +1968,7 @@ public sealed class Plugin : IDalamudPlugin
             var cutoff = WardProximity.NearnessToCutoff(
                 nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
             cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
-            streamPlayer.SetSpatial(nearness, cutoff, pan);
+            streamPlayer.SetSpatial(nearness, cutoff, pan * panStrength);
         }
     }
 
@@ -2018,7 +2020,7 @@ public sealed class Plugin : IDalamudPlugin
             Config.SpatialMaxCutoffHz);
         cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
 
-        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Pan);
+        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Pan * Config.SpatialPanStrength);
         activeSingleDoorPos = r.Candidate.DoorPosition;
 
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
@@ -2128,7 +2130,7 @@ public sealed class Plugin : IDalamudPlugin
 
             if (player.HasVoice(key))
             {
-                player.SetSpatial(key, r.NormalizedNearness, cutoff, r.Pan);
+                player.SetSpatial(key, r.NormalizedNearness, cutoff, r.Pan * Config.SpatialPanStrength);
                 continue;
             }
             if (player.IsStarting(key)) continue;

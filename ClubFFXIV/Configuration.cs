@@ -48,6 +48,11 @@ public class Configuration : IPluginConfiguration
     public const bool DefaultSpatialDirectionalAudio = true;
     public const float DefaultSpatialRearMuffleStrength = 0.5f;
     public const bool DefaultSpatialInvertPan = false;
+    // 0.7 leaves ~30% (~−10.5 dB) of the source audible in the far ear at
+    // full pan, which roughly matches the real-world interaural level
+    // difference at 90° azimuth. 1.0 reproduces hard "ping-pong" stereo
+    // where the far ear goes silent.
+    public const float DefaultSpatialPanStrength = 0.7f;
 
     /// <summary>
     /// Beyond this distance the stream isn't connected at all. Inside it (but
@@ -85,6 +90,14 @@ public class Configuration : IPluginConfiguration
     public bool SpatialInvertPan { get; set; } = DefaultSpatialInvertPan;
 
     /// <summary>
+    /// Scales the L/R balance applied at the extremes. 0 = no panning (always
+    /// centered); 1 = ping-pong stereo (far ear silent at 90° azimuth).
+    /// Default leaves a realistic amount of audio in the opposite ear so a
+    /// source directly to the side doesn't disappear from one channel.
+    /// </summary>
+    public float SpatialPanStrength { get; set; } = DefaultSpatialPanStrength;
+
+    /// <summary>
     /// Restore all spatial-audio knobs to their factory defaults. Caller is
     /// responsible for invoking <see cref="Save"/> afterwards (matches the
     /// existing pattern where UI handlers explicitly persist).
@@ -99,6 +112,7 @@ public class Configuration : IPluginConfiguration
         SpatialDirectionalAudio = DefaultSpatialDirectionalAudio;
         SpatialRearMuffleStrength = DefaultSpatialRearMuffleStrength;
         SpatialInvertPan = DefaultSpatialInvertPan;
+        SpatialPanStrength = DefaultSpatialPanStrength;
     }
 
     /// <summary>

@@ -1030,6 +1030,22 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             ImGui.Indent();
 
+            var panStrength = plugin.Config.SpatialPanStrength;
+            if (ImGui.SliderFloat("Pan strength", ref panStrength, 0f, 1f, "%.2f"))
+            {
+                plugin.Config.SpatialPanStrength = panStrength;
+                changed = true;
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "How dramatically audio pans toward each side. 1 = ping-pong\n" +
+                    "stereo (far ear silent at full pan); 0 = no panning at all.\n" +
+                    "Default 0.7 leaves about 30% of the source audible in the far\n" +
+                    "ear at the extremes, which roughly matches how real ears\n" +
+                    "actually localize sounds at 90°.");
+
             var rearMuffle = plugin.Config.SpatialRearMuffleStrength;
             if (ImGui.SliderFloat("Rear-muffle strength", ref rearMuffle, 0f, 1f, "%.2f"))
             {
@@ -1125,6 +1141,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SetTooltip(
                 "Restores all spatial audio sliders to their factory values:\n" +
                 $"  Directional = {(Configuration.DefaultSpatialDirectionalAudio ? "on" : "off")}\n" +
+                $"  Pan strength = {Configuration.DefaultSpatialPanStrength:F2}\n" +
                 $"  Rear muffle = {Configuration.DefaultSpatialRearMuffleStrength:F2}\n" +
                 $"  Invert L/R = {(Configuration.DefaultSpatialInvertPan ? "on" : "off")}\n" +
                 $"  Pre-buffer = {Configuration.DefaultSpatialStreamDistance:F0} m\n" +
