@@ -22,6 +22,11 @@ public sealed class StereoBalanceSampleProvider : ISampleProvider
 {
     private readonly ISampleProvider source;
     private float pan;
+    // Last pan value actually applied to the audio (i.e. where the previous
+    // buffer ended). Each Read interpolates from here to `pan` across the
+    // current buffer, so per-tick pan updates from the proximity loop don't
+    // produce audible step changes inside a 150ms WaveOutEvent buffer.
+    private float appliedPan;
 
     public WaveFormat WaveFormat => source.WaveFormat;
 
@@ -39,26 +44,62 @@ public sealed class StereoBalanceSampleProvider : ISampleProvider
                 nameof(source));
         this.source = source;
         this.pan = Math.Clamp(initialPan, -1f, 1f);
+        this.appliedPan = this.pan;
     }
 
     public int Read(float[] buffer, int offset, int count)
     {
         var read = source.Read(buffer, offset, count);
-        // Snapshot pan at the start of the buffer so live changes don't tear
-        // gain coefficients mid-buffer. Same deferral pattern as the biquad
-        // filter's `dirty` flag.
-        var p = pan;
-        if (p == 0f) return read; // hot path — most voices are centered most of the time
-        var gainL = p <= 0f ? 1f : 1f - p;
-        var gainR = p >= 0f ? 1f : 1f + p;
-        // Stereo float samples are interleaved L,R,L,R,...; ignore any
-        // trailing odd sample (shouldn't happen in practice — Read returns
-        // even counts for stereo formats).
-        for (int n = 0; n + 1 < read; n += 2)
+        // Snapshot the target so a SetSpatial call that lands mid-Read doesn't
+        // re-aim the interpolation in the middle of the buffer. Whatever value
+        // is set after the snapshot will be picked up at the next Read.
+        var target = pan;
+        var start = appliedPan;
+        appliedPan = target;
+
+        // Hot path: pan hasn't changed and is dead-center → no work needed.
+        if (start == 0f && target == 0f) return read;
+
+        var frames = read / 2;
+        if (frames <= 0) return read;
+
+        // When the pan hasn't moved between buffers, fall through to a single
+        // pair of gain coefficients applied uniformly — avoids the per-frame
+        // arithmetic on a stationary listener.
+        if (start == target)
         {
-            buffer[offset + n] *= gainL;
-            buffer[offset + n + 1] *= gainR;
+            ApplyConstantBalance(buffer, offset, frames, target);
+            return read;
+        }
+
+        // Linearly interpolate pan from `start` to `target` across the buffer.
+        // Linear (rather than constant-power) is fine because adjacent buffers
+        // are very close in pan value, so the per-sample gain changes are tiny
+        // — no zipper noise even on aggressive camera spins.
+        var step = (target - start) / frames;
+        var current = start;
+        for (int f = 0; f < frames; f++)
+        {
+            var gainL = current <= 0f ? 1f : 1f - current;
+            var gainR = current >= 0f ? 1f : 1f + current;
+            var i = offset + (f << 1);
+            buffer[i] *= gainL;
+            buffer[i + 1] *= gainR;
+            current += step;
         }
         return read;
+    }
+
+    private static void ApplyConstantBalance(float[] buffer, int offset, int frames, float p)
+    {
+        if (p == 0f) return;
+        var gainL = p <= 0f ? 1f : 1f - p;
+        var gainR = p >= 0f ? 1f : 1f + p;
+        for (int f = 0; f < frames; f++)
+        {
+            var i = offset + (f << 1);
+            buffer[i] *= gainL;
+            buffer[i + 1] *= gainR;
+        }
     }
 }
