@@ -203,7 +203,7 @@ public sealed class Plugin : IDalamudPlugin
         // Seed focus-mute state before subscribing so the first SystemChanged
         // event (or the first OnFrameworkUpdate tick) sees correct cached values
         // and only fires a recompute on a real transition.
-        if (GameConfig.System.TryGet(SystemConfigOption.IsSoundAlways, out uint sndAlways))
+        if (GameConfig.TryGet(SystemConfigOption.IsSoundBgmAlways, out uint sndAlways))
             soundsPlayWhenInactive = sndAlways != 0;
         gameFocused = WindowFocus.IsGameFocused();
         GameConfig.SystemChanged += OnSystemConfigChanged;
@@ -1202,9 +1202,12 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void OnSystemConfigChanged(object? sender, ConfigChangeEvent e)
     {
-        if (e.Option is not SystemConfigOption.IsSoundAlways) return;
-        if (!GameConfig.System.TryGet(SystemConfigOption.IsSoundAlways, out uint v)) return;
-        var nv = v != 0;
+        if (e.Option is not SystemConfigOption.IsSoundAlways && e.Option is not SystemConfigOption.IsSoundBgmAlways)
+            return;
+
+        if (!GameConfig.TryGet(SystemConfigOption.IsSoundAlways, out uint soundAlways)) return;
+        if (!GameConfig.TryGet(SystemConfigOption.IsSoundBgmAlways, out uint soundBgmAlways)) return;
+        var nv = soundAlways != 0 && soundBgmAlways != 0;
         if (nv == soundsPlayWhenInactive) return;
         soundsPlayWhenInactive = nv;
         RecomputeFocusMute();
