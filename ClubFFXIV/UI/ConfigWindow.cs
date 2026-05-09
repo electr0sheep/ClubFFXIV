@@ -589,6 +589,96 @@ public sealed class ConfigWindow : Window, IDisposable
         }
     }
 
+    private void DrawCurrentLocationSection()
+    {
+        ImGui.TextUnformatted("Current Location");
+        ImGui.Spacing();
+
+        var key = plugin.CurrentPlotKey;
+        var ward = plugin.CurrentWard;
+
+        if (key.HasValue)
+        {
+            var plot = key.Value;
+            var canonical = plot.Canonical;
+            var name = plugin.HousingDetector.GetDisplayName(plot);
+            ImGui.TextWrapped($"Inside: {name}");
+
+            // Ownership badge (local check, not server-verified). Read the
+            // cached value — populated each framework tick by UpdateLocationState
+            // so off-thread callers don't access ObjectTable.
+            var ownership = plugin.CurrentOwnership;
+            switch (ownership)
+            {
+                case Game.HouseOwnership.Owner:
+                    ImGui.TextColored(new Vector4(0.4f, 0.85f, 0.4f, 1f),
+                        "✓ You own this plot");
+                    break;
+                case Game.HouseOwnership.NotOwner:
+                    ImGui.TextColored(new Vector4(0.95f, 0.7f, 0.2f, 1f),
+                        "⚠ You don't appear to own this plot");
+                    break;
+                case Game.HouseOwnership.Unknown:
+                    ImGui.TextDisabled("Ownership: unknown");
+                    break;
+            }
+
+            ImGui.Spacing();
+
+            // --- Path 1: Local override (any user, any plot) -----------------
+            var hasLocal = plugin.Config.SavedHouses.TryGetValue(canonical, out var savedEntry);
+            if (hasLocal && savedEntry != null)
+            {
+                if (ImGui.Button("Edit local override"))
+                    plugin.ClubFormWindow.OpenLocalEdit(canonical, savedEntry);
+            }
+            else
+            {
+                if (ImGui.Button("Create local override"))
+                    plugin.ClubFormWindow.OpenLocalCreate(plot);
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "A local override is a private URL stored on your client only.\n" +
+                    "When you walk into this plot, your override plays — even if the\n" +
+                    "registry has a different URL for the plot. Visible to no one\n" +
+                    "but you.");
+
+            // --- Path 2: Registry (publish if owner & new; edit if has key) -
+            var hasPublishedKey = plugin.Config.PublishedHouses.TryGetValue(canonical, out var publishedEntry);
+            var blockedByOwnership = ownership == Game.HouseOwnership.NotOwner;
+
+            ImGui.SameLine();
+            if (hasPublishedKey && publishedEntry != null)
+            {
+                if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
+                if (ImGui.Button("Edit club"))
+                    plugin.ClubFormWindow.OpenRegistryEdit(canonical, publishedEntry);
+                if (!plugin.RegistryEnabled) ImGui.EndDisabled();
+            }
+            else
+            {
+                var publishDisabled = !plugin.RegistryEnabled || blockedByOwnership;
+                if (publishDisabled) ImGui.BeginDisabled();
+                if (ImGui.Button("Publish new club"))
+                    plugin.ClubFormWindow.OpenRegistryPublish(plot);
+                if (publishDisabled) ImGui.EndDisabled();
+            }
+        }
+        else if (ward.HasValue)
+        {
+            var districtName = plugin.HousingDetector.LookupDistrictName(ward.Value.TerritoryType);
+            ImGui.TextWrapped($"Roaming: {districtName} Ward {ward.Value.Ward + 1}");
+            ImGui.TextDisabled("Walk to a house's door and use the Calibrate button on a saved/published entry below.");
+        }
+        else
+        {
+            ImGui.TextDisabled("Not in housing.");
+        }
+    }
+
     private void DrawMyHousesSection()
     {
         var rows = new System.Collections.Generic.List<UnifiedHouseRow>(EnumerateMyHouses());
