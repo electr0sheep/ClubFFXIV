@@ -428,8 +428,10 @@ internal sealed class MultiStreamPlayer : IDisposable
     /// <summary>
     /// Apply per-voice spatial parameters from the proximity result. No-op if
     /// the voice isn't active (e.g. still building or already removed).
+    /// <paramref name="pan"/> is -1..+1 (0 = centered); pass 0 when directional
+    /// audio is disabled.
     /// </summary>
-    public void SetSpatial(string canonicalKey, float spatialVolume, float cutoffHz)
+    public void SetSpatial(string canonicalKey, float spatialVolume, float cutoffHz, float pan = 0f)
     {
         lock (voicesLock)
         {
@@ -437,6 +439,7 @@ internal sealed class MultiStreamPlayer : IDisposable
             var muted = autoMuted || mutedKeys.Contains(canonicalKey);
             voice.Volume = muted ? 0f : (masterVolume * spatialVolume);
             voice.CutoffHz = cutoffHz;
+            voice.Pan = pan;
         }
     }
 

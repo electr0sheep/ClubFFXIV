@@ -33,6 +33,7 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
 
     private readonly IDisposable sourceDisposable;
     private readonly BiQuadFilterSampleProvider lowpass;
+    private readonly StereoBalanceSampleProvider balance;
     private readonly VolumeSampleProvider volumeStage;
     // Captured at construction so per-voice transport (pause/seek/position)
     // can address the same playhead the mixer reads through. null for
@@ -72,7 +73,11 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
         }
 
         lowpass = new BiQuadFilterSampleProvider(chain, initialCutoffHz);
-        volumeStage = new VolumeSampleProvider(lowpass) { Volume = 0f };
+        // Balance lives between the lowpass and the volume stage so master/
+        // mute scaling still applies on top of the directional pan, and so
+        // the lowpass operates on the unbalanced signal (cleaner filter math).
+        balance = new StereoBalanceSampleProvider(lowpass);
+        volumeStage = new VolumeSampleProvider(balance) { Volume = 0f };
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -134,6 +139,16 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
     {
         get => lowpass.CutoffHz;
         set => lowpass.CutoffHz = value;
+    }
+
+    /// <summary>
+    /// Stereo balance, -1 = full left, 0 = centered, +1 = full right.
+    /// Driven by the proximity tick from the door's listener-relative angle.
+    /// </summary>
+    public float Pan
+    {
+        get => balance.Pan;
+        set => balance.Pan = value;
     }
 
     public void Dispose()

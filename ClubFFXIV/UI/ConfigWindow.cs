@@ -1013,6 +1013,55 @@ public sealed class ConfigWindow : Window, IDisposable
 
         var changed = false;
 
+        var directional = plugin.Config.SpatialDirectionalAudio;
+        if (ImGui.Checkbox("Directional audio (L/R pan)", ref directional))
+        {
+            plugin.Config.SpatialDirectionalAudio = directional;
+            changed = true;
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Pans each club's audio left/right based on where its door sits\n" +
+                "relative to the camera. Off = every voice plays centered.");
+
+        if (directional)
+        {
+            ImGui.Indent();
+
+            var rearMuffle = plugin.Config.SpatialRearMuffleStrength;
+            if (ImGui.SliderFloat("Rear-muffle strength", ref rearMuffle, 0f, 1f, "%.2f"))
+            {
+                plugin.Config.SpatialRearMuffleStrength = rearMuffle;
+                changed = true;
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "How much extra muffle (lowpass) doors pick up when they're\n" +
+                    "directly behind you — a subtle front/back cue. 0 disables it,\n" +
+                    "1 halves the cutoff at full rear.");
+
+            var invert = plugin.Config.SpatialInvertPan;
+            if (ImGui.Checkbox("Invert L/R", ref invert))
+            {
+                plugin.Config.SpatialInvertPan = invert;
+                changed = true;
+            }
+            ImGui.SameLine();
+            ImGui.TextDisabled("(?)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(
+                    "Flip the pan sign if doors on your left sound like they're\n" +
+                    "on your right. Should not normally be needed.");
+
+            ImGui.Unindent();
+        }
+
+        ImGui.Spacing();
+
         var streamDist = plugin.Config.SpatialStreamDistance;
         if (ImGui.SliderFloat("Pre-buffer distance (m)", ref streamDist, 5f, 200f, "%.0f"))
         {
@@ -1075,6 +1124,9 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip(
                 "Restores all spatial audio sliders to their factory values:\n" +
+                $"  Directional = {(Configuration.DefaultSpatialDirectionalAudio ? "on" : "off")}\n" +
+                $"  Rear muffle = {Configuration.DefaultSpatialRearMuffleStrength:F2}\n" +
+                $"  Invert L/R = {(Configuration.DefaultSpatialInvertPan ? "on" : "off")}\n" +
                 $"  Pre-buffer = {Configuration.DefaultSpatialStreamDistance:F0} m\n" +
                 $"  Falloff = {Configuration.DefaultSpatialFalloffDistance:F0} m\n" +
                 $"  Full volume = {Configuration.DefaultSpatialFullVolumeDistance:F1} m\n" +

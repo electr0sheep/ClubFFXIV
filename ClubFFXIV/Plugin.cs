@@ -1898,9 +1898,13 @@ public sealed class Plugin : IDalamudPlugin
         var pos = HousingDetector.PlayerPosition();
         if (pos == null) return;
 
+        var orientation = Config.SpatialDirectionalAudio
+            ? ListenerOrientationProvider.Get(Config.SpatialInvertPan)
+            : null;
+
         if (MultiStreamActive)
         {
-            HandleOutdoorModeMulti(ward, pos.Value);
+            HandleOutdoorModeMulti(ward, pos.Value, orientation);
             return;
         }
 
@@ -1910,7 +1914,8 @@ public sealed class Plugin : IDalamudPlugin
             candidates,
             Config.SpatialStreamDistance,
             Config.SpatialFalloffDistance,
-            Config.SpatialFullVolumeDistance);
+            Config.SpatialFullVolumeDistance,
+            orientation);
 
         // Always store the proximity result (even if out of range) so the UI can
         // show how far the closest club is — useful for calibration & debugging.
@@ -1933,8 +1938,9 @@ public sealed class Plugin : IDalamudPlugin
             r.NormalizedNearness,
             Config.SpatialMinCutoffHz,
             Config.SpatialMaxCutoffHz);
+        cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
 
-        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff);
+        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Pan);
 
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
             || (CurrentMode != PlaybackMode.Outdoor && !streamPlayer.IsPlaying);
@@ -1965,7 +1971,10 @@ public sealed class Plugin : IDalamudPlugin
     /// for newly-in-range plots, and update spatial params on still-active
     /// voices. yt-dlp candidates count as 2 against MaxConcurrentStreams.
     /// </summary>
-    private void HandleOutdoorModeMulti(WardLocation ward, System.Numerics.Vector3 pos)
+    private void HandleOutdoorModeMulti(
+        WardLocation ward,
+        System.Numerics.Vector3 pos,
+        WardProximity.ListenerOrientation? orientation)
     {
         var candidates = EnumerateCandidates(ward);
         var allInRange = WardProximity.FindAllInRange(
@@ -1973,7 +1982,8 @@ public sealed class Plugin : IDalamudPlugin
             candidates,
             Config.SpatialStreamDistance,
             Config.SpatialFalloffDistance,
-            Config.SpatialFullVolumeDistance);
+            Config.SpatialFullVolumeDistance,
+            orientation);
 
         // UI proximity readout shows the closest club, regardless of whether
         // it ended up with a voice (e.g. cap might have evicted it — unusual,
@@ -2027,10 +2037,11 @@ public sealed class Plugin : IDalamudPlugin
                 r.NormalizedNearness,
                 Config.SpatialMinCutoffHz,
                 Config.SpatialMaxCutoffHz);
+            cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
 
             if (player.HasVoice(key))
             {
-                player.SetSpatial(key, r.NormalizedNearness, cutoff);
+                player.SetSpatial(key, r.NormalizedNearness, cutoff, r.Pan);
                 continue;
             }
             if (player.IsStarting(key)) continue;
@@ -2040,6 +2051,8 @@ public sealed class Plugin : IDalamudPlugin
             if (BinariesMissingForUrl(url)) continue;
             if (IsStreamInCooldown(url)) continue;
 
+            // Newly-added voices come up centered (pan=0); the next proximity
+            // tick will SetSpatial them to the correct angle once they're live.
             _ = player.AddVoiceAsync(key, url, cutoff);
         }
 

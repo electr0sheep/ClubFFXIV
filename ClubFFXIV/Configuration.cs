@@ -45,6 +45,9 @@ public class Configuration : IPluginConfiguration
     // door you hear a muffled "wall in the way" sound. Crossing the threshold into
     // the house is what removes the lowpass entirely.
     public const float DefaultSpatialMaxCutoffHz = 2500f;
+    public const bool DefaultSpatialDirectionalAudio = true;
+    public const float DefaultSpatialRearMuffleStrength = 0.5f;
+    public const bool DefaultSpatialInvertPan = false;
 
     /// <summary>
     /// Beyond this distance the stream isn't connected at all. Inside it (but
@@ -58,6 +61,30 @@ public class Configuration : IPluginConfiguration
     public float SpatialMaxCutoffHz { get; set; } = DefaultSpatialMaxCutoffHz;
 
     /// <summary>
+    /// Stereo-balance the outdoor proximity audio according to where each
+    /// door sits relative to the camera (or character, if camera read fails).
+    /// Off → all voices play centered, exactly like the pre-directional build.
+    /// </summary>
+    public bool SpatialDirectionalAudio { get; set; } = DefaultSpatialDirectionalAudio;
+
+    /// <summary>
+    /// 0..1: how much extra muffle the lowpass picks up when a door is
+    /// directly behind the listener. 0 disables the rear cue (front and back
+    /// sound identical, distinguished only by L/R pan). 1 halves the cutoff
+    /// at full rearness — strong but still musical. Default 0.5 is a subtle
+    /// "duller-when-behind" hint.
+    /// </summary>
+    public float SpatialRearMuffleStrength { get; set; } = DefaultSpatialRearMuffleStrength;
+
+    /// <summary>
+    /// Flip the L/R pan sign. Useful if the FFXIV coordinate-handedness or
+    /// camera-vector convention end up backwards in a future game patch (the
+    /// math has been double-checked, but a one-toggle escape hatch is cheap
+    /// and beats waiting for a plugin update).
+    /// </summary>
+    public bool SpatialInvertPan { get; set; } = DefaultSpatialInvertPan;
+
+    /// <summary>
     /// Restore all spatial-audio knobs to their factory defaults. Caller is
     /// responsible for invoking <see cref="Save"/> afterwards (matches the
     /// existing pattern where UI handlers explicitly persist).
@@ -69,6 +96,9 @@ public class Configuration : IPluginConfiguration
         SpatialFullVolumeDistance = DefaultSpatialFullVolumeDistance;
         SpatialMinCutoffHz = DefaultSpatialMinCutoffHz;
         SpatialMaxCutoffHz = DefaultSpatialMaxCutoffHz;
+        SpatialDirectionalAudio = DefaultSpatialDirectionalAudio;
+        SpatialRearMuffleStrength = DefaultSpatialRearMuffleStrength;
+        SpatialInvertPan = DefaultSpatialInvertPan;
     }
 
     /// <summary>

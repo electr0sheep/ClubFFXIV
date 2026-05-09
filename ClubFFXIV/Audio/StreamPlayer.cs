@@ -23,12 +23,14 @@ public sealed class StreamPlayer : IDisposable
     private ISampleProvider? source;
     private IDisposable? sourceDisposable;
     private BiQuadFilterSampleProvider? lowpass;
+    private StereoBalanceSampleProvider? balance;
     private VolumeSampleProvider? volumeStage;
     private WaveOutEvent? output;
 
     private float masterVolume = 0.7f;
     private float spatialVolume = 1f;
     private float spatialCutoff = BypassCutoffHz;
+    private float spatialPan;
     // Two independent mute inputs: autoMuted is set on focus / FFXIV-config
     // transitions by the focus-mute policy; userMuted is the explicit toggle
     // from the Now Playing header. They OR together — either one zeros output.
@@ -132,16 +134,32 @@ public sealed class StreamPlayer : IDisposable
         }
     }
 
-    public void SetSpatial(float volume, float cutoffHz)
+    /// <summary>
+    /// Stereo balance, -1..+1. Driven by the proximity tick from the door's
+    /// listener-relative angle; 0 when directional audio is disabled.
+    /// </summary>
+    public float SpatialPan
+    {
+        get => spatialPan;
+        set
+        {
+            spatialPan = Math.Clamp(value, -1f, 1f);
+            if (balance != null) balance.Pan = spatialPan;
+        }
+    }
+
+    public void SetSpatial(float volume, float cutoffHz, float pan = 0f)
     {
         SpatialVolume = volume;
         SpatialCutoffHz = cutoffHz;
+        SpatialPan = pan;
     }
 
     public void BypassSpatial()
     {
         SpatialVolume = 1f;
         SpatialCutoffHz = BypassCutoffHz;
+        SpatialPan = 0f;
     }
 
     /// <summary>
@@ -230,14 +248,26 @@ public sealed class StreamPlayer : IDisposable
             return;
         }
 
+        var initialPan = spatialPan;
         var built = await Task.Run(() =>
         {
             ct.ThrowIfCancellationRequested();
             var lp = new BiQuadFilterSampleProvider(newSource, initialCutoff);
-            var v = new VolumeSampleProvider(lp) { Volume = 0f };
+            // The single-stream chain doesn't pre-upmix mono → stereo (the
+            // WaveOutEvent will adapt at output), so guard the balance stage
+            // behind a stereo check. Mono streams skip directional pan, which
+            // is the right answer anyway: a mono source has no L/R to bias.
+            ISampleProvider chain = lp;
+            StereoBalanceSampleProvider? bal = null;
+            if (newSource.WaveFormat.Channels == 2)
+            {
+                bal = new StereoBalanceSampleProvider(lp, initialPan);
+                chain = bal;
+            }
+            var v = new VolumeSampleProvider(chain) { Volume = 0f };
             var o = new WaveOutEvent();
             o.Init(v.ToWaveProvider());
-            return new BuiltChain(newSource, newDisposable, lp, v, o);
+            return new BuiltChain(newSource, newDisposable, lp, bal, v, o);
         }, ct).ConfigureAwait(false);
 
         // Capture the URL + source for the natural-end check. Closure refs
@@ -276,11 +306,13 @@ public sealed class StreamPlayer : IDisposable
         source = built.Source;
         sourceDisposable = built.SourceDisposable;
         lowpass = built.Lowpass;
+        balance = built.Balance;
         volumeStage = built.Volume;
         output = built.Output;
         currentUrl = url;
 
         lowpass.CutoffHz = spatialCutoff;
+        if (balance != null) balance.Pan = spatialPan;
         volumeStage.Volume = EffectiveVolume();
 
         output.Play();
@@ -292,6 +324,7 @@ public sealed class StreamPlayer : IDisposable
         ISampleProvider Source,
         IDisposable SourceDisposable,
         BiQuadFilterSampleProvider Lowpass,
+        StereoBalanceSampleProvider? Balance,
         VolumeSampleProvider Volume,
         WaveOutEvent Output) : IDisposable
     {
@@ -364,6 +397,7 @@ public sealed class StreamPlayer : IDisposable
         source = null;
         sourceDisposable = null;
         lowpass = null;
+        balance = null;
         volumeStage = null;
         currentUrl = null;
     }
