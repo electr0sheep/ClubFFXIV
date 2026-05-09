@@ -311,11 +311,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             throw new InvalidOperationException($"yt-dlp: {msg}");
         }
 
-        var (resolvedUrl, label) = YtDlpDisplayTitle.Parse(firstLine.Trim());
-        if (string.IsNullOrEmpty(resolvedUrl))
-            throw new InvalidOperationException("yt-dlp: empty URL");
-        if (!string.IsNullOrEmpty(label))
-            TitleCache.Set(url, label);
-        return resolvedUrl;
+        return YtDlpDisplayTitle.ParseAndCache(firstLine, url)
+            ?? throw new InvalidOperationException("yt-dlp: empty URL");
     }
 }

@@ -48,22 +48,32 @@ internal static class TitleCache
 /// </summary>
 internal static class YtDlpDisplayTitle
 {
-    // yt-dlp output template. <c>%(url)s</c> is the post-format-selection
-    // media URL (same value -g would print). Each metadata field uses
-    // <c>field,alt|</c> alternation with empty default so missing values
-    // become empty strings rather than the literal "NA".
-    //
-    // <c>|@|</c> is an unlikely-to-appear separator; if a song title
-    // genuinely contains it the parse is malformed and we just skip the
-    // label (URL still resolves), which is acceptable degradation.
+    // %(field,alt|)s uses alternation with an empty default so missing
+    // fields become "" instead of the literal "NA". \u001F (ASCII unit
+    // separator) splits URL from metadata — chosen because it can't appear
+    // in user-facing text.
+    private const char Sep = '\u001F';
     public const string PrintTemplate =
-        "%(url)s|@|ARTIST:%(artist,creator|)s|@|ALBUM:%(album|)s" +
-        "|@|TRACK:%(track|)s|@|TITLE:%(title|)s" +
-        "|@|UPLOADER:%(uploader,channel|)s|@|EXT:%(extractor_key|)s";
+        "%(url)s\u001FARTIST:%(artist,creator|)s\u001FALBUM:%(album|)s" +
+        "\u001FTRACK:%(track|)s\u001FTITLE:%(title|)s" +
+        "\u001FUPLOADER:%(uploader,channel|)s\u001FEXT:%(extractor_key|)s";
+
+    /// <summary>
+    /// Parses a yt-dlp line, and if a display label is derivable, stores it
+    /// in <see cref="TitleCache"/> under <paramref name="userUrlForCache"/>.
+    /// Returns the resolved media URL, or null if the line had none.
+    /// </summary>
+    public static string? ParseAndCache(string line, string userUrlForCache)
+    {
+        var (url, label) = Parse(line.Trim());
+        if (string.IsNullOrEmpty(url)) return null;
+        if (!string.IsNullOrEmpty(label)) TitleCache.Set(userUrlForCache, label);
+        return url;
+    }
 
     public static (string Url, string? Label) Parse(string line)
     {
-        var parts = line.Split("|@|");
+        var parts = line.Split(Sep);
         if (parts.Length == 0) return ("", null);
         var url = parts[0].Trim();
 

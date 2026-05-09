@@ -153,15 +153,13 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             catch { /* exited or disposed */ }
         });
 
-        var (firstResolvedUrl, firstLabel) = YtDlpDisplayTitle.Parse(firstLine.Trim());
-        if (string.IsNullOrEmpty(firstResolvedUrl))
+        var firstResolvedUrl = YtDlpDisplayTitle.ParseAndCache(firstLine, url);
+        if (firstResolvedUrl == null)
         {
             try { ytdlp.Kill(entireProcessTree: true); } catch { }
             try { ytdlp.Dispose(); } catch { }
             throw new InvalidOperationException("yt-dlp: empty URL");
         }
-        if (!string.IsNullOrEmpty(firstLabel))
-            TitleCache.Set(url, firstLabel);
 
         var firstInner = SubprocessAudioReader.FromResolvedUrl(firstResolvedUrl, binaries, ct);
         return new PlaylistAudioReader(ytdlp, binaries, url, firstInner);
@@ -221,16 +219,14 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         {
             var line = await ytdlpStdout.ReadLineAsync(cts.Token);
             if (string.IsNullOrEmpty(line)) return null; // exhausted
-            var (resolvedUrl, label) = YtDlpDisplayTitle.Parse(line.Trim());
-            if (string.IsNullOrEmpty(resolvedUrl)) return null;
-            // Refresh the Now Playing label for the playlist's user URL
+            // Refreshes the Now Playing label for the playlist's user URL
             // before the next ffmpeg starts, so the header flips to the
             // new track at the same time playback does (modulo a small
-            // ffmpeg-spawn gap). Empty label leaves the previous one in
-            // place, which is fine — the URL fallback only kicks in if no
-            // item ever populated a label.
-            if (!string.IsNullOrEmpty(label))
-                TitleCache.Set(userUrl, label);
+            // ffmpeg-spawn gap). Empty label inside ParseAndCache leaves
+            // the previous one in place — fine, the URL fallback only
+            // kicks in if no item ever populated a label.
+            var resolvedUrl = YtDlpDisplayTitle.ParseAndCache(line, userUrl);
+            if (resolvedUrl == null) return null;
             return SubprocessAudioReader.FromResolvedUrl(resolvedUrl, binaries, cts.Token);
         }
         catch (OperationCanceledException)
