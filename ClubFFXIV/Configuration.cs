@@ -76,8 +76,8 @@ public class Configuration : IPluginConfiguration
     /// 0..1: how much extra muffle the lowpass picks up when a door is
     /// directly behind the listener. 0 disables the rear cue (front and back
     /// sound identical, distinguished only by L/R pan). 1 halves the cutoff
-    /// at full rearness — strong but still musical. Default 0.5 is a subtle
-    /// "duller-when-behind" hint.
+    /// when directly behind — strong but still musical. Default 0.5 is a
+    /// subtle "duller-when-behind" hint.
     /// </summary>
     public float SpatialRearMuffleStrength { get; set; } = DefaultSpatialRearMuffleStrength;
 

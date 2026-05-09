@@ -645,13 +645,24 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             ImGui.Text($"{label}: {p.Candidate.DisplayName}");
             ImGui.Text($"Distance: {p.Distance:F1} yalms");
 
-            var pan = p.Pan;
-            var pos = Math.Clamp((int)Math.Round((pan + 1f) * 5f), 0, 10);
-            var bar = new string('-', pos) + 'o' + new string('-', 10 - pos);
-            var side = pan < -0.05f ? $"{Math.Abs(pan) * 100f:F0}% left"
-                     : pan >  0.05f ? $"{pan * 100f:F0}% right"
-                     : "centered";
-            ImGui.Text($"L [{bar}] R  ({side})");
+            var balance = p.Balance;
+            var balancePos = Math.Clamp((int)Math.Round((balance + 1f) * 5f), 0, 10);
+            var balanceBar = new string('-', balancePos) + 'o' + new string('-', 10 - balancePos);
+            var balanceSide = balance < -0.05f ? $"{Math.Abs(balance) * 100f:F0}% left"
+                            : balance >  0.05f ? $"{balance * 100f:F0}% right"
+                            : "centered";
+            ImGui.Text($"L [{balanceBar}] R  ({balanceSide})");
+
+            // F/B mirrors the L/R block: fade is +1 in front, -1 behind, 0
+            // perpendicular. Bar reads back→front so "F" labels the right
+            // edge, matching how the player faces forward.
+            var fade = p.Fade;
+            var fadePos = Math.Clamp((int)Math.Round((fade + 1f) * 5f), 0, 10);
+            var fadeBar = new string('-', fadePos) + 'o' + new string('-', 10 - fadePos);
+            var fadeSide = fade >  0.05f ? $"{fade * 100f:F0}% front"
+                         : fade < -0.05f ? $"{Math.Abs(fade) * 100f:F0}% back"
+                         : "perpendicular";
+            ImGui.Text($"B [{fadeBar}] F  ({fadeSide})");
         }
         else if (plugin.CurrentWard.HasValue)
         {

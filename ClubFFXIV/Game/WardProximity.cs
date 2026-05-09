@@ -20,7 +20,7 @@ public static class WardProximity
     /// <summary>
     /// Listener (player/camera) facing in world space, projected onto the
     /// horizontal plane. Used to convert a door's world position into a
-    /// listener-relative pan + rearness pair. Both vectors are unit length
+    /// listener-relative (balance, fade) pair. Both vectors are unit length
     /// and have Y=0 — vertical separation isn't reproducible over stereo
     /// anyway, so we deliberately collapse to 2D.
     /// </summary>
@@ -32,8 +32,8 @@ public static class WardProximity
         float NormalizedNearness,
         bool Audible,    // within audibleRange — user actually hears it
         bool Streaming,  // within streamRange — keep the stream alive (may be silent if buffering)
-        float Pan,       // -1 = full left, 0 = centered, +1 = full right
-        float Rearness); // 0 = directly in front, 1 = directly behind
+        float Balance,   // -1 = full left, 0 = centered, +1 = full right
+        float Fade);     // -1 = directly behind, 0 = perpendicular, +1 = directly in front
 
     /// <summary>
     /// Returns the closest candidate to playerPos (regardless of range), or null
@@ -45,8 +45,9 @@ public static class WardProximity
     ///   - audibleRange: actual volume curve goes 0→1 from audibleRange to fullRange.
     ///     Outside audibleRange but inside streamRange = pre-buffering, volume 0.
     ///
-    /// When <paramref name="orientation"/> is null, Pan and Rearness on the result
-    /// are 0 — i.e. the directional cue is bypassed (centered, treated as "in front").
+    /// When <paramref name="orientation"/> is null, Balance and Fade on the
+    /// result are 0 — i.e. the directional cue is bypassed (centered, treated
+    /// as perpendicular).
     /// </summary>
     public static Result? FindClosest(
         Vector3 playerPos,
@@ -76,8 +77,8 @@ public static class WardProximity
         var streaming = bestDist <= streamRange;
         var audible = bestDist <= audibleRange;
         var nearness = Normalize(bestDist, audibleRange, fullRange);
-        var (pan, rearness) = ComputeDirection(playerPos, best.DoorPosition, orientation);
-        return new Result(best, bestDist, nearness, audible, streaming, pan, rearness);
+        var (balance, fade) = ComputeDirection(playerPos, best.DoorPosition, orientation);
+        return new Result(best, bestDist, nearness, audible, streaming, balance, fade);
     }
 
     /// <summary>
@@ -100,8 +101,8 @@ public static class WardProximity
             var d = Vector3.Distance(playerPos, c.DoorPosition);
             if (d > streamRange) continue;
             var nearness = Normalize(d, audibleRange, fullRange);
-            var (pan, rearness) = ComputeDirection(playerPos, c.DoorPosition, orientation);
-            results.Add(new Result(c, d, nearness, d <= audibleRange, true, pan, rearness));
+            var (balance, fade) = ComputeDirection(playerPos, c.DoorPosition, orientation);
+            results.Add(new Result(c, d, nearness, d <= audibleRange, true, balance, fade));
         }
         results.Sort((a, b) => a.Distance.CompareTo(b.Distance));
         return results;
@@ -132,27 +133,33 @@ public static class WardProximity
     /// <summary>
     /// Bend the lowpass cutoff downward when the door is behind the listener,
     /// approximating the spectral shadow that real ears use as a front/back
-    /// cue. <paramref name="rearness"/> is 0 in front, 1 directly behind;
+    /// cue. <paramref name="fade"/> mirrors Balance: -1 = directly behind,
+    /// 0 = perpendicular, +1 = directly in front. Only the "behind" half
+    /// attenuates — the front and side halves leave the cutoff untouched.
     /// <paramref name="strength"/> is 0..1 (0 = no rear muffle, 1 = halve the
     /// cutoff at full rear).
     /// </summary>
-    public static float ApplyRearMuffle(float cutoffHz, float rearness, float strength)
+    public static float ApplyRearMuffle(float cutoffHz, float fade, float strength)
     {
         var s = System.Math.Clamp(strength, 0f, 1f);
-        var r = System.Math.Clamp(rearness, 0f, 1f);
-        // 0 rearness → factor 1 (unchanged); 1 rearness → factor (1 - s/2).
+        // Collapse front (+/0) to 0, back (-1) to +1 — the asymmetric shape
+        // the muffle factor expects. Side and front share factor 1 (unchanged).
+        var r = System.Math.Clamp(-fade, 0f, 1f);
         var factor = 1f - 0.5f * s * r;
         return cutoffHz * factor;
     }
 
     /// <summary>
     /// Project the door's horizontal offset from the player onto the listener's
-    /// right and forward axes to get pan ∈ [-1,+1] and rearness ∈ [0,1].
-    /// Vertical (Y) component is dropped — stereo can't reproduce height anyway.
-    /// Public so the per-frame spatial-pose refresh can recompute pan from a
-    /// cached door position without re-running the whole proximity sweep.
+    /// right and forward axes to get balance ∈ [-1,+1] and fade ∈ [-1,+1].
+    /// Both axes are signed and symmetric so the UI can render them with the
+    /// same paradigm — borrowed from surround-mixing console terminology.
+    /// Vertical (Y) component is dropped — stereo can't reproduce height
+    /// anyway. Public so the per-frame spatial-pose refresh can recompute
+    /// balance from a cached door position without re-running the whole
+    /// proximity sweep.
     /// </summary>
-    public static (float Pan, float Rearness) ComputeDirection(
+    public static (float Balance, float Fade) ComputeDirection(
         Vector3 playerPos, Vector3 doorPos, ListenerOrientation? orientation)
     {
         if (orientation == null) return (0f, 0f);
@@ -165,9 +172,8 @@ public static class WardProximity
         if (len < 1e-4f) return (0f, 0f);
         delta /= len;
 
-        var pan = Vector3.Dot(delta, o.Right);
-        var fwdDot = Vector3.Dot(delta, o.Forward);
-        var rearness = System.Math.Clamp(-fwdDot, 0f, 1f);
-        return (System.Math.Clamp(pan, -1f, 1f), rearness);
+        var balance = Vector3.Dot(delta, o.Right);
+        var fade = Vector3.Dot(delta, o.Forward);
+        return (System.Math.Clamp(balance, -1f, 1f), System.Math.Clamp(fade, -1f, 1f));
     }
 }

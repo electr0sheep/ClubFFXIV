@@ -1960,11 +1960,11 @@ public sealed class Plugin : IDalamudPlugin
                 var distance = Vector3.Distance(pos, doorPos);
                 var nearness = WardProximity.Normalize(
                     distance, Config.SpatialFalloffDistance, Config.SpatialFullVolumeDistance);
-                var (pan, rearness) = WardProximity.ComputeDirection(pos, doorPos, orientation);
+                var (balance, fade) = WardProximity.ComputeDirection(pos, doorPos, orientation);
                 var cutoff = WardProximity.NearnessToCutoff(
                     nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
-                cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
-                multiStreamPlayer!.SetSpatial(key, nearness, cutoff, pan * panStrength);
+                cutoff = WardProximity.ApplyRearMuffle(cutoff, fade, Config.SpatialRearMuffleStrength);
+                multiStreamPlayer!.SetSpatial(key, nearness, cutoff, balance * panStrength);
 
                 if (key == proxKey && CurrentProximity is { } cp)
                 {
@@ -1972,8 +1972,8 @@ public sealed class Plugin : IDalamudPlugin
                     {
                         Distance = distance,
                         NormalizedNearness = nearness,
-                        Pan = pan,
-                        Rearness = rearness,
+                        Balance = balance,
+                        Fade = fade,
                     };
                 }
             }
@@ -1984,11 +1984,11 @@ public sealed class Plugin : IDalamudPlugin
             var distance = Vector3.Distance(pos, doorPos);
             var nearness = WardProximity.Normalize(
                 distance, Config.SpatialFalloffDistance, Config.SpatialFullVolumeDistance);
-            var (pan, rearness) = WardProximity.ComputeDirection(pos, doorPos, orientation);
+            var (balance, fade) = WardProximity.ComputeDirection(pos, doorPos, orientation);
             var cutoff = WardProximity.NearnessToCutoff(
                 nearness, Config.SpatialMinCutoffHz, Config.SpatialMaxCutoffHz);
-            cutoff = WardProximity.ApplyRearMuffle(cutoff, rearness, Config.SpatialRearMuffleStrength);
-            streamPlayer.SetSpatial(nearness, cutoff, pan * panStrength);
+            cutoff = WardProximity.ApplyRearMuffle(cutoff, fade, Config.SpatialRearMuffleStrength);
+            streamPlayer.SetSpatial(nearness, cutoff, balance * panStrength);
 
             if (CurrentProximity is { } cp)
             {
@@ -1996,8 +1996,8 @@ public sealed class Plugin : IDalamudPlugin
                 {
                     Distance = distance,
                     NormalizedNearness = nearness,
-                    Pan = pan,
-                    Rearness = rearness,
+                    Balance = balance,
+                    Fade = fade,
                 };
             }
         }
@@ -2049,9 +2049,9 @@ public sealed class Plugin : IDalamudPlugin
             r.NormalizedNearness,
             Config.SpatialMinCutoffHz,
             Config.SpatialMaxCutoffHz);
-        cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
+        cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Fade, Config.SpatialRearMuffleStrength);
 
-        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Pan * Config.SpatialPanStrength);
+        streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Balance * Config.SpatialPanStrength);
         activeSingleDoorPos = r.Candidate.DoorPosition;
 
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
@@ -2157,11 +2157,11 @@ public sealed class Plugin : IDalamudPlugin
                 r.NormalizedNearness,
                 Config.SpatialMinCutoffHz,
                 Config.SpatialMaxCutoffHz);
-            cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Rearness, Config.SpatialRearMuffleStrength);
+            cutoff = WardProximity.ApplyRearMuffle(cutoff, r.Fade, Config.SpatialRearMuffleStrength);
 
             if (player.HasVoice(key))
             {
-                player.SetSpatial(key, r.NormalizedNearness, cutoff, r.Pan * Config.SpatialPanStrength);
+                player.SetSpatial(key, r.NormalizedNearness, cutoff, r.Balance * Config.SpatialPanStrength);
                 continue;
             }
             if (player.IsStarting(key)) continue;
