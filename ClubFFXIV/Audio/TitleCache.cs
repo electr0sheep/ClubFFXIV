@@ -31,11 +31,42 @@ internal static class TitleCache
 }
 
 /// <summary>
+/// Per-URL artwork URL cache, populated by <see cref="YtDlpDisplayTitle"/>
+/// from yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams
+/// don't expose artwork, so most non-yt-dlp URLs simply have no entry —
+/// callers treat absence as "no thumbnail" and render a placeholder. The
+/// stored value is a remote URL (http/https); the actual texture is fetched
+/// and cached at render time by <c>UI.NowPlayingThumbnails</c>.
+/// </summary>
+internal static class ThumbnailCache
+{
+    private static readonly ConcurrentDictionary<string, string> map = new();
+
+    public static void Set(string url, string thumbUrl)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        var trimmed = thumbUrl?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return;
+        // yt-dlp emits "NA" for missing fields when the alternation default
+        // doesn't match; defensively skip these so we don't try to fetch
+        // http://NA/ at render time.
+        if (string.Equals(trimmed, "NA", StringComparison.Ordinal)) return;
+        if (!trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return;
+        map[url] = trimmed;
+    }
+
+    public static string? Get(string url) =>
+        url != null && map.TryGetValue(url, out var t) ? t : null;
+}
+
+/// <summary>
 /// Builds the yt-dlp <c>--print</c> template that replaces <c>-g</c> in our
 /// URL-resolution invocations, and parses each emitted line into
-/// (resolvedUrl, displayLabel). One line per playlist item — the URL goes to
-/// ffmpeg, the label goes to <see cref="TitleCache"/> keyed by the user's
-/// original URL.
+/// (resolvedUrl, displayLabel, thumbnailUrl). One line per playlist item —
+/// the URL goes to ffmpeg, the label goes to <see cref="TitleCache"/> and
+/// the thumbnail URL goes to <see cref="ThumbnailCache"/>, both keyed by
+/// the user's original URL.
 ///
 /// Display rules per source:
 ///   • YouTube Music / "Topic" channels (artist + track populated):
@@ -49,32 +80,36 @@ internal static class TitleCache
 internal static class YtDlpDisplayTitle
 {
     // %(field,alt|)s uses alternation with an empty default so missing
-    // fields become "" instead of the literal "NA". \u001F (ASCII unit
+    // fields become "" instead of the literal "NA".  (ASCII unit
     // separator) splits URL from metadata — chosen because it can't appear
     // in user-facing text.
-    private const char Sep = '\u001F';
+    private const char Sep = '';
     public const string PrintTemplate =
-        "%(url)s\u001FARTIST:%(artist,creator|)s\u001FALBUM:%(album|)s" +
-        "\u001FTRACK:%(track|)s\u001FTITLE:%(title|)s" +
-        "\u001FUPLOADER:%(uploader,channel|)s\u001FEXT:%(extractor_key|)s";
+        "%(url)sARTIST:%(artist,creator|)sALBUM:%(album|)s" +
+        "TRACK:%(track|)sTITLE:%(title|)s" +
+        "UPLOADER:%(uploader,channel|)sEXT:%(extractor_key|)s" +
+        "THUMB:%(thumbnail|)s";
 
     /// <summary>
     /// Parses a yt-dlp line, and if a display label is derivable, stores it
     /// in <see cref="TitleCache"/> under <paramref name="userUrlForCache"/>.
-    /// Returns the resolved media URL, or null if the line had none.
+    /// Likewise, if a thumbnail URL is present it's stored in
+    /// <see cref="ThumbnailCache"/>. Returns the resolved media URL, or null
+    /// if the line had none.
     /// </summary>
     public static string? ParseAndCache(string line, string userUrlForCache)
     {
-        var (url, label) = Parse(line.Trim());
+        var (url, label, thumb) = Parse(line.Trim());
         if (string.IsNullOrEmpty(url)) return null;
         if (!string.IsNullOrEmpty(label)) TitleCache.Set(userUrlForCache, label);
+        if (!string.IsNullOrEmpty(thumb)) ThumbnailCache.Set(userUrlForCache, thumb!);
         return url;
     }
 
-    public static (string Url, string? Label) Parse(string line)
+    public static (string Url, string? Label, string? Thumbnail) Parse(string line)
     {
         var parts = line.Split(Sep);
-        if (parts.Length == 0) return ("", null);
+        if (parts.Length == 0) return ("", null, null);
         var url = parts[0].Trim();
 
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -85,7 +120,8 @@ internal static class YtDlpDisplayTitle
             if (colon <= 0) continue;
             fields[p[..colon]] = p[(colon + 1)..].Trim();
         }
-        return (url, BuildLabel(fields));
+        var thumb = Get(fields, "THUMB");
+        return (url, BuildLabel(fields), thumb.Length > 0 ? thumb : null);
     }
 
     private static string? BuildLabel(Dictionary<string, string> f)

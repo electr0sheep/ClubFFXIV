@@ -181,6 +181,21 @@ public sealed class ConfigWindow : Window, IDisposable
                 "  • Off: original playlist order.\n" +
                 "  • On: yt-dlp shuffles the playlist before iteration.\n" +
                 "No effect on single videos or live streams.");
+
+        var showThumbs = plugin.Config.ShowNowPlayingThumbnails;
+        if (ImGui.Checkbox("Show thumbnails in Now Playing", ref showThumbs))
+        {
+            plugin.Config.ShowNowPlayingThumbnails = showThumbs;
+            plugin.Config.Save();
+        }
+        ImGui.SameLine();
+        ImGui.TextDisabled("(?)");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(
+                "Render album / video artwork beside each Now Playing row.\n" +
+                "  • YouTube / SoundCloud / Twitch: thumbnail from yt-dlp.\n" +
+                "  • Icecast / direct MP3: placeholder square (no artwork available).\n" +
+                "Off = text-only rows.");
     }
 
     private void DrawAdvancedTab()
@@ -453,13 +468,20 @@ public sealed class ConfigWindow : Window, IDisposable
     private void DrawNowPlayingHeader()
     {
         var entries = plugin.GetNowPlayingEntries();
+        var showThumbs = plugin.Config.ShowNowPlayingThumbnails && entries.Count > 0;
 
         // Auto-size the dark strip to fit one row per active stream (or a
         // single placeholder row when nothing is playing). NoScrollbar keeps
         // it from showing a sidebar — if for some reason the content overflows
         // the parent, rows just clip rather than introduce a scroll affordance.
+        // Thumbnail rows are taller — anchor row height to the thumbnail size
+        // so the artwork has square pixels and the row chrome (mute icon,
+        // label, blacklist button) vertically centres against it.
         var rowCount = Math.Max(1, entries.Count);
-        var rowH = ImGui.GetFrameHeightWithSpacing();
+        var thumbSize = ImGui.GetFrameHeight() * 1.6f;
+        var rowH = showThumbs
+            ? thumbSize + ImGui.GetStyle().ItemSpacing.Y
+            : ImGui.GetFrameHeightWithSpacing();
         var height = rowCount * rowH + 12f;
 
         ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.10f, 0.10f, 0.12f, 1f));
@@ -479,16 +501,26 @@ public sealed class ConfigWindow : Window, IDisposable
         else
         {
             foreach (var entry in entries)
-                DrawNowPlayingRow(entry);
+                DrawNowPlayingRow(entry, showThumbs ? thumbSize : 0f);
         }
 
         ImGui.EndChild();
         ImGui.PopStyleColor();
     }
 
-    private void DrawNowPlayingRow(Plugin.NowPlayingEntry entry)
+    private void DrawNowPlayingRow(Plugin.NowPlayingEntry entry, float thumbSize)
     {
         ImGui.PushID("np-" + entry.Url);
+
+        if (thumbSize > 0f)
+        {
+            // Thumbnail goes at the row start; subsequent SameLine calls put
+            // the mute icon and label to its right. The cursor advance for
+            // both the loaded image and the placeholder is exactly thumbSize
+            // square so loading-state transitions don't shift the layout.
+            NowPlayingThumbnails.Draw(entry.ThumbnailUrl, new Vector2(thumbSize, thumbSize));
+            ImGui.SameLine();
+        }
 
         // The icon itself is the mute/unmute click target. Action-based
         // affordance: when audible, show a mute symbol (clicking silences);

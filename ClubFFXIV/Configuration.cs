@@ -145,6 +145,14 @@ public class Configuration : IPluginConfiguration
     public int MaxConcurrentStreams { get; set; } = 2;
 
     /// <summary>
+    /// Show artwork thumbnails in the Now Playing header strip. yt-dlp sources
+    /// (YouTube/SoundCloud/etc.) provide a thumbnail URL via the --print
+    /// template; Icecast and raw-HTTP streams don't, so they render a
+    /// placeholder square. Off = text-only rows (the pre-thumbnail layout).
+    /// </summary>
+    public bool ShowNowPlayingThumbnails { get; set; } = true;
+
+    /// <summary>
     /// Cached copy of FFXIV's "Play sounds when window is not active" policy
     /// (the AND of IsSoundAlways and IsSoundBgmAlways). Updated whenever
     /// IGameConfig.SystemChanged fires for either option, and persisted so

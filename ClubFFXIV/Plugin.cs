@@ -33,6 +33,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IGameConfig GameConfig { get; private set; } = null!;
     [PluginService] internal static IDataManager DataManager { get; private set; } = null!;
     [PluginService] internal static INotificationManager NotificationManager { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
 
     public Configuration Config { get; }
     public WindowSystem WindowSystem { get; } = new("ClubFFXIV");
@@ -568,12 +569,16 @@ public sealed class Plugin : IDalamudPlugin
     /// One row in the Now Playing header. Abstracts over single-stream and
     /// per-voice multi-stream so the UI can render uniform rows. PlotKey is
     /// null for the single-stream row, set for multi-stream voices.
+    /// ThumbnailUrl is null for sources that don't expose artwork (Icecast,
+    /// raw HTTP MP3) or before yt-dlp's first --print line lands; the UI
+    /// falls back to a placeholder square in that case.
     /// </summary>
     public readonly record struct NowPlayingEntry(
         string Url,
         string Label,
         bool Muted,
-        string? PlotKey);
+        string? PlotKey,
+        string? ThumbnailUrl);
 
     /// <summary>
     /// Snapshot of every audio source currently producing (or about to produce)
@@ -589,7 +594,9 @@ public sealed class Plugin : IDalamudPlugin
 
         if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
-            result.Add(new NowPlayingEntry(url, GetDisplayLabel(url), streamPlayer.UserMuted, PlotKey: null));
+            result.Add(new NowPlayingEntry(
+                url, GetDisplayLabel(url), streamPlayer.UserMuted,
+                PlotKey: null, ThumbnailUrl: ThumbnailCache.Get(url)));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
@@ -597,7 +604,9 @@ public sealed class Plugin : IDalamudPlugin
             foreach (var key in msp.ActiveKeys())
             {
                 var voiceUrl = msp.GetVoiceUrl(key) ?? "";
-                result.Add(new NowPlayingEntry(voiceUrl, GetDisplayLabel(voiceUrl), msp.IsVoiceMuted(key), PlotKey: key));
+                result.Add(new NowPlayingEntry(
+                    voiceUrl, GetDisplayLabel(voiceUrl), msp.IsVoiceMuted(key),
+                    PlotKey: key, ThumbnailUrl: ThumbnailCache.Get(voiceUrl)));
             }
         }
 
