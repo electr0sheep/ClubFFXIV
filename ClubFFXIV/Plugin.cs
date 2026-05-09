@@ -648,7 +648,14 @@ public sealed class Plugin : IDalamudPlugin
                 // hiding the seek bar via this flag is sufficient.
                 Seekable: !isLive && streamPlayer.PositionSeconds >= 0
                           && streamPlayer.DurationSeconds > 0,
-                CanSkipNext: !isLive && streamPlayer.IsSkippable,
+                // Skip-next only when the source is actually a multi-item
+                // playlist. yt-dlp's playlist_count metadata is 0 for single
+                // videos (and unset for video-with-playlist URLs we resolve
+                // as the video via --no-playlist), so the icon stays hidden
+                // there. Without this, single videos got a misleading skip
+                // affordance that just looped/stopped the same track.
+                CanSkipNext: !isLive && streamPlayer.IsSkippable
+                             && PlaylistCountCache.Get(url) > 1,
                 PositionSeconds: streamPlayer.PositionSeconds,
                 DurationSeconds: streamPlayer.DurationSeconds));
         }
@@ -669,7 +676,8 @@ public sealed class Plugin : IDalamudPlugin
                     IsLive: voiceLive,
                     IsPaused: msp.IsVoicePaused(key),
                     Seekable: !voiceLive && msp.IsVoiceSeekable(key) && voiceDuration > 0,
-                    CanSkipNext: !voiceLive && msp.IsVoiceSkippable(key),
+                    CanSkipNext: !voiceLive && msp.IsVoiceSkippable(key)
+                                 && PlaylistCountCache.Get(voiceUrl) > 1,
                     PositionSeconds: msp.GetVoicePosition(key),
                     DurationSeconds: voiceDuration));
             }

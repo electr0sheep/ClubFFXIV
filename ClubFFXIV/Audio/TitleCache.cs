@@ -90,6 +90,32 @@ internal static class DurationCache
 }
 
 /// <summary>
+/// Per-URL playlist item count, populated from yt-dlp's
+/// <c>playlist_count</c> metadata field. Single-video URLs (and
+/// video-with-playlist URLs we deliberately resolve as the video via
+/// <c>--no-playlist</c>) leave the field empty, so this stays at 0 — which
+/// gates the skip-next UI off. Multi-item playlists set the actual count
+/// (e.g. 50 for a 50-track YouTube playlist), and the UI shows the skip
+/// affordance only when count > 1. Without this gate, single videos got
+/// a skip button that just degenerated to the natural-end loop logic —
+/// technically functional but a misleading affordance.
+/// </summary>
+internal static class PlaylistCountCache
+{
+    private static readonly ConcurrentDictionary<string, int> map = new();
+
+    public static void Set(string url, int count)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (count <= 0) return;
+        map[url] = count;
+    }
+
+    public static int Get(string url) =>
+        url != null && map.TryGetValue(url, out var v) ? v : 0;
+}
+
+/// <summary>
 /// Per-URL artwork cache, populated by <see cref="YtDlpDisplayTitle"/> from
 /// yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams don't
 /// expose artwork, so most non-yt-dlp URLs simply have no entry — callers
@@ -149,7 +175,7 @@ internal static class YtDlpDisplayTitle
         "TRACK:%(track|)sTITLE:%(title|)s" +
         "UPLOADER:%(uploader,channel|)sEXT:%(extractor_key|)s" +
         "THUMB:%(thumbnail|)sLIVE:%(live_status|)s" +
-        "DUR:%(duration|)s";
+        "DUR:%(duration|)sPCNT:%(playlist_count|)s";
 
     /// <summary>
     /// Parses a yt-dlp line, and if a display label is derivable, stores it
@@ -173,17 +199,18 @@ internal static class YtDlpDisplayTitle
         // duration in some cases, but IsLive=true gates the seek UI off anyway.
         if (parsed.IsLive.HasValue) LiveStatusCache.Set(userUrlForCache, parsed.IsLive.Value);
         if (parsed.DurationSeconds > 0) DurationCache.Set(userUrlForCache, parsed.DurationSeconds);
+        if (parsed.PlaylistCount > 0) PlaylistCountCache.Set(userUrlForCache, parsed.PlaylistCount);
         return parsed.Url;
     }
 
     public readonly record struct ParsedLine(
         string Url, string? Label, string? Thumbnail, bool CropSquare,
-        bool? IsLive, double DurationSeconds);
+        bool? IsLive, double DurationSeconds, int PlaylistCount);
 
     public static ParsedLine Parse(string line)
     {
         var parts = line.Split(Sep);
-        if (parts.Length == 0) return new ParsedLine("", null, null, false, null, 0);
+        if (parts.Length == 0) return new ParsedLine("", null, null, false, null, 0, 0);
         var url = parts[0].Trim();
 
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -230,9 +257,21 @@ internal static class YtDlpDisplayTitle
             _ => durationSeconds > 0 ? (bool?)false : null,
         };
 
+        // playlist_count: number of items in the playlist this URL is part
+        // of. Empty / unparseable / 0 means "not a playlist" — gates the
+        // skip-next UI off for single-video URLs.
+        int playlistCount = 0;
+        var pcRaw = Get(fields, "PCNT");
+        if (pcRaw.Length > 0
+            && int.TryParse(pcRaw, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var pc))
+        {
+            playlistCount = pc;
+        }
+
         return new ParsedLine(
             url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare,
-            isLive, durationSeconds);
+            isLive, durationSeconds, playlistCount);
     }
 
     private static string? BuildLabel(Dictionary<string, string> f)
