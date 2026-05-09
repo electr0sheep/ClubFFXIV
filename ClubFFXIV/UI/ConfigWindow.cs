@@ -1079,7 +1079,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.Spacing();
 
         var streamDist = plugin.Config.SpatialStreamDistance;
-        if (ImGui.SliderFloat("Pre-buffer distance (m)", ref streamDist, 5f, 200f, "%.0f"))
+        if (ImGui.SliderFloat("Pre-buffer distance (yalms)", ref streamDist, 5f, 200f, "%.0f"))
         {
             plugin.Config.SpatialStreamDistance = streamDist;
             changed = true;
@@ -1093,7 +1093,7 @@ public sealed class ConfigWindow : Window, IDisposable
                 "audible threshold. Should be larger than Falloff distance.");
 
         var falloff = plugin.Config.SpatialFalloffDistance;
-        if (ImGui.SliderFloat("Falloff distance (m)", ref falloff, 5f, 100f, "%.0f"))
+        if (ImGui.SliderFloat("Falloff distance (yalms)", ref falloff, 5f, 100f, "%.0f"))
         {
             plugin.Config.SpatialFalloffDistance = falloff;
             changed = true;
@@ -1104,7 +1104,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SetTooltip("Audible threshold — at this distance, volume = 0 but stream may still be pre-buffering.");
 
         var full = plugin.Config.SpatialFullVolumeDistance;
-        if (ImGui.SliderFloat("Full-volume distance (m)", ref full, 0.5f, 20f, "%.1f"))
+        if (ImGui.SliderFloat("Full-volume distance (yalms)", ref full, 0.5f, 20f, "%.1f"))
         {
             plugin.Config.SpatialFullVolumeDistance = full;
             changed = true;

@@ -643,7 +643,15 @@ public sealed class MusicPlayerWindow : Window, IDisposable
                 ? (p.Audible ? "Approaching" : "Pre-buffering")
                 : "Closest (out of range)";
             ImGui.Text($"{label}: {p.Candidate.DisplayName}");
-            ImGui.Text($"Distance: {p.Distance:F1} m   Nearness: {p.NormalizedNearness * 100:F0}%");
+            ImGui.Text($"Distance: {p.Distance:F1} yalms");
+
+            var pan = p.Pan;
+            var pos = Math.Clamp((int)Math.Round((pan + 1f) * 5f), 0, 10);
+            var bar = new string('-', pos) + 'o' + new string('-', 10 - pos);
+            var side = pan < -0.05f ? $"{Math.Abs(pan) * 100f:F0}% left"
+                     : pan >  0.05f ? $"{pan * 100f:F0}% right"
+                     : "centered";
+            ImGui.Text($"L [{bar}] R  ({side})");
         }
         else if (plugin.CurrentWard.HasValue)
         {

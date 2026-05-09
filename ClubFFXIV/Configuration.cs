@@ -33,7 +33,7 @@ public class Configuration : IPluginConfiguration
     public string DjPrivateKeyBase64 { get; set; } = "";
 
     /// <summary>
-    /// Phase 4 spatial knobs. Distances are in FFXIV world units (≈ meters).
+    /// Phase 4 spatial knobs. Distances are in FFXIV world units (yalms).
     /// Cutoffs are in Hz. Defaults are exposed as constants so the UI's
     /// "Reset to defaults" button stays in sync with the property initializers.
     /// </summary>
