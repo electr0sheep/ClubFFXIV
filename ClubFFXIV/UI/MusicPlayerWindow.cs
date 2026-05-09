@@ -227,16 +227,13 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         if (entry.Label != entry.Url && ImGui.IsItemHovered())
             ImGui.SetTooltip(entry.Url);
 
-        // Right-aligned Blacklist button. Idiom matches the "? Help" pattern
-        // — measure label width and offset the cursor.
-        const string blacklistLabel = "Blacklist";
-        var pad = ImGui.GetStyle().FramePadding.X * 2 + 4;
-        var blacklistW = ImGui.CalcTextSize(blacklistLabel).X + pad;
+        // Right-aligned Blacklist button — same FontAwesomeIcon.Ban glyph
+        // the My Clubs tab uses for Unpublish, so the row chrome stays
+        // compact and the affordance reads consistently across windows.
+        // Width measured under the icon font so the right-align math
+        // reflects glyph metrics, not the regular text font.
         ImGui.SameLine();
-        ImGui.SetCursorPosX(
-            ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - blacklistW);
-        if (ImGui.SmallButton(blacklistLabel + "##" + entry.Url))
-            plugin.BlacklistNowPlaying(entry);
+        DrawBlacklistIconButton(entry);
 
         // Second line: seek bar + timestamp for non-live entries. The
         // header's height calculation reserves space for this so it doesn't
@@ -245,6 +242,31 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             DrawNowPlayingTransport(entry, thumbSize);
 
         ImGui.PopID();
+    }
+
+    /// <summary>
+    /// Right-aligned Ban-icon button that blacklists the row's URL — same
+    /// glyph the My Clubs tab uses for Unpublish, so the affordance reads
+    /// consistently. Pushes the icon font for both the width measurement
+    /// and the button render so glyph metrics drive the right-align math.
+    /// </summary>
+    private void DrawBlacklistIconButton(Plugin.NowPlayingEntry entry)
+    {
+        var iconText = FontAwesomeIcon.Ban.ToIconString();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        var iconW = ImGui.CalcTextSize(iconText).X
+                    + ImGui.GetStyle().FramePadding.X * 2 + 4;
+        ImGui.PopFont();
+
+        ImGui.SetCursorPosX(
+            ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - iconW);
+
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        var clicked = ImGui.SmallButton(iconText + "##blacklist-" + entry.Url);
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Blacklist this stream");
+        if (clicked) plugin.BlacklistNowPlaying(entry);
     }
 
     /// <summary>
