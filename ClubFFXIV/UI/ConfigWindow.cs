@@ -268,7 +268,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.PushID(idPrefix + "-" + item);
             ImGui.BulletText(item);
             ImGui.SameLine();
-            if (ImGui.SmallButton("Remove")) toRemove = item;
+            if (IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
             ImGui.PopID();
         }
         if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
@@ -276,7 +276,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SetNextItemWidth(280);
         ImGui.InputText($"##{idPrefix}-add", ref input, 256);
         ImGui.SameLine();
-        if (ImGui.Button($"Add##{idPrefix}-addbtn") && !string.IsNullOrWhiteSpace(input))
+        if (IconSmallButton(FontAwesomeIcon.Plus, idPrefix + "-addbtn", "Add") && !string.IsNullOrWhiteSpace(input))
         {
             set.Add(input.Trim());
             plugin.Config.Save();
@@ -294,7 +294,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.PushID(idPrefix + "-" + item);
             ImGui.TextDisabled("  " + (item.Length > 60 ? item[..57] + "..." : item));
             ImGui.SameLine();
-            if (ImGui.SmallButton("Remove")) toRemove = item;
+            if (IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
             ImGui.PopID();
         }
         if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
@@ -521,7 +521,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextDisabled(djId[..16] + "...");
             ImGui.SameLine();
-            if (ImGui.SmallButton("Copy"))
+            if (IconSmallButton(FontAwesomeIcon.Copy, "dj-id-copy", "Copy"))
             {
                 ImGui.SetClipboardText(djId);
                 plugin.Notify("ClubFFXIV", "DJ ID copied.", NotificationType.Info);
