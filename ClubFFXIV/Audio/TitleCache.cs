@@ -40,6 +40,56 @@ internal static class TitleCache
 internal readonly record struct ThumbnailInfo(string Url, bool CropToSquare);
 
 /// <summary>
+/// Per-URL "is this a live stream?" flag. Set during source resolution —
+/// from yt-dlp's <c>live_status</c> field (is_live / is_upcoming /
+/// post_live → live; not_live / was_live / unset → non-live), or from
+/// HTTP response headers (icy-metaint / icy-name → Icecast/Shoutcast,
+/// always live). Read by the Now Playing UI to decide whether to render
+/// transport controls (play/pause/seek) — live rows keep mute-only chrome
+/// because pausing a live source has no useful semantics. Defaults to
+/// true (treat as live) when nothing populated the cache, so an unknown
+/// source doesn't get transport controls it can't honour.
+/// </summary>
+internal static class LiveStatusCache
+{
+    private static readonly ConcurrentDictionary<string, bool> map = new();
+
+    public static void Set(string url, bool isLive)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        map[url] = isLive;
+    }
+
+    /// <summary>Returns the cached flag, or true (assume live) if unknown.</summary>
+    public static bool IsLive(string url) =>
+        url != null && map.TryGetValue(url, out var v) ? v : true;
+
+    /// <summary>True iff a value has been explicitly cached for this URL.</summary>
+    public static bool HasEntry(string url) =>
+        url != null && map.ContainsKey(url);
+}
+
+/// <summary>
+/// Per-URL duration in seconds for non-live sources, populated alongside
+/// the live-status flag during source resolution. Zero / absent means
+/// "unknown" — the UI shows the elapsed timestamp but no progress bar.
+/// </summary>
+internal static class DurationCache
+{
+    private static readonly ConcurrentDictionary<string, double> map = new();
+
+    public static void Set(string url, double seconds)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (!(seconds > 0) || double.IsNaN(seconds) || double.IsInfinity(seconds)) return;
+        map[url] = seconds;
+    }
+
+    public static double Get(string url) =>
+        url != null && map.TryGetValue(url, out var v) ? v : 0;
+}
+
+/// <summary>
 /// Per-URL artwork cache, populated by <see cref="YtDlpDisplayTitle"/> from
 /// yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams don't
 /// expose artwork, so most non-yt-dlp URLs simply have no entry — callers
@@ -98,28 +148,42 @@ internal static class YtDlpDisplayTitle
         "%(url)sARTIST:%(artist,creator|)sALBUM:%(album|)s" +
         "TRACK:%(track|)sTITLE:%(title|)s" +
         "UPLOADER:%(uploader,channel|)sEXT:%(extractor_key|)s" +
-        "THUMB:%(thumbnail|)s";
+        "THUMB:%(thumbnail|)sLIVE:%(live_status|)s" +
+        "DUR:%(duration|)s";
 
     /// <summary>
     /// Parses a yt-dlp line, and if a display label is derivable, stores it
     /// in <see cref="TitleCache"/> under <paramref name="userUrlForCache"/>.
     /// Likewise, if a thumbnail URL is present it's stored in
-    /// <see cref="ThumbnailCache"/>. Returns the resolved media URL, or null
-    /// if the line had none.
+    /// <see cref="ThumbnailCache"/>. Live status and duration are also cached
+    /// so the Now Playing UI can decide whether to draw transport controls.
+    /// Returns the resolved media URL, or null if the line had none.
     /// </summary>
     public static string? ParseAndCache(string line, string userUrlForCache)
     {
-        var (url, label, thumb, cropSquare) = Parse(line.Trim());
-        if (string.IsNullOrEmpty(url)) return null;
-        if (!string.IsNullOrEmpty(label)) TitleCache.Set(userUrlForCache, label);
-        if (!string.IsNullOrEmpty(thumb)) ThumbnailCache.Set(userUrlForCache, thumb!, cropSquare);
-        return url;
+        var parsed = Parse(line.Trim());
+        if (string.IsNullOrEmpty(parsed.Url)) return null;
+        if (!string.IsNullOrEmpty(parsed.Label))
+            TitleCache.Set(userUrlForCache, parsed.Label!);
+        if (!string.IsNullOrEmpty(parsed.Thumbnail))
+            ThumbnailCache.Set(userUrlForCache, parsed.Thumbnail!, parsed.CropSquare);
+        // live_status only appears on yt-dlp-backed sources; when present, it
+        // overrides the cache default ("assume live") so non-live VODs become
+        // seekable. Duration is set independently — a livestream may emit a
+        // duration in some cases, but IsLive=true gates the seek UI off anyway.
+        if (parsed.IsLive.HasValue) LiveStatusCache.Set(userUrlForCache, parsed.IsLive.Value);
+        if (parsed.DurationSeconds > 0) DurationCache.Set(userUrlForCache, parsed.DurationSeconds);
+        return parsed.Url;
     }
 
-    public static (string Url, string? Label, string? Thumbnail, bool CropSquare) Parse(string line)
+    public readonly record struct ParsedLine(
+        string Url, string? Label, string? Thumbnail, bool CropSquare,
+        bool? IsLive, double DurationSeconds);
+
+    public static ParsedLine Parse(string line)
     {
         var parts = line.Split(Sep);
-        if (parts.Length == 0) return ("", null, null, false);
+        if (parts.Length == 0) return new ParsedLine("", null, null, false, null, 0);
         var url = parts[0].Trim();
 
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -138,7 +202,32 @@ internal static class YtDlpDisplayTitle
         // signal for "the bars on this thumbnail are container, not content".
         var cropSquare = Get(fields, "ARTIST").Length > 0
             && Get(fields, "TRACK").Length > 0;
-        return (url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare);
+
+        // live_status values from yt-dlp: not_live, is_live, is_upcoming,
+        // was_live, post_live. Treat in-flight live states as live (no
+        // transport); the rest become seekable VOD. Empty / unknown leaves
+        // IsLive null so the cache default ("assume live") wins.
+        bool? isLive = Get(fields, "LIVE") switch
+        {
+            "is_live" or "is_upcoming" or "post_live" => true,
+            "not_live" or "was_live" => false,
+            _ => null,
+        };
+
+        // Duration is a number-as-string; "NA" defaulted to "" by our
+        // alternation operator parses as 0 and is filtered by DurationCache.Set.
+        double durationSeconds = 0;
+        var durRaw = Get(fields, "DUR");
+        if (durRaw.Length > 0
+            && double.TryParse(durRaw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var d))
+        {
+            durationSeconds = d;
+        }
+
+        return new ParsedLine(
+            url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare,
+            isLive, durationSeconds);
     }
 
     private static string? BuildLabel(Dictionary<string, string> f)

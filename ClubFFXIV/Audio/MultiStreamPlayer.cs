@@ -221,6 +221,68 @@ internal sealed class MultiStreamPlayer : IDisposable
     }
 
     /// <summary>
+    /// True iff the named voice exists and is currently paused. Returns false
+    /// for unknown keys so the UI can call without first checking HasVoice.
+    /// </summary>
+    public bool IsVoicePaused(string canonicalKey)
+    {
+        lock (voicesLock)
+            return voices.TryGetValue(canonicalKey, out var v) && v.Paused;
+    }
+
+    /// <summary>
+    /// True iff the named voice exists and its source is seekable. Read by
+    /// the Now Playing UI to decide whether to render the seek bar — combined
+    /// with the cached IsLive flag. No-op for unknown keys.
+    /// </summary>
+    public bool IsVoiceSeekable(string canonicalKey)
+    {
+        lock (voicesLock)
+            return voices.TryGetValue(canonicalKey, out var v) && v.IsSeekable;
+    }
+
+    /// <summary>Elapsed seconds in the named voice, or 0 if unknown / unseekable.</summary>
+    public double GetVoicePosition(string canonicalKey)
+    {
+        lock (voicesLock)
+            return voices.TryGetValue(canonicalKey, out var v) ? v.PositionSeconds : 0;
+    }
+
+    /// <summary>
+    /// Set per-voice pause state. While paused the voice emits silence into
+    /// the mix without draining its source — ffmpeg back-pressures, network
+    /// pulls stop. Holds across natural-end events so a user-paused voice
+    /// stays paused; cleared on RemoveVoice (walking out of range).
+    /// </summary>
+    public void SetVoicePaused(string canonicalKey, bool paused)
+    {
+        lock (voicesLock)
+        {
+            if (voices.TryGetValue(canonicalKey, out var v))
+                v.Paused = paused;
+        }
+    }
+
+    /// <summary>
+    /// Move the named voice's playhead. No-op for unknown keys or
+    /// non-seekable sources, so the UI doesn't need to pre-check. Safe to
+    /// call from any thread — the underlying source handles the audio-thread
+    /// coordination.
+    /// </summary>
+    public void SeekVoice(string canonicalKey, double seconds)
+    {
+        StreamVoice? v;
+        lock (voicesLock)
+        {
+            voices.TryGetValue(canonicalKey, out v);
+        }
+        // SeekToSeconds is safe outside the lock — it just forwards to the
+        // source's own thread-safe entry point. Holding voicesLock through
+        // a kill+respawn would block proximity ticks.
+        v?.SeekToSeconds(seconds);
+    }
+
+    /// <summary>
     /// Async because source construction blocks on network buffering / yt-dlp
     /// subprocess startup. Returns false if the voice was rejected (already
     /// active / starting, missing binaries, cancelled, or source error).

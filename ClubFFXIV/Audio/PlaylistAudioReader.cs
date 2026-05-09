@@ -28,7 +28,7 @@ namespace ClubFFXIV.Audio;
 /// EOF flows through as natural EOF. The Plugin loop replays the URL,
 /// which respawns this whole wrapper from scratch.
 /// </summary>
-internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, ICleanExitSource
+internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, ICleanExitSource, ISeekableSource
 {
     public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(44100, 2);
 
@@ -241,6 +241,24 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     }
 
     public bool DidExitCleanly() => exhaustedNaturally && !killedByUs;
+
+    /// <summary>
+    /// Position within the currently-playing item. Resets to zero each time
+    /// the playlist advances — the seek bar represents "where am I in this
+    /// song", not "how far through the whole playlist". Returns 0 during
+    /// the inter-item gap (no current inner) and after natural exhaustion.
+    /// </summary>
+    public double PositionSeconds => currentInner?.PositionSeconds ?? 0;
+
+    /// <summary>
+    /// Seek inside the currently-playing item. Forwarded to the current
+    /// inner ffmpeg-backed reader; no-op while the playlist is between
+    /// items (Read returning silence) since there's no playhead to move.
+    /// </summary>
+    public void SeekToSeconds(double seconds)
+    {
+        currentInner?.SeekToSeconds(seconds);
+    }
 
     public void Dispose()
     {

@@ -12,3 +12,26 @@ public interface ICleanExitSource
 {
     bool DidExitCleanly();
 }
+
+/// <summary>
+/// Audio source that exposes a seekable playhead — currently only the
+/// ffmpeg-backed paths (<see cref="SubprocessAudioReader"/> and, by
+/// delegation to the current item, <see cref="PlaylistAudioReader"/>).
+/// Direct HTTP MP3 streams don't implement this in v1: Icecast is live
+/// (no meaningful seek) and seeking a static MP3 file would need HTTP
+/// Range support — out of scope for the first cut. The Now Playing UI
+/// gates the seek bar on this interface AND <c>!IsLive</c> together, so
+/// "seekable but live" never renders transport.
+/// </summary>
+public interface ISeekableSource
+{
+    /// <summary>Elapsed audio seconds since playback (or last seek).</summary>
+    double PositionSeconds { get; }
+
+    /// <summary>
+    /// Move the playhead to <paramref name="seconds"/>. Implementations may
+    /// emit a brief gap of silence while the underlying decoder restarts;
+    /// the call returns immediately and is safe to invoke from any thread.
+    /// </summary>
+    void SeekToSeconds(double seconds);
+}

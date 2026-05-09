@@ -20,13 +20,15 @@ namespace ClubFFXIV.Audio;
 /// Stops the subprocess on Dispose. Network/decoder errors return 0 from Read,
 /// which signals end-of-stream to NAudio's WaveOutEvent — playback stops cleanly.
 /// </summary>
-public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, ICleanExitSource
+public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, ICleanExitSource, ISeekableSource
 {
     public WaveFormat WaveFormat { get; } =
         WaveFormat.CreateIeeeFloatWaveFormat(44100, 2);
 
-    private readonly Process ffmpeg;
-    private readonly Stream stdout;
+    // Mutated by SeekToSeconds (kill+respawn) under swapLock, so the audio
+    // thread's Read loop can pick up the new ffmpeg + stdout on its next call.
+    private Process ffmpeg;
+    private Stream stdout;
     private byte[] readBuffer = new byte[8192];
     private bool disposed;
     // True only when our Dispose actively killed a still-running process.
@@ -35,10 +37,29 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     private bool killedByUs;
     private bool eofLogged; // suppress repeated EOF logs from the same dead reader
 
-    private SubprocessAudioReader(Process ffmpeg)
+    // Stored so SeekToSeconds can respawn ffmpeg with -ss against the same
+    // already-resolved URL (no second yt-dlp roundtrip). HLS / progressive
+    // URLs from yt-dlp typically stay valid for hours, which covers any
+    // realistic listening session.
+    private readonly string resolvedMediaUrl;
+    private readonly BinaryManager binaries;
+    // Coordinates the audio-thread Read against UI-thread SeekToSeconds.
+    // pendingSeekSeconds < 0 means no seek pending; >= 0 means the next Read
+    // should kill the current ffmpeg and respawn with -ss <pendingSeekSeconds>.
+    private readonly object swapLock = new();
+    private double pendingSeekSeconds = -1;
+    // Total float samples the consumer has read since playback started (or
+    // since the last seek). Divide by SampleRate * Channels for elapsed
+    // seconds. After a seek, reset to seekTarget * SampleRate * Channels so
+    // the position display tracks the new playhead instead of resetting to 0.
+    private long samplesPlayed;
+
+    private SubprocessAudioReader(Process ffmpeg, string resolvedMediaUrl, BinaryManager binaries)
     {
         this.ffmpeg = ffmpeg;
         this.stdout = ffmpeg.StandardOutput.BaseStream;
+        this.resolvedMediaUrl = resolvedMediaUrl;
+        this.binaries = binaries;
     }
 
     /// <summary>
@@ -77,6 +98,23 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         if (!binaries.Ready)
             throw new InvalidOperationException("ffmpeg not yet installed");
 
+        var proc = SpawnFfmpeg(resolvedMediaUrl, binaries, startSeconds: 0);
+        var reader = new SubprocessAudioReader(proc, resolvedMediaUrl, binaries);
+        AttachStderrDrain(proc, reader, ct);
+        return reader;
+    }
+
+    /// <summary>
+    /// Build and start the ffmpeg subprocess for an already-resolved media URL.
+    /// Factored so <see cref="SeekToSeconds"/> can respawn with a non-zero
+    /// <paramref name="startSeconds"/> against the same URL without going
+    /// through yt-dlp again. Pre-input <c>-ss</c> selects ffmpeg's fast seek
+    /// (jumps to the keyframe at-or-before the requested time without decoding
+    /// the whole prefix), which is what we want for audio scrubbing — the
+    /// few-ms imprecision is inaudible.
+    /// </summary>
+    private static Process SpawnFfmpeg(string resolvedMediaUrl, BinaryManager binaries, double startSeconds)
+    {
         var psi = new ProcessStartInfo
         {
             FileName = binaries.FfmpegPath,
@@ -100,6 +138,16 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         psi.ArgumentList.Add("-reconnect_streamed"); psi.ArgumentList.Add("1");
         psi.ArgumentList.Add("-reconnect_delay_max"); psi.ArgumentList.Add("5");
 
+        // -ss before -i = fast seek; only emit when the user actually wanted
+        // a non-zero start (avoid disturbing fresh-start behaviour on live
+        // streams which ignore the flag anyway).
+        if (startSeconds > 0)
+        {
+            psi.ArgumentList.Add("-ss");
+            psi.ArgumentList.Add(startSeconds.ToString("0.###",
+                System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(resolvedMediaUrl);
         psi.ArgumentList.Add("-vn");                 // drop video
         psi.ArgumentList.Add("-ar"); psi.ArgumentList.Add("44100");
@@ -107,12 +155,20 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("f32le");
         psi.ArgumentList.Add("pipe:1");
 
-        var proc = Process.Start(psi)
+        return Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
+    }
 
-        var reader = new SubprocessAudioReader(proc);
-
-        // Drain stderr in the background so it doesn't fill its pipe and block ffmpeg.
+    /// <summary>
+    /// Drain ffmpeg's stderr in the background so its pipe doesn't fill and
+    /// block the process. Reads <paramref name="reader"/>.killedByUs at the
+    /// end to attribute unexpected exits — this is the same instance across
+    /// seek-rebuilds (we mutate ffmpeg/stdout in place), so the late warning
+    /// log will be wrong if the user seeked between the read and the check.
+    /// Acceptable: it's an info log, not a correctness signal.
+    /// </summary>
+    private static void AttachStderrDrain(Process proc, SubprocessAudioReader reader, CancellationToken ct)
+    {
         _ = Task.Run(async () =>
         {
             try
@@ -129,51 +185,168 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             }
             catch { /* already disposed */ }
         }, ct);
-
-        return reader;
     }
 
     public int Read(float[] buffer, int offset, int count)
     {
         if (disposed) return 0;
-        var byteCount = count * 4; // float32 = 4 bytes
-        if (readBuffer.Length < byteCount)
-            readBuffer = new byte[byteCount];
 
-        int totalBytes = 0;
+        // Up to two attempts: the second one only happens if the first
+        // returned 0 *and* a seek was queued (typically because Seek killed
+        // ffmpeg out from under us). Without this retry, NAudio would
+        // interpret the seek-induced 0 as a natural EOF and stop the device,
+        // never giving us the chance to respawn. Bounded at 2 so a seek
+        // pointing past EOF can't loop forever.
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            // Service any pending seek before reading. Done on the audio
+            // thread so the kill+respawn races no in-flight Read on this
+            // instance — the previous Read has already returned by now.
+            ApplyPendingSeekIfAny();
+
+            var byteCount = count * 4; // float32 = 4 bytes
+            if (readBuffer.Length < byteCount)
+                readBuffer = new byte[byteCount];
+
+            // Snapshot the stream pointer so a concurrent Seek (which
+            // re-assigns stdout via ApplyPendingSeekIfAny on the *next*
+            // attempt) doesn't pull the rug mid-loop.
+            var currentStream = stdout;
+
+            int totalBytes = 0;
+            try
+            {
+                // ffmpeg writes in chunks; loop until we've filled the
+                // requested sample count or hit EOF. Network slowness
+                // blocks here. SeekToSeconds kills ffmpeg externally,
+                // which closes the pipe and causes Read to return 0.
+                while (totalBytes < byteCount)
+                {
+                    var n = currentStream.Read(readBuffer, totalBytes, byteCount - totalBytes);
+                    if (n == 0) break;
+                    totalBytes += n;
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.Warning($"Subprocess audio read error: {ex.Message}");
+                return 0;
+            }
+
+            if (totalBytes > 0)
+            {
+                // Reinterpret bytes as float32 samples — endianness matches
+                // host on x64 Windows.
+                var samples = MemoryMarshal.Cast<byte, float>(readBuffer.AsSpan(0, totalBytes));
+                samples.CopyTo(buffer.AsSpan(offset));
+                var sampleCount = totalBytes / 4;
+                Interlocked.Add(ref samplesPlayed, sampleCount);
+                return sampleCount;
+            }
+
+            // Read returned zero. If a seek is pending, the second loop
+            // iteration will rebuild ffmpeg and try again — this is the
+            // expected "user clicked seek, killing the current ffmpeg"
+            // path. Otherwise, it's a genuine EOF and we surrender so
+            // NAudio can stop the device cleanly.
+            bool seekPending;
+            lock (swapLock) seekPending = pendingSeekSeconds >= 0;
+            if (!seekPending)
+            {
+                if (!eofLogged)
+                {
+                    eofLogged = true;
+                    Plugin.Log.Warning(
+                        $"[ffmpeg] stdout EOF — process exited or closed pipe. " +
+                        $"HasExited={ffmpeg.HasExited} killedByUs={killedByUs}");
+                }
+                return 0;
+            }
+            // Otherwise: fall through to attempt 1, which will pick up the
+            // pending seek via ApplyPendingSeekIfAny at loop top.
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Elapsed audio time in seconds since playback started or the last seek.
+    /// Computed from the Read sample counter, so it reflects what the
+    /// downstream chain has actually consumed (not what ffmpeg has produced
+    /// into the pipe). Stays put when the consumer is paused.
+    /// </summary>
+    public double PositionSeconds =>
+        Interlocked.Read(ref samplesPlayed) / (double)(WaveFormat.SampleRate * WaveFormat.Channels);
+
+    /// <summary>
+    /// Move the playhead to <paramref name="seconds"/> by killing the current
+    /// ffmpeg and respawning with <c>-ss</c>. Safe to call from any thread —
+    /// the actual swap happens on the audio thread inside the next Read so it
+    /// can't race an in-flight stdout read on this instance. Returns
+    /// immediately; the user may hear a brief silence (~0.5–1s, ffmpeg
+    /// cold-start) before audio resumes from the target position.
+    /// </summary>
+    public void SeekToSeconds(double seconds)
+    {
+        if (disposed) return;
+        var clamped = Math.Max(0, seconds);
+        lock (swapLock)
+        {
+            pendingSeekSeconds = clamped;
+        }
+        // Kill the current ffmpeg so any in-flight or about-to-block Read
+        // returns 0 quickly — the subsequent Read will pick up the pending
+        // seek and respawn. Without this kill, a Read blocked on stdout
+        // would never reach the swap path.
         try
         {
-            // ffmpeg writes in chunks; loop until we've filled the requested
-            // sample count or hit EOF. Network slowness blocks here.
-            while (totalBytes < byteCount)
+            if (!ffmpeg.HasExited)
             {
-                var n = stdout.Read(readBuffer, totalBytes, byteCount - totalBytes);
-                if (n == 0)
-                {
-                    if (totalBytes == 0 && !eofLogged)
-                    {
-                        eofLogged = true;
-                        Plugin.Log.Warning(
-                            $"[ffmpeg] stdout EOF — process exited or closed pipe. " +
-                            $"HasExited={ffmpeg.HasExited} killedByUs={killedByUs}");
-                    }
-                    break;
-                }
-                totalBytes += n;
+                killedByUs = true;
+                ffmpeg.Kill(entireProcessTree: true);
             }
+        }
+        catch { /* already exited or torn down */ }
+    }
+
+    private void ApplyPendingSeekIfAny()
+    {
+        double seekTo;
+        lock (swapLock)
+        {
+            seekTo = pendingSeekSeconds;
+            if (seekTo < 0) return;
+            pendingSeekSeconds = -1;
+        }
+
+        try
+        {
+            // Tear down the old process if it's somehow still alive (the
+            // pre-emptive Kill in SeekToSeconds usually beats us here).
+            try
+            {
+                if (!ffmpeg.HasExited) ffmpeg.Kill(entireProcessTree: true);
+            }
+            catch { /* already gone */ }
+            try { ffmpeg.Dispose(); } catch { /* ignore */ }
+
+            // Respawn at the seek target. New process drives the same
+            // resolved URL; reset killedByUs so the natural-exit path can
+            // fire correctly when the new process drains naturally.
+            var proc = SpawnFfmpeg(resolvedMediaUrl, binaries, startSeconds: seekTo);
+            ffmpeg = proc;
+            stdout = proc.StandardOutput.BaseStream;
+            killedByUs = false;
+            eofLogged = false;
+            // Re-anchor position: subsequent Reads count up from the seek
+            // target so the UI's progress bar reflects the actual playhead.
+            Interlocked.Exchange(ref samplesPlayed,
+                (long)(seekTo * WaveFormat.SampleRate * WaveFormat.Channels));
+            AttachStderrDrain(proc, this, CancellationToken.None);
         }
         catch (Exception ex)
         {
-            Plugin.Log.Warning($"Subprocess audio read error: {ex.Message}");
-            return 0;
+            Plugin.Log.Warning($"Subprocess audio seek failed: {ex.Message}");
         }
-
-        if (totalBytes == 0) return 0;
-
-        // Reinterpret bytes as float32 samples — endianness matches host on x64 Windows.
-        var samples = MemoryMarshal.Cast<byte, float>(readBuffer.AsSpan(0, totalBytes));
-        samples.CopyTo(buffer.AsSpan(offset));
-        return totalBytes / 4;
     }
 
     public void Dispose()

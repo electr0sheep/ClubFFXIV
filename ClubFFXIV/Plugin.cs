@@ -576,6 +576,13 @@ public sealed class Plugin : IDalamudPlugin
     /// is true when the source is known to pad square content into a wider
     /// frame (YouTube Music / Topic channels) — the renderer cover-crops
     /// the centre square instead of stretching the full image.
+    ///
+    /// Transport fields (IsLive / IsPaused / Seekable / PositionSeconds /
+    /// DurationSeconds) describe the source's playback shape. Live rows
+    /// keep the existing mute-only chrome — pausing or seeking a live
+    /// stream has no useful semantic. Non-live + Seekable rows render
+    /// play/pause + a seek slider; non-live but not Seekable (reserved for
+    /// future HTTP-Range MP3 support) renders play/pause + timestamp only.
     /// </summary>
     public readonly record struct NowPlayingEntry(
         string Url,
@@ -583,7 +590,12 @@ public sealed class Plugin : IDalamudPlugin
         bool Muted,
         string? PlotKey,
         string? ThumbnailUrl,
-        bool CropThumbToSquare);
+        bool CropThumbToSquare,
+        bool IsLive,
+        bool IsPaused,
+        bool Seekable,
+        double PositionSeconds,
+        double DurationSeconds);
 
     /// <summary>
     /// Snapshot of every audio source currently producing (or about to produce)
@@ -597,14 +609,28 @@ public sealed class Plugin : IDalamudPlugin
     {
         var result = new List<NowPlayingEntry>();
 
-        if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl is { Length: > 0 } url)
+        // IsActive (Playing OR Paused) instead of IsPlaying alone — a paused
+        // primary stream must stay in the Now Playing list, otherwise the
+        // user has no way to click resume.
+        if (streamPlayer.IsActive && streamPlayer.CurrentUrl is { Length: > 0 } url)
         {
             var thumb = ThumbnailCache.Get(url);
+            var isLive = streamPlayer.IsLive;
             result.Add(new NowPlayingEntry(
                 url, GetDisplayLabel(url), streamPlayer.UserMuted,
                 PlotKey: null,
                 ThumbnailUrl: thumb?.Url,
-                CropThumbToSquare: thumb?.CropToSquare ?? false));
+                CropThumbToSquare: thumb?.CropToSquare ?? false,
+                IsLive: isLive,
+                IsPaused: streamPlayer.IsPaused,
+                // Seekable mirrors "non-live and source supports it". For now
+                // that's only ffmpeg-backed sources (yt-dlp), gated by IsLive.
+                // PositionSeconds returns 0 when the source isn't seekable, so
+                // hiding the seek bar via this flag is sufficient.
+                Seekable: !isLive && streamPlayer.PositionSeconds >= 0
+                          && streamPlayer.DurationSeconds > 0,
+                PositionSeconds: streamPlayer.PositionSeconds,
+                DurationSeconds: streamPlayer.DurationSeconds));
         }
 
         if (multiStreamPlayer is { HasAnyActivity: true } msp)
@@ -613,11 +639,18 @@ public sealed class Plugin : IDalamudPlugin
             {
                 var voiceUrl = msp.GetVoiceUrl(key) ?? "";
                 var voiceThumb = ThumbnailCache.Get(voiceUrl);
+                var voiceLive = voiceUrl.Length == 0 || LiveStatusCache.IsLive(voiceUrl);
+                var voiceDuration = voiceUrl.Length > 0 ? DurationCache.Get(voiceUrl) : 0;
                 result.Add(new NowPlayingEntry(
                     voiceUrl, GetDisplayLabel(voiceUrl), msp.IsVoiceMuted(key),
                     PlotKey: key,
                     ThumbnailUrl: voiceThumb?.Url,
-                    CropThumbToSquare: voiceThumb?.CropToSquare ?? false));
+                    CropThumbToSquare: voiceThumb?.CropToSquare ?? false,
+                    IsLive: voiceLive,
+                    IsPaused: msp.IsVoicePaused(key),
+                    Seekable: !voiceLive && msp.IsVoiceSeekable(key) && voiceDuration > 0,
+                    PositionSeconds: msp.GetVoicePosition(key),
+                    DurationSeconds: voiceDuration));
             }
         }
 
@@ -638,6 +671,40 @@ public sealed class Plugin : IDalamudPlugin
             streamPlayer.UserMuted = !streamPlayer.UserMuted;
         else
             multiStreamPlayer?.SetVoiceMuted(entry.PlotKey, !entry.Muted);
+    }
+
+    /// <summary>
+    /// Toggle play/pause on a Now Playing row. No-op for live entries — the
+    /// UI already gates the button off in that case, but defending here too
+    /// keeps the rule in one place if the entry is stale by the time the
+    /// click arrives.
+    /// </summary>
+    public void ToggleNowPlayingPause(NowPlayingEntry entry)
+    {
+        if (entry.IsLive) return;
+        if (entry.PlotKey == null)
+        {
+            if (streamPlayer.IsPaused) streamPlayer.Resume();
+            else streamPlayer.Pause();
+        }
+        else
+        {
+            multiStreamPlayer?.SetVoicePaused(entry.PlotKey, !entry.IsPaused);
+        }
+    }
+
+    /// <summary>
+    /// Move the playhead on a Now Playing row. Clamped to [0, duration] by
+    /// the caller; we forward whatever they pass. No-op for live or
+    /// non-seekable entries.
+    /// </summary>
+    public void SeekNowPlaying(NowPlayingEntry entry, double seconds)
+    {
+        if (entry.IsLive || !entry.Seekable) return;
+        if (entry.PlotKey == null)
+            streamPlayer.SeekToSeconds(seconds);
+        else
+            multiStreamPlayer?.SeekVoice(entry.PlotKey, seconds);
     }
 
     /// <summary>

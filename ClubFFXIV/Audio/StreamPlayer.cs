@@ -58,7 +58,39 @@ public sealed class StreamPlayer : IDisposable
     }
 
     public bool IsPlaying => output?.PlaybackState == PlaybackState.Playing;
+    public bool IsPaused => output?.PlaybackState == PlaybackState.Paused;
+    /// <summary>
+    /// True if there's an active source (whether currently playing or paused).
+    /// Used by the Now Playing header so a paused row stays visible — without
+    /// this, IsPlaying alone would hide the only thing the user can click to
+    /// resume.
+    /// </summary>
+    public bool IsActive => IsPlaying || IsPaused;
     public string? CurrentUrl => currentUrl;
+
+    /// <summary>
+    /// True iff the current source is a yt-dlp live channel / Icecast / other
+    /// indefinite stream (or no source set). Drives the Now Playing transport
+    /// gate — live rows skip play/pause/seek and keep mute-only chrome.
+    /// </summary>
+    public bool IsLive =>
+        currentUrl is null || LiveStatusCache.IsLive(currentUrl);
+
+    /// <summary>
+    /// Total duration of the current source in seconds, or 0 if unknown
+    /// (live, or a non-live source that didn't expose duration metadata).
+    /// </summary>
+    public double DurationSeconds =>
+        currentUrl is null ? 0 : DurationCache.Get(currentUrl);
+
+    /// <summary>
+    /// Elapsed audio seconds since playback started or the last seek. Reads
+    /// through the underlying source's playhead counter — paused streams hold
+    /// at the last value, seeked streams jump to the new target immediately.
+    /// Returns 0 when the source isn't seekable (live).
+    /// </summary>
+    public double PositionSeconds =>
+        source is ISeekableSource s ? s.PositionSeconds : 0;
 
     /// <summary>
     /// Fires when a finite source (currently only yt-dlp / ffmpeg-backed
@@ -268,6 +300,41 @@ public sealed class StreamPlayer : IDisposable
             try { Output.Dispose(); } catch { /* ignore */ }
             try { SourceDisposable.Dispose(); } catch { /* ignore */ }
         }
+    }
+
+    /// <summary>
+    /// Pause the WaveOut device. Source decoders (ffmpeg pipe, in-process
+    /// MP3/OGG) back-pressure naturally when our Read stops draining, so no
+    /// extra plumbing is needed at the source layer. No-op if there's no
+    /// active output or it's already paused.
+    /// </summary>
+    public void Pause()
+    {
+        try { output?.Pause(); } catch { /* device gone */ }
+    }
+
+    /// <summary>
+    /// Resume from a paused state. Calling on an already-playing or stopped
+    /// device is a no-op (NAudio's WaveOutEvent.Play() is idempotent during
+    /// Playing, and there's nothing to resume when stopped).
+    /// </summary>
+    public void Resume()
+    {
+        if (output?.PlaybackState == PlaybackState.Paused)
+        {
+            try { output.Play(); } catch { /* device gone */ }
+        }
+    }
+
+    /// <summary>
+    /// Move the playhead. Forwards to the source if it implements
+    /// <see cref="ISeekableSource"/> (currently ffmpeg-backed). No-op for
+    /// live / non-seekable sources, so the UI can call without first
+    /// re-checking <see cref="IsLive"/>.
+    /// </summary>
+    public void SeekToSeconds(double seconds)
+    {
+        if (source is ISeekableSource s) s.SeekToSeconds(seconds);
     }
 
     public void Stop()
