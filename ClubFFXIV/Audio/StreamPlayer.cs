@@ -274,14 +274,22 @@ public sealed class StreamPlayer : IDisposable
         // per-call locals (not class fields) so the right URL fires even if
         // a later Play() reassigns this.currentUrl.
         //
-        // DidExitCleanly is called SYNCHRONOUSLY here on the audio thread
-        // because we'd otherwise race our own framework auto-resume: the
-        // framework tick sees IsPlaying=false right after PlaybackStopped
-        // and starts a new PlayAsync, whose Stop() disposes this source —
-        // any Task.Run-deferred check would then read a closed handle and
-        // return false, suppressing the natural-end event. The check itself
-        // is non-blocking now (no WaitForExit), so doing it on the audio
-        // thread is fine. Only the subscriber callback runs in Task.Run.
+        // Both the DidExitCleanly check and the subscriber invoke run
+        // SYNCHRONOUSLY on the audio thread. Two reasons:
+        //   1. DidExitCleanly: we'd otherwise race our own framework
+        //      auto-resume — the tick sees IsPlaying=false right after
+        //      PlaybackStopped and starts a new PlayAsync, whose Stop()
+        //      disposes this source, so a deferred check would read a
+        //      closed handle and return false.
+        //   2. The invoke itself: subscribers (Plugin.OnStreamNaturallyEnded)
+        //      need to set pendingStartUrl synchronously so the next
+        //      framework tick sees streamWillPlay=true. If we Task.Run the
+        //      invoke, a tick can land in the gap between IsPlaying flipping
+        //      false and StartStreamAsync setting pendingStartUrl, and
+        //      ApplyAudioPolicy unmutes the game's BGM mid-loop.
+        // Subscribers must keep their handlers fast and non-blocking
+        // (Plugin.OnStreamNaturallyEnded fires-and-forgets StartStreamAsync,
+        // which yields off the audio thread immediately).
         var endedUrl = url;
         var endedSource = newSource;
         built.Output.PlaybackStopped += (_, _) =>
@@ -290,8 +298,7 @@ public sealed class StreamPlayer : IDisposable
             // and playlist (PlaylistAudioReader) sources uniformly.
             if (endedSource is ICleanExitSource clean && clean.DidExitCleanly())
             {
-                var u = endedUrl;
-                _ = Task.Run(() => StreamNaturallyEnded?.Invoke(u));
+                StreamNaturallyEnded?.Invoke(endedUrl);
             }
         };
 
