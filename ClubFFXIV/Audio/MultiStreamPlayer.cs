@@ -135,6 +135,9 @@ internal sealed class MultiStreamPlayer : IDisposable
             naturalEnd = voice.CleanExit?.DidExitCleanly() == true;
         }
 
+        Plugin.Log.Info(
+            $"[MS-DIAG] MixerInputEnded key={voice.CanonicalKey} url={voice.Url} weOwnIt={weOwnIt} naturalEnd={naturalEnd} cleanExitField={(voice.CleanExit != null)}");
+
         if (!weOwnIt) return;
 
         var key = voice.CanonicalKey;
@@ -337,11 +340,20 @@ internal sealed class MultiStreamPlayer : IDisposable
         CancellationTokenSource cts;
         lock (voicesLock)
         {
-            if (voices.ContainsKey(canonicalKey)) return false;
-            if (pendingStarts.ContainsKey(canonicalKey)) return false;
+            if (voices.ContainsKey(canonicalKey))
+            {
+                Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync REJECT-already-active key={canonicalKey} url={url}");
+                return false;
+            }
+            if (pendingStarts.ContainsKey(canonicalKey))
+            {
+                Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync REJECT-already-starting key={canonicalKey} url={url}");
+                return false;
+            }
             cts = CancellationTokenSource.CreateLinkedTokenSource(externalCt);
             pendingStarts[canonicalKey] = cts;
         }
+        Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync START key={canonicalKey} url={url} cutoff={initialCutoffHz}");
 
         // toDispose tracks the *current* owner of cleanup responsibility as
         // ownership migrates: raw source → prebuffer wrapper → StreamVoice.
@@ -394,7 +406,10 @@ internal sealed class MultiStreamPlayer : IDisposable
             cts.Token.ThrowIfCancellationRequested();
 
             var voice = new StreamVoice(
-                canonicalKey, url, buffered, buffered, MixerFormat, initialCutoffHz);
+                canonicalKey, url, buffered, buffered, MixerFormat, initialCutoffHz,
+                overrideSeekable: buffered.SupportsSeek,
+                overrideSkippable: buffered.SupportsSkip,
+                overrideCleanExit: buffered.SupportsCleanExit);
             toDispose = null; // ownership transferred to voice
 
             lock (voicesLock)
@@ -402,6 +417,7 @@ internal sealed class MultiStreamPlayer : IDisposable
                 if (!pendingStarts.TryGetValue(canonicalKey, out var stillCts) || stillCts != cts)
                 {
                     // Removed or superseded mid-flight by RemoveVoice. Drop it.
+                    Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync ABORT-superseded key={canonicalKey} url={url}");
                     voice.Dispose();
                     return false;
                 }
@@ -409,10 +425,12 @@ internal sealed class MultiStreamPlayer : IDisposable
                 voices[canonicalKey] = voice;
                 mixer.AddMixerInput(voice);
             }
+            Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync ADDED key={canonicalKey} url={url}");
             return true;
         }
         catch (OperationCanceledException)
         {
+            Plugin.Log.Info($"[MS-DIAG] AddVoiceAsync CANCELLED key={canonicalKey} url={url}");
             toDispose?.Dispose();
             return false;
         }
@@ -437,19 +455,25 @@ internal sealed class MultiStreamPlayer : IDisposable
     {
         StreamVoice? toDispose = null;
         CancellationTokenSource? toCancel = null;
+        bool hadPending;
+        bool hadVoice;
         lock (voicesLock)
         {
             if (pendingStarts.TryGetValue(canonicalKey, out var pendingCts))
             {
                 toCancel = pendingCts;
                 pendingStarts.Remove(canonicalKey);
+                hadPending = true;
             }
+            else hadPending = false;
             if (voices.TryGetValue(canonicalKey, out var voice))
             {
                 mixer.RemoveMixerInput(voice);
                 voices.Remove(canonicalKey);
                 toDispose = voice;
+                hadVoice = true;
             }
+            else hadVoice = false;
             // Don't carry per-voice mute state across remove/re-add: when the
             // voice next pops up via proximity, treat it as a fresh sound.
             // Per-voice pause state lives on the StreamVoice itself, which
@@ -458,6 +482,12 @@ internal sealed class MultiStreamPlayer : IDisposable
             // preserve a paused playhead anyway — yt-dlp restarts from the
             // top of the playlist.)
             mutedKeys.Remove(canonicalKey);
+        }
+        if (hadPending || hadVoice)
+        {
+            var caller = new System.Diagnostics.StackFrame(1, false).GetMethod()?.Name ?? "?";
+            Plugin.Log.Info(
+                $"[MS-DIAG] RemoveVoice key={canonicalKey} hadPending={hadPending} hadVoice={hadVoice} caller={caller}");
         }
         try { toCancel?.Cancel(); } catch { /* ignore */ }
         toDispose?.Dispose();

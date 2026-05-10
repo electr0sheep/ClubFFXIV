@@ -808,6 +808,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnMultiStreamVoiceNaturallyEnded(string canonicalKey, string url)
     {
+        Log.Info(
+            $"[IND-DIAG] OnMultiStreamVoiceNaturallyEnded key={canonicalKey} url={url} " +
+            $"mode={CurrentMode} loopOn={Config.LoopFinishedVideos}");
         if (!Config.LoopFinishedVideos)
         {
             // Suppress the next outdoor-proximity tick from re-adding this
@@ -1589,7 +1592,15 @@ public sealed class Plugin : IDalamudPlugin
         // active), so calling every tick is cheap.
         if (MultiStreamActive && multiStreamPlayer != null)
         {
-            foreach (var activeKey in multiStreamPlayer.ActiveKeys())
+            var activeKeysSnapshot = multiStreamPlayer.ActiveKeys();
+            if (CurrentMode != PlaybackMode.Indoor)
+            {
+                Log.Info(
+                    $"[IND-DIAG] HandleIndoorMode FIRST-TICK key={key.Canonical} prevMode={CurrentMode} " +
+                    $"activeKeys=[{string.Join(",", activeKeysSnapshot)}] " +
+                    $"hasMatching={activeKeysSnapshot.Contains(key.Canonical)}");
+            }
+            foreach (var activeKey in activeKeysSnapshot)
             {
                 if (activeKey != key.Canonical)
                     multiStreamPlayer.RemoveVoice(activeKey);
@@ -1911,9 +1922,17 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.Stop();
 
         var canonical = CurrentPlotKey?.Canonical;
-        if (canonical == null) return;
+        if (canonical == null)
+        {
+            Log.Info($"[IND-DIAG] EnterIndoorMulti BAIL-no-plot url={url}");
+            return;
+        }
 
         var player = EnsureMultiStreamPlayer();
+        var keysBeforePrune = player.ActiveKeys();
+        Log.Info(
+            $"[IND-DIAG] EnterIndoorMulti ENTER url={url} canonical={canonical} " +
+            $"activeBeforePrune=[{string.Join(",", keysBeforePrune)}]");
 
         // Solo: drop every voice that isn't this plot's.
         foreach (var key in player.ActiveKeys())
@@ -1924,6 +1943,7 @@ public sealed class Plugin : IDalamudPlugin
         if (player.HasVoice(canonical))
         {
             // Seamless reuse — the outdoor voice stays alive, just unmuffled.
+            Log.Info($"[IND-DIAG] EnterIndoorMulti SEAMLESS-REUSE canonical={canonical}");
             player.SetSpatial(canonical, 1.0f, MultiStreamPlayer.BypassCutoffHz);
             CurrentMode = PlaybackMode.Indoor;
             CurrentProximity = null;
@@ -1935,15 +1955,29 @@ public sealed class Plugin : IDalamudPlugin
             // Voice is already mid-startup from the outdoor path. Don't restart;
             // HandleIndoorMode's idempotent re-apply will swap it to bypass on
             // the tick after AddVoiceAsync completes.
+            Log.Info($"[IND-DIAG] EnterIndoorMulti WAITING-FOR-PENDING canonical={canonical}");
             CurrentMode = PlaybackMode.Indoor;
             CurrentProximity = null;
             return;
         }
 
-        if (!TryAutoPlayPermission(url, context)) return;
-        if (BinariesMissingForUrl(url)) return;
-        if (IsStreamInCooldown(url)) return;
+        if (!TryAutoPlayPermission(url, context))
+        {
+            Log.Info($"[IND-DIAG] EnterIndoorMulti BAIL-no-permission url={url}");
+            return;
+        }
+        if (BinariesMissingForUrl(url))
+        {
+            Log.Info($"[IND-DIAG] EnterIndoorMulti BAIL-binaries-missing url={url}");
+            return;
+        }
+        if (IsStreamInCooldown(url))
+        {
+            Log.Info($"[IND-DIAG] EnterIndoorMulti BAIL-cooldown url={url}");
+            return;
+        }
 
+        Log.Info($"[IND-DIAG] EnterIndoorMulti FRESH-ADD canonical={canonical} url={url}");
         // Optimistic mode flip — same rationale as the single-stream path.
         CurrentMode = PlaybackMode.Indoor;
         CurrentProximity = null;
