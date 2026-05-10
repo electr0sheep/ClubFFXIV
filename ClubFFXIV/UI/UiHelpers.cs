@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using Dalamud.Interface;
 using Dalamud.Bindings.ImGui;
 
@@ -66,5 +67,42 @@ internal static class UiHelpers
             _ => throw new ArgumentOutOfRangeException(nameof(status)),
         };
         ImGui.TextColored(color, $"{glyph} {label}");
+    }
+
+    /// <summary>
+    /// FontAwesome glyph rendered as clickable coloured text — replaces the
+    /// open-coded <c>PushFont/TextColored/PopFont/IsItemHovered/IsItemClicked</c>
+    /// pattern that every player-control icon used. Defaults to
+    /// <see cref="UiColors.IconActive"/>; pass <see cref="UiColors.IconInactive"/>
+    /// (or any colour) for toggle-style dimming.
+    /// </summary>
+    public static void IconClickable(
+        FontAwesomeIcon icon, string tooltip, Action onClick,
+        Vector4? color = null, bool alignToFramePadding = true)
+    {
+        if (alignToFramePadding) ImGui.AlignTextToFramePadding();
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        ImGui.TextColored(color ?? UiColors.IconActive, icon.ToIconString());
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(tooltip);
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left)) onClick();
+    }
+
+    /// <summary>
+    /// Compact FontAwesome icon button — <see cref="ImGui.SmallButton"/> with
+    /// the icon font pushed for the glyph. The "##id" suffix gives ImGui a
+    /// stable widget identity so multiple buttons sharing the same glyph
+    /// (e.g. two Pencils) don't collide. <see cref="ImGuiHoveredFlags.AllowWhenDisabled"/>
+    /// keeps the tooltip readable when the button is wrapped in
+    /// <see cref="ImGui.BeginDisabled()"/>.
+    /// </summary>
+    public static bool IconSmallButton(FontAwesomeIcon icon, string id, string tooltip)
+    {
+        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
+        bool clicked = ImGui.SmallButton(icon.ToIconString() + "##" + id);
+        ImGui.PopFont();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(tooltip);
+        return clicked;
     }
 }

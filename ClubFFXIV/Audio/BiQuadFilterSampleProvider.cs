@@ -41,11 +41,29 @@ public sealed class BiQuadFilterSampleProvider : ISampleProvider
     {
         if (dirty) RebuildFilters();
         var read = source.Read(buffer, offset, count);
-        var channels = WaveFormat.Channels;
+        // Stereo is the overwhelmingly common path (the multi-stream voice
+        // chain upmixes mono → stereo before the filter); specialise it to
+        // drop the per-sample integer modulo from the audio thread.
+        if (filters.Length == 2)
+        {
+            var fL = filters[0];
+            var fR = filters[1];
+            // Pair-aligned upper bound so an odd `read` (shouldn't happen for
+            // stereo but cheap insurance) doesn't over-read by one.
+            var pairEnd = read & ~1;
+            for (int n = 0; n < pairEnd; n += 2)
+            {
+                buffer[offset + n]     = fL.Transform(buffer[offset + n]);
+                buffer[offset + n + 1] = fR.Transform(buffer[offset + n + 1]);
+            }
+            if (pairEnd < read)
+                buffer[offset + pairEnd] = fL.Transform(buffer[offset + pairEnd]);
+            return read;
+        }
+        var channels = filters.Length;
         for (int n = 0; n < read; n++)
         {
-            var ch = n % channels;
-            buffer[offset + n] = filters[ch].Transform(buffer[offset + n]);
+            buffer[offset + n] = filters[n % channels].Transform(buffer[offset + n]);
         }
         return read;
     }

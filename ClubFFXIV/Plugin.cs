@@ -2272,10 +2272,11 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        // Registry-discovered, deduplicated against local keys.
-        foreach (var (key, _) in Config.SavedHouses) seen.Add(key);
-        foreach (var (key, _) in Config.PublishedHouses) seen.Add(key);
-
+        // Registry-discovered, deduplicated against local keys we've already
+        // yielded. Keys present locally but uncalibrated / URL-empty fall
+        // through intentionally — the registry copy can fill in what local
+        // couldn't (e.g. user saved the name + ward but never finished
+        // calibration; the registry has the door coords).
         if (TryGetCachedWard(ward, out var cached))
         {
             foreach (var entry in cached.Clubs)

@@ -183,31 +183,20 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     }
 
     /// <summary>
-    /// Drain ffmpeg's stderr in the background so its pipe doesn't fill and
-    /// block the process. Reads <paramref name="reader"/>.killedByUs at the
-    /// end to attribute unexpected exits — this is the same instance across
-    /// seek-rebuilds (we mutate ffmpeg/stdout in place), so the late warning
-    /// log will be wrong if the user seeked between the read and the check.
-    /// Acceptable: it's an info log, not a correctness signal.
+    /// Drain ffmpeg's stderr and attribute any unexpected exit. Reads
+    /// <paramref name="reader"/>.killedByUs after EOF — note this is the same
+    /// instance across seek-rebuilds (we mutate ffmpeg/stdout in place), so
+    /// the late warning log will be wrong if the user seeked between the
+    /// read and the check. Acceptable: it's an info log, not a correctness
+    /// signal.
     /// </summary>
     private static void AttachStderrDrain(Process proc, SubprocessAudioReader reader, CancellationToken ct)
     {
-        _ = Task.Run(async () =>
+        _ = ProcessLog.DrainStderrInBackground(proc, "ffmpeg", ct, onDrainComplete: () =>
         {
-            try
-            {
-                while (await proc.StandardError.ReadLineAsync(ct) is { } line)
-                    Plugin.Log.Info($"[ffmpeg] {line}");
-            }
-            catch { /* process exited or token cancelled */ }
-
-            try
-            {
-                if (proc.HasExited && !reader.killedByUs)
-                    Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
-            }
-            catch { /* already disposed */ }
-        }, ct);
+            if (proc.HasExited && !reader.killedByUs)
+                Plugin.Log.Warning($"[ffmpeg] exited unexpectedly with code {proc.ExitCode}");
+        });
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -456,49 +445,11 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         string? cookiesFromBrowser,
         CancellationToken ct)
     {
-        var psi = new ProcessStartInfo
-        {
-            FileName = binaries.YtDlpPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        // Combined URL+metadata template (replaces -g). yt-dlp's --print
-        // implies --simulate, so the format is selected and resolved but
-        // not downloaded. The metadata fields drive the Now Playing label
-        // (see YtDlpDisplayTitle.Parse).
-        psi.ArgumentList.Add("--print");
-        psi.ArgumentList.Add(YtDlpDisplayTitle.PrintTemplate);
-        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
-        // For URLs that are both a video and a playlist (e.g. /watch?v=X&list=Y),
-        // --no-playlist tells yt-dlp to download the video, not the playlist.
-        psi.ArgumentList.Add("--no-playlist");
-        // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
-        // signature/n-challenge JS. Without a JS runtime, yt-dlp falls back
-        // to "Only images are available" for most YouTube videos.
-        psi.ArgumentList.Add("--js-runtimes");
-        psi.ArgumentList.Add($"deno:{binaries.DenoPath}");
-        // For pure playlist URLs, --playlist-random shuffles before emit;
-        // off, yt-dlp emits items in their original order. Either way we
-        // only read the first stdout line below, so we get one URL per
-        // invocation. (PlaylistAudioReader is the long-form path that
-        // consumes every emitted URL across multiple ffmpegs.)
-        if (playlistRandom)
-            psi.ArgumentList.Add("--playlist-random");
-        // Authenticate as the user's logged-in browser session — the
-        // standard fix for YouTube's "Sign in to confirm you're not a bot"
-        // screen. Empty/null leaves yt-dlp anonymous. Firefox is the
-        // recommended browser; Chromium-based browsers (Chrome, Edge,
-        // Brave, etc.) ship their cookies under app-bound encryption that
-        // yt-dlp can't decrypt without further setup.
-        if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
-        {
-            psi.ArgumentList.Add("--cookies-from-browser");
-            psi.ArgumentList.Add(cookiesFromBrowser);
-        }
-        psi.ArgumentList.Add("--no-warnings");
-        psi.ArgumentList.Add(url);
+        // We only read the first emitted line below (single-shot resolve),
+        // but the full --print template is still cheaper than -g because it
+        // gets us the title metadata in the same invocation. PlaylistAudioReader
+        // shares the same args and consumes every emitted URL.
+        var psi = binaries.BuildYtDlpStartInfo(url, playlistRandom, cookiesFromBrowser);
 
         using var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start yt-dlp");

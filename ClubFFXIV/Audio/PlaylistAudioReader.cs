@@ -72,43 +72,10 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         if (!binaries.Ready)
             throw new InvalidOperationException("ffmpeg/yt-dlp not yet installed");
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = binaries.YtDlpPath,
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        // Combined URL+metadata template (replaces -g). Each playlist item
-        // emits one line containing the resolved URL and yt-dlp's metadata
-        // fields, parsed by YtDlpDisplayTitle on each lazy advance.
-        psi.ArgumentList.Add("--print");
-        psi.ArgumentList.Add(YtDlpDisplayTitle.PrintTemplate);
-        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
-        psi.ArgumentList.Add("--no-playlist");
-        // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
-        // signature/n-challenge JS. Without a JS runtime, yt-dlp falls back
-        // to "Only images are available" for most YouTube videos.
-        psi.ArgumentList.Add("--js-runtimes");
-        psi.ArgumentList.Add($"deno:{binaries.DenoPath}");
-        // yt-dlp emits one URL per item to stdout; we consume them lazily
-        // line-by-line as ffmpeg songs end. With --playlist-random, yt-dlp
-        // shuffles the playlist before emitting.
-        if (playlistRandom)
-            psi.ArgumentList.Add("--playlist-random");
-        // Authenticate as the user's logged-in browser session — the
-        // standard fix for YouTube's "Sign in to confirm you're not a bot"
-        // screen. Empty leaves yt-dlp anonymous. Firefox is the
-        // recommended browser; Chromium-based browsers (Chrome, Edge,
-        // Brave, etc.) encrypt cookies in a way yt-dlp can't decrypt.
-        if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
-        {
-            psi.ArgumentList.Add("--cookies-from-browser");
-            psi.ArgumentList.Add(cookiesFromBrowser);
-        }
-        psi.ArgumentList.Add("--no-warnings");
-        psi.ArgumentList.Add(url);
+        // Long-form path: yt-dlp emits one resolved URL per playlist item
+        // lazily; we consume them line-by-line as ffmpeg songs end. The
+        // arg shape matches SubprocessAudioReader.ResolveUrlAsync (single-shot).
+        var psi = binaries.BuildYtDlpStartInfo(url, playlistRandom, cookiesFromBrowser);
 
         var ytdlp = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start yt-dlp");
@@ -147,15 +114,7 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 
         // Drain stderr in the background so the pipe doesn't fill and stall
         // yt-dlp once we start consuming stdout lazily.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (await ytdlp.StandardError.ReadLineAsync() is { } line)
-                    Plugin.Log.Info($"[yt-dlp] {line}");
-            }
-            catch { /* exited or disposed */ }
-        });
+        _ = ProcessLog.DrainStderrInBackground(ytdlp, "yt-dlp");
 
         var firstResolvedUrl = YtDlpDisplayTitle.ParseAndCache(firstLine, url);
         if (firstResolvedUrl == null)

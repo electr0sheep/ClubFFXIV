@@ -25,7 +25,12 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
 {
     public WaveFormat WaveFormat { get; }
 
-    private readonly HttpClient http;
+    // Shared so we don't pay per-stream connection-pool / TLS warm-up on
+    // every restart. Live audio streams have no fixed duration; per-request
+    // cancellation replaces HttpClient.Timeout.
+    private static readonly HttpClient SharedHttp =
+        new() { Timeout = Timeout.InfiniteTimeSpan };
+
     private readonly HttpResponseMessage response;
     private readonly Stream networkStream;
     private readonly ISampleProvider decoder;
@@ -33,13 +38,11 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
     private bool disposed;
 
     private HttpAudioReader(
-        HttpClient http,
         HttpResponseMessage response,
         Stream networkStream,
         ISampleProvider decoder,
         IDisposable decoderDisposable)
     {
-        this.http = http;
         this.response = response;
         this.networkStream = networkStream;
         this.decoder = decoder;
@@ -53,7 +56,6 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
     /// </summary>
     public static async Task<HttpAudioReader> CreateAsync(string url, CancellationToken ct = default)
     {
-        var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         HttpResponseMessage? response = null;
         Stream? networkStream = null;
         try
@@ -66,7 +68,7 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
             req.Headers.TryAddWithoutValidation("Icy-MetaData", "1");
             req.Headers.UserAgent.ParseAdd("ClubFFXIV/0.1");
 
-            response = await http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            response = await SharedHttp.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
             response.EnsureSuccessStatusCode();
 
             // Initial display title from response headers. icy-name is the
@@ -122,13 +124,12 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
                 decoderDisposable = mpeg;
             }
 
-            return new HttpAudioReader(http, response, networkStream, decoder, decoderDisposable);
+            return new HttpAudioReader(response, networkStream, decoder, decoderDisposable);
         }
         catch
         {
             networkStream?.Dispose();
             response?.Dispose();
-            http.Dispose();
             throw;
         }
     }
@@ -155,7 +156,6 @@ public sealed class HttpAudioReader : ISampleProvider, IDisposable
         try { decoderDisposable.Dispose(); } catch { /* ignore */ }
         try { networkStream.Dispose(); } catch { /* ignore */ }
         try { response.Dispose(); } catch { /* ignore */ }
-        try { http.Dispose(); } catch { /* ignore */ }
     }
 
     /// <summary>

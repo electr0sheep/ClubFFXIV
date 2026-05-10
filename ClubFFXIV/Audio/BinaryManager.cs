@@ -50,6 +50,57 @@ public sealed class BinaryManager
     }
 
     /// <summary>
+    /// Builds the canonical yt-dlp <see cref="ProcessStartInfo"/> for both the
+    /// single-shot URL resolver (<see cref="SubprocessAudioReader.ResolveUrlAsync"/>)
+    /// and the long-lived lazy playlist (<see cref="PlaylistAudioReader.CreateAsync"/>).
+    /// Centralised so the --print template, the Deno JS-runtime hookup, and
+    /// the cookies/playlist-random toggles only have to change in one place.
+    /// </summary>
+    public ProcessStartInfo BuildYtDlpStartInfo(
+        string url, bool playlistRandom, string? cookiesFromBrowser)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = YtDlpPath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        // Combined URL+metadata template (replaces -g). yt-dlp's --print
+        // implies --simulate, so the format is selected and resolved but
+        // not downloaded. Metadata fields drive the Now Playing label.
+        psi.ArgumentList.Add("--print");
+        psi.ArgumentList.Add(YtDlpDisplayTitle.PrintTemplate);
+        psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("bestaudio/best");
+        // For URLs that are both a video and a playlist (/watch?v=X&list=Y),
+        // --no-playlist tells yt-dlp to download the video, not the playlist.
+        psi.ArgumentList.Add("--no-playlist");
+        // Point yt-dlp at our bundled Deno binary so it can solve YouTube's
+        // signature/n-challenge JS. Without a JS runtime, yt-dlp falls back
+        // to "Only images are available" for most YouTube videos.
+        psi.ArgumentList.Add("--js-runtimes");
+        psi.ArgumentList.Add($"deno:{DenoPath}");
+        // For pure playlist URLs, --playlist-random shuffles before emit;
+        // off, yt-dlp emits items in original order.
+        if (playlistRandom)
+            psi.ArgumentList.Add("--playlist-random");
+        // Authenticate as the user's logged-in browser session — the
+        // standard fix for YouTube's "Sign in to confirm you're not a bot"
+        // screen. Empty/null leaves yt-dlp anonymous. Firefox is the
+        // recommended browser; Chromium-based browsers ship cookies under
+        // app-bound encryption that yt-dlp can't decrypt without setup.
+        if (!string.IsNullOrWhiteSpace(cookiesFromBrowser))
+        {
+            psi.ArgumentList.Add("--cookies-from-browser");
+            psi.ArgumentList.Add(cookiesFromBrowser);
+        }
+        psi.ArgumentList.Add("--no-warnings");
+        psi.ArgumentList.Add(url);
+        return psi;
+    }
+
+    /// <summary>
     /// Ensures all three binaries exist on disk, downloading whichever is missing.
     /// Reports progress via the optional callback ("Downloading yt-dlp...").
     /// </summary>
@@ -178,8 +229,7 @@ public sealed class BinaryManager
             await File.WriteAllBytesAsync(tmpPath, bytes, ct);
         }
         // Atomic replace so an in-flight subprocess keeps using the old copy.
-        if (File.Exists(YtDlpPath)) File.Delete(YtDlpPath);
-        File.Move(tmpPath, YtDlpPath);
+        File.Move(tmpPath, YtDlpPath, overwrite: true);
     }
 
     private async Task DownloadFfmpegAsync(CancellationToken ct)
@@ -207,8 +257,7 @@ public sealed class BinaryManager
             await entryStream.CopyToAsync(fs, ct);
         }
 
-        if (File.Exists(FfmpegPath)) File.Delete(FfmpegPath);
-        File.Move(tmpPath, FfmpegPath);
+        File.Move(tmpPath, FfmpegPath, overwrite: true);
     }
 
     private async Task DownloadDenoAsync(CancellationToken ct)
@@ -235,8 +284,7 @@ public sealed class BinaryManager
             await entryStream.CopyToAsync(fs, ct);
         }
 
-        if (File.Exists(DenoPath)) File.Delete(DenoPath);
-        File.Move(tmpPath, DenoPath);
+        File.Move(tmpPath, DenoPath, overwrite: true);
     }
 
     private static async Task<(string stdout, string stderr)> RunCaptureAsync(

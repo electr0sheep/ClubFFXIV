@@ -236,32 +236,21 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         // affordance: when audible, show a mute symbol (clicking silences);
         // when muted, show the green play button (clicking resumes).
         var muted = entry.Muted;
-        var icon = muted ? FontAwesomeIcon.VolumeUp : FontAwesomeIcon.VolumeMute;
+        var muteIcon = muted ? FontAwesomeIcon.VolumeUp : FontAwesomeIcon.VolumeMute;
+        UiHelpers.IconClickable(muteIcon,
+            muted ? "Click to unmute" : "Click to mute",
+            () => plugin.ToggleNowPlayingMute(entry));
 
-        ImGui.AlignTextToFramePadding();
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(UiColors.IconActive, icon.ToIconString());
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(muted ? "Click to unmute" : "Click to mute");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-            plugin.ToggleNowPlayingMute(entry);
-
-        // Play/Pause icon for non-live rows. Sits right of the mute icon and
-        // shows the action that will happen on click (Play when paused, Pause
-        // when playing). Live rows omit this entirely — the existing mute
-        // chrome is the only meaningful control there.
+        // Play/Pause icon for non-live rows. Live rows omit this entirely —
+        // the mute chrome is the only meaningful control there.
         if (!entry.IsLive)
         {
             ImGui.SameLine();
             var playIcon = entry.IsPaused ? FontAwesomeIcon.Play : FontAwesomeIcon.Pause;
-            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-            ImGui.TextColored(UiColors.IconActive, playIcon.ToIconString());
-            ImGui.PopFont();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip(entry.IsPaused ? "Click to play" : "Click to pause");
-            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-                plugin.ToggleNowPlayingPause(entry);
+            UiHelpers.IconClickable(playIcon,
+                entry.IsPaused ? "Click to play" : "Click to pause",
+                () => plugin.ToggleNowPlayingPause(entry),
+                alignToFramePadding: false);
         }
 
         // Skip-next icon — only for sources that can advance (yt-dlp playlist
@@ -270,14 +259,10 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         if (entry.CanSkipNext)
         {
             ImGui.SameLine();
-            ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-            ImGui.TextColored(UiColors.IconActive,
-                FontAwesomeIcon.AngleDoubleRight.ToIconString());
-            ImGui.PopFont();
-            if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Skip to next track");
-            if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-                plugin.SkipNowPlayingToNext(entry);
+            UiHelpers.IconClickable(FontAwesomeIcon.AngleDoubleRight,
+                "Skip to next track",
+                () => plugin.SkipNowPlayingToNext(entry),
+                alignToFramePadding: false);
         }
 
         ImGui.SameLine();
@@ -306,26 +291,23 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     /// <summary>
     /// Right-aligned Ban-icon button that blacklists the row's URL — same
     /// glyph the My Clubs tab uses for Unpublish, so the affordance reads
-    /// consistently. Pushes the icon font for both the width measurement
-    /// and the button render so glyph metrics drive the right-align math.
+    /// consistently. Width is measured under the icon font so the right-align
+    /// math reflects glyph metrics, not the regular text font.
     /// </summary>
     private void DrawBlacklistIconButton(Plugin.NowPlayingEntry entry)
     {
-        var iconText = FontAwesomeIcon.Ban.ToIconString();
         ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        var iconW = ImGui.CalcTextSize(iconText).X
+        var iconW = ImGui.CalcTextSize(FontAwesomeIcon.Ban.ToIconString()).X
                     + ImGui.GetStyle().FramePadding.X * 2 + 4;
         ImGui.PopFont();
-
         ImGui.SetCursorPosX(
             ImGui.GetCursorPosX() + ImGui.GetContentRegionAvail().X - iconW);
 
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        var clicked = ImGui.SmallButton(iconText + "##blacklist-" + entry.Url);
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Blacklist this stream");
-        if (clicked) plugin.BlacklistNowPlaying(entry);
+        if (UiHelpers.IconSmallButton(FontAwesomeIcon.Ban,
+            "blacklist-" + entry.Url, "Blacklist this stream"))
+        {
+            plugin.BlacklistNowPlaying(entry);
+        }
     }
 
     /// <summary>
@@ -482,59 +464,34 @@ public sealed class MusicPlayerWindow : Window, IDisposable
         }
     }
 
-    /// <summary>
-    /// Stop icon — same TextColored + IsItemClicked pattern as the per-row
-    /// transport icons, so the player-controls strip reads as one row of
-    /// FontAwesome glyphs rather than mixing a text button with icon
-    /// toggles. Always rendered at active brightness; this isn't a toggle.
-    /// </summary>
     private void DrawStopIcon()
     {
-        ImGui.AlignTextToFramePadding();
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(UiColors.IconActive,
-            FontAwesomeIcon.Stop.ToIconString());
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Stop");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-        {
-            plugin.StopStream();
-            // Now Playing header reflects "stopped" — no extra status needed.
-        }
+        UiHelpers.IconClickable(FontAwesomeIcon.Stop, "Stop", plugin.StopStream);
     }
 
     /// <summary>
     /// Loop toggle: when a finite source ends, restart it. Active = bright
-    /// icon; inactive = dim. Click flips. Same TextColored + IsItemClicked
-    /// pattern as the per-row pause icon, for visual consistency.
+    /// icon; inactive = dim.
     /// </summary>
     private void DrawLoopToggle()
     {
         var active = plugin.Config.LoopFinishedVideos;
-        var color = active
-            ? UiColors.IconActive
-            : UiColors.IconInactive;
-
-        ImGui.AlignTextToFramePadding();
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(color, FontAwesomeIcon.Repeat.ToIconString());
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                (active ? "Loop: ON\n" : "Loop: OFF\n") +
-                "When a finite source ends, restart it from the top:\n" +
-                "  • Single video: replays the same video.\n" +
-                "  • Playlist: starts the playlist over (with a fresh\n" +
-                "    shuffle if Random is on).\n" +
-                "Off = playlist plays through once and stops.\n" +
-                "Indefinite streams (Twitch, Icecast) never reach a\n" +
-                "natural end, so this setting is a no-op for them.");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-        {
-            plugin.Config.LoopFinishedVideos = !active;
-            plugin.Config.Save();
-        }
+        UiHelpers.IconClickable(
+            FontAwesomeIcon.Repeat,
+            (active ? "Loop: ON\n" : "Loop: OFF\n") +
+            "When a finite source ends, restart it from the top:\n" +
+            "  • Single video: replays the same video.\n" +
+            "  • Playlist: starts the playlist over (with a fresh\n" +
+            "    shuffle if Random is on).\n" +
+            "Off = playlist plays through once and stops.\n" +
+            "Indefinite streams (Twitch, Icecast) never reach a\n" +
+            "natural end, so this setting is a no-op for them.",
+            () =>
+            {
+                plugin.Config.LoopFinishedVideos = !active;
+                plugin.Config.Save();
+            },
+            color: active ? UiColors.IconActive : UiColors.IconInactive);
     }
 
     /// <summary>
@@ -545,27 +502,20 @@ public sealed class MusicPlayerWindow : Window, IDisposable
     private void DrawRandomToggle()
     {
         var active = plugin.Config.PlaylistRandom;
-        var color = active
-            ? UiColors.IconActive
-            : UiColors.IconInactive;
-
-        ImGui.AlignTextToFramePadding();
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        ImGui.TextColored(color, FontAwesomeIcon.Random.ToIconString());
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(
-                (active ? "Random order: ON\n" : "Random order: OFF\n") +
-                "How playlist items are ordered:\n" +
-                "  • Off: original playlist order.\n" +
-                "  • On: yt-dlp shuffles the playlist before iteration.\n" +
-                "No effect on single videos or live streams.");
-        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
-        {
-            plugin.Config.PlaylistRandom = !active;
-            plugin.Config.Save();
-            plugin.SyncYtDlpOptions();
-        }
+        UiHelpers.IconClickable(
+            FontAwesomeIcon.Random,
+            (active ? "Random order: ON\n" : "Random order: OFF\n") +
+            "How playlist items are ordered:\n" +
+            "  • Off: original playlist order.\n" +
+            "  • On: yt-dlp shuffles the playlist before iteration.\n" +
+            "No effect on single videos or live streams.",
+            () =>
+            {
+                plugin.Config.PlaylistRandom = !active;
+                plugin.Config.Save();
+                plugin.SyncYtDlpOptions();
+            },
+            color: active ? UiColors.IconActive : UiColors.IconInactive);
     }
 
     /// <summary>

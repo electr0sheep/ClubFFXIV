@@ -349,34 +349,15 @@ internal sealed class MultiStreamPlayer : IDisposable
         IDisposable? toDispose = null;
         try
         {
-            ISampleProvider rawSource;
-            var kind = UrlClassifier.ClassifyUrl(url);
-            if (kind == AudioSourceKind.YtDlp)
+            if (AudioSourceFactory.DescribeMissingBinaries(url, binaryManager) != null)
             {
-                if (!binaryManager.Ready)
-                {
-                    Plugin.Log.Warning(
-                        $"MultiStreamPlayer: skipping {url} — yt-dlp/ffmpeg not installed.");
-                    return false;
-                }
-                // Route through PlaylistAudioReader so a DJ publishing a
-                // playlist URL actually iterates items as listeners stand
-                // nearby (single videos still work — they degenerate to a
-                // 1-item playlist), and so the voice picks up the
-                // ISeekableSource + ISkippableSource interfaces. Without
-                // this, multi-stream voices got stuck on the first track
-                // and couldn't expose skip-next in the Now Playing UI.
-                var sub = await PlaylistAudioReader.CreateAsync(
-                    url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, cts.Token).ConfigureAwait(false);
-                rawSource = sub;
-                toDispose = sub;
+                Plugin.Log.Warning(
+                    $"MultiStreamPlayer: skipping {url} — yt-dlp/ffmpeg not installed.");
+                return false;
             }
-            else
-            {
-                var http = await HttpAudioReader.CreateAsync(url, cts.Token).ConfigureAwait(false);
-                rawSource = http;
-                toDispose = http;
-            }
+            var (rawSource, rawDisposable) = await AudioSourceFactory.CreateAsync(
+                url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, cts.Token).ConfigureAwait(false);
+            toDispose = rawDisposable;
 
             cts.Token.ThrowIfCancellationRequested();
 
@@ -413,10 +394,7 @@ internal sealed class MultiStreamPlayer : IDisposable
             cts.Token.ThrowIfCancellationRequested();
 
             var voice = new StreamVoice(
-                canonicalKey, url, buffered, buffered, MixerFormat, initialCutoffHz,
-                overrideSeekable: buffered.SupportsSeek,
-                overrideSkippable: buffered.SupportsSkip,
-                overrideCleanExit: buffered.SupportsCleanExit);
+                canonicalKey, url, buffered, buffered, MixerFormat, initialCutoffHz);
             toDispose = null; // ownership transferred to voice
 
             lock (voicesLock)

@@ -203,44 +203,20 @@ public sealed class StreamPlayer : IDisposable
             throw new ArgumentException("URL is empty", nameof(url));
 
         var initialCutoff = spatialCutoff;
-        var kind = UrlClassifier.ClassifyUrl(url);
 
-        // Build the source. Different code paths for direct HTTP vs subprocess.
-        ISampleProvider newSource;
-        IDisposable newDisposable;
+        // Binaries are no longer auto-downloaded — installing them is an
+        // explicit step in the setup wizard / /pclub config. Surface a clear,
+        // actionable error if the user hits a yt-dlp URL without installing.
+        var missing = AudioSourceFactory.DescribeMissingBinaries(url, binaryManager);
+        if (missing != null)
+        {
+            throw new InvalidOperationException(
+                $"This stream type needs {missing}, which hasn't been downloaded. " +
+                $"Open /pclub config → External binaries to install (~83 MB total).");
+        }
 
-        if (kind == AudioSourceKind.YtDlp)
-        {
-            // Binaries are no longer auto-downloaded — installing them is an
-            // explicit step in the setup wizard / /pclub config. Surface a
-            // clear, actionable error if the user hits a yt-dlp URL without
-            // installing first.
-            if (!binaryManager.Ready)
-            {
-                var missing = !binaryManager.YtDlpInstalled && !binaryManager.FfmpegInstalled
-                    ? "yt-dlp + ffmpeg"
-                    : !binaryManager.YtDlpInstalled
-                        ? "yt-dlp"
-                        : "ffmpeg";
-                throw new InvalidOperationException(
-                    $"This stream type needs {missing}, which hasn't been downloaded. " +
-                    $"Open /pclub config → External binaries to install (~83 MB total).");
-            }
-            // PlaylistAudioReader holds the long-lived yt-dlp + iterates
-            // ffmpeg invocations as items end. For single-video URLs it
-            // degenerates to one ffmpeg + a clean EOF, just like the old
-            // single-shot path.
-            var sub = await PlaylistAudioReader.CreateAsync(
-                url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, ct).ConfigureAwait(false);
-            newSource = sub;
-            newDisposable = sub;
-        }
-        else
-        {
-            var http = await HttpAudioReader.CreateAsync(url, ct).ConfigureAwait(false);
-            newSource = http;
-            newDisposable = http;
-        }
+        var (newSource, newDisposable) = await AudioSourceFactory.CreateAsync(
+            url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, ct).ConfigureAwait(false);
 
         if (ct.IsCancellationRequested)
         {

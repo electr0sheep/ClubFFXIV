@@ -295,7 +295,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.PushID(idPrefix + "-" + item);
             ImGui.BulletText(item);
             ImGui.SameLine();
-            if (IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
             ImGui.PopID();
         }
         if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
@@ -303,7 +303,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.SetNextItemWidth(280);
         ImGui.InputText($"##{idPrefix}-add", ref input, 256);
         ImGui.SameLine();
-        if (IconSmallButton(FontAwesomeIcon.Plus, idPrefix + "-addbtn", "Add") && !string.IsNullOrWhiteSpace(input))
+        if (UiHelpers.IconSmallButton(FontAwesomeIcon.Plus, idPrefix + "-addbtn", "Add") && !string.IsNullOrWhiteSpace(input))
         {
             set.Add(input.Trim());
             plugin.Config.Save();
@@ -321,7 +321,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.PushID(idPrefix + "-" + item);
             ImGui.TextDisabled("  " + (item.Length > 60 ? item[..57] + "..." : item));
             ImGui.SameLine();
-            if (IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Trash, idPrefix + "-rm-" + item, "Remove")) toRemove = item;
             ImGui.PopID();
         }
         if (toRemove != null) { set.Remove(toRemove); plugin.Config.Save(); }
@@ -552,7 +552,7 @@ public sealed class ConfigWindow : Window, IDisposable
             ImGui.SameLine();
             ImGui.TextDisabled(djId[..16] + "...");
             ImGui.SameLine();
-            if (IconSmallButton(FontAwesomeIcon.Copy, "dj-id-copy", "Copy"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Copy, "dj-id-copy", "Copy"))
             {
                 ImGui.SetClipboardText(djId);
                 plugin.Notify("ClubFFXIV", "DJ ID copied.", NotificationType.Info);
@@ -799,22 +799,6 @@ public sealed class ConfigWindow : Window, IDisposable
         }
     }
 
-    // Compact icon button using the FontAwesome icon font. The "##id" suffix
-    // gives ImGui a stable widget identity that doesn't depend on the glyph,
-    // so multiple buttons with the same icon (e.g. two Pencils, or Ban for
-    // both Unpublish and Delete) don't collide. AllowWhenDisabled keeps the
-    // tooltip visible when the button is wrapped in BeginDisabled — important
-    // because an icon-only disabled button is otherwise unreadable.
-    private static bool IconSmallButton(FontAwesomeIcon icon, string id, string tooltip)
-    {
-        ImGui.PushFont(Plugin.PluginInterface.UiBuilder.FontIcon);
-        bool clicked = ImGui.SmallButton(icon.ToIconString() + "##" + id);
-        ImGui.PopFont();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(tooltip);
-        return clicked;
-    }
-
     private bool HouseMatchesFilters(UnifiedHouseRow row)
     {
         var entry = row.Primary;
@@ -967,21 +951,21 @@ public sealed class ConfigWindow : Window, IDisposable
         //             unambiguous; the registry copy is the "globe-y" one.
         if (row.HasSavedCopy && row.Saved != null)
         {
-            if (IconSmallButton(FontAwesomeIcon.Pen, "edit-local", "Edit local override"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Pen, "edit-local", "Edit local override"))
                 plugin.ClubFormWindow.OpenLocalEdit(key, row.Saved);
             ImGui.SameLine();
         }
         if (row.IsPublished && row.Published != null)
         {
             if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-            if (IconSmallButton(FontAwesomeIcon.Globe, "edit-club", "Edit club listing"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Globe, "edit-club", "Edit club listing"))
                 plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
             if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             ImGui.SameLine();
         }
 
         if (!canCalibrate) ImGui.BeginDisabled();
-        if (IconSmallButton(FontAwesomeIcon.Crosshairs, "calibrate",
+        if (UiHelpers.IconSmallButton(FontAwesomeIcon.Crosshairs, "calibrate",
                 calibrated ? "Re-calibrate door position" : "Calibrate door position"))
         {
             if (plugin.CalibrateDoor(key))
@@ -996,7 +980,7 @@ public sealed class ConfigWindow : Window, IDisposable
         {
             // Unpublish removes the registry copy. Saved fallback (if any)
             // remains so Indoor mode still has a URL when registry is offline.
-            if (IconSmallButton(FontAwesomeIcon.Ban, "unpublish", "Unpublish from registry"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Ban, "unpublish", "Unpublish from registry"))
             {
                 var k = key;
                 var label = entry.DisplayName;
@@ -1026,7 +1010,7 @@ public sealed class ConfigWindow : Window, IDisposable
         else if (row.IsLocalOnly)
         {
             // Local-only deletes are immediate (no network).
-            if (IconSmallButton(FontAwesomeIcon.Ban, "delete", "Delete saved house"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Ban, "delete", "Delete saved house"))
                 toDeleteSavedOnly = key;
         }
     }
