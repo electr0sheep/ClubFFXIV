@@ -54,14 +54,26 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
         ISampleProvider source,
         IDisposable sourceDisposable,
         WaveFormat targetFormat,
-        float initialCutoffHz)
+        float initialCutoffHz,
+        // The prebuffer wrapper unconditionally implements all three optional
+        // source interfaces — pass these to reflect the *inner* source's
+        // actual support, so UI gates (IsSeekable / IsSkippable) and the
+        // natural-end branch (CleanExit) don't get false positives. Default
+        // null preserves the original `as` cast detection for any caller
+        // that hands us a raw source.
+        bool? overrideSeekable = null,
+        bool? overrideSkippable = null,
+        bool? overrideCleanExit = null)
     {
         CanonicalKey = canonicalKey;
         Url = url;
         this.sourceDisposable = sourceDisposable;
-        CleanExit = source as ICleanExitSource;
-        seekable = source as ISeekableSource;
-        skippable = source as ISkippableSource;
+        var hasCleanExit = overrideCleanExit ?? (source is ICleanExitSource);
+        var hasSeekable = overrideSeekable ?? (source is ISeekableSource);
+        var hasSkippable = overrideSkippable ?? (source is ISkippableSource);
+        CleanExit = hasCleanExit ? source as ICleanExitSource : null;
+        seekable = hasSeekable ? source as ISeekableSource : null;
+        skippable = hasSkippable ? source as ISkippableSource : null;
 
         ISampleProvider chain = source;
 

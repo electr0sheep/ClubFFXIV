@@ -21,6 +21,22 @@ internal sealed class MultiStreamPlayer : IDisposable
 {
     public const float BypassCutoffHz = 20000f;
 
+    // Per-voice prebuffer to absorb cold-start I/O latency (ffmpeg pipe
+    // priming, HTTP connect, HLS first segment fetch) on a background
+    // producer thread instead of the audio thread. Without this, the first
+    // mixer Read on a newly-added voice blocks on its source's stdout — and
+    // because MixingSampleProvider walks inputs sequentially, that stalls
+    // every already-playing voice and audibly stutters.
+    //
+    // Buffer is sized to comfortably cover one WaveOutEvent buffer fill
+    // (default DesiredLatency / 2 ≈ 150ms) with margin. Prime target is
+    // ~70% of the buffer so the producer has headroom; the prime timeout
+    // bounds AddVoiceAsync so a wedged stream can't hold the proximity
+    // tick's pendingStarts slot forever.
+    private const double PrebufferSeconds = 0.5;
+    private const double PrimeTargetSeconds = 0.35;
+    private static readonly TimeSpan PrimeTimeout = TimeSpan.FromSeconds(3);
+
     /// <summary>
     /// Canonical mixer format. SubprocessAudioReader already emits this exact
     /// shape, so yt-dlp voices skip the resampler. HttpAudioReader sources
@@ -327,10 +343,13 @@ internal sealed class MultiStreamPlayer : IDisposable
             pendingStarts[canonicalKey] = cts;
         }
 
-        ISampleProvider? source = null;
-        IDisposable? disposable = null;
+        // toDispose tracks the *current* owner of cleanup responsibility as
+        // ownership migrates: raw source → prebuffer wrapper → StreamVoice.
+        // Set to null once the voice has taken ownership.
+        IDisposable? toDispose = null;
         try
         {
+            ISampleProvider rawSource;
             var kind = UrlClassifier.ClassifyUrl(url);
             if (kind == AudioSourceKind.YtDlp)
             {
@@ -349,20 +368,56 @@ internal sealed class MultiStreamPlayer : IDisposable
                 // and couldn't expose skip-next in the Now Playing UI.
                 var sub = await PlaylistAudioReader.CreateAsync(
                     url, binaryManager, PlaylistRandom, YtDlpCookiesBrowser, cts.Token).ConfigureAwait(false);
-                source = sub;
-                disposable = sub;
+                rawSource = sub;
+                toDispose = sub;
             }
             else
             {
                 var http = await HttpAudioReader.CreateAsync(url, cts.Token).ConfigureAwait(false);
-                source = http;
-                disposable = http;
+                rawSource = http;
+                toDispose = http;
             }
 
             cts.Token.ThrowIfCancellationRequested();
 
-            var voice = new StreamVoice(canonicalKey, url, source, disposable, MixerFormat, initialCutoffHz);
-            disposable = null; // ownership transferred to voice
+            // Wrap with the prebuffer so the audio thread's mixer.Read never
+            // blocks on cold I/O. The wrapper spawns a background producer
+            // task immediately and takes ownership of the raw source's
+            // disposable.
+            var buffered = new PrebufferedSampleProvider(rawSource, toDispose, PrebufferSeconds);
+            toDispose = buffered;
+
+            // Prime synchronously before adding to the mixer. If the inner's
+            // first read takes longer than PrimeTimeout (wedged network,
+            // ffmpeg unable to connect), proceed anyway — the wrapper returns
+            // silence on underrun, so the voice goes live silent and audio
+            // appears as soon as the producer catches up. Guarantees the
+            // proximity tick's pendingStarts slot can't be held hostage by a
+            // dead URL.
+            using (var primeCts = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+            {
+                primeCts.CancelAfter(PrimeTimeout);
+                try
+                {
+                    await buffered.PrimeAsync(PrimeTargetSeconds, primeCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cts.Token.IsCancellationRequested)
+                {
+                    // Prime timeout — fall through and let the wrapper play
+                    // silence until the producer eventually catches up.
+                    Plugin.Log.Info(
+                        $"MultiStreamPlayer: prime timeout for {url}; adding voice anyway.");
+                }
+            }
+
+            cts.Token.ThrowIfCancellationRequested();
+
+            var voice = new StreamVoice(
+                canonicalKey, url, buffered, buffered, MixerFormat, initialCutoffHz,
+                overrideSeekable: buffered.SupportsSeek,
+                overrideSkippable: buffered.SupportsSkip,
+                overrideCleanExit: buffered.SupportsCleanExit);
+            toDispose = null; // ownership transferred to voice
 
             lock (voicesLock)
             {
@@ -380,13 +435,13 @@ internal sealed class MultiStreamPlayer : IDisposable
         }
         catch (OperationCanceledException)
         {
-            disposable?.Dispose();
+            toDispose?.Dispose();
             return false;
         }
         catch (Exception ex)
         {
             Plugin.Log.Warning($"MultiStreamPlayer: voice startup failed for {url}: {ex.Message}");
-            disposable?.Dispose();
+            toDispose?.Dispose();
             return false;
         }
         finally
