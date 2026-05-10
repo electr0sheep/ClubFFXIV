@@ -43,6 +43,10 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
     private readonly ISkippableSource? skippable;
     private bool paused;
     private bool disposed;
+    // Latched once the source has signalled true EOF (Read returned 0).
+    // Read returns 0 from then on so MixingSampleProvider drops us via the
+    // < count branch in OnMixerInputEnded — see Read() for full rationale.
+    private bool sourceEofReached;
 
     public StreamVoice(
         string canonicalKey,
@@ -94,7 +98,34 @@ internal sealed class StreamVoice : ISampleProvider, IDisposable
             Array.Clear(buffer, offset, count);
             return count;
         }
-        return volumeStage.Read(buffer, offset, count);
+        // Already saw the source's true EOF — propagate by returning 0 so
+        // MixingSampleProvider drops us and fires OnMixerInputEnded (the
+        // path that triggers Plugin.OnMultiStreamVoiceNaturallyEnded /
+        // loop-or-suppress logic).
+        if (sourceEofReached) return 0;
+
+        var n = volumeStage.Read(buffer, offset, count);
+        if (n == count) return n;
+
+        if (n == 0)
+        {
+            // Genuine EOF (PlaylistAudioReader exhausted, HTTP file ended,
+            // etc.). Latch and propagate so the mixer drops us.
+            sourceEofReached = true;
+            return 0;
+        }
+
+        // Partial read — pad the remainder with silence and return `count`
+        // so MixingSampleProvider does NOT interpret this as input-ended.
+        // Without this, ffmpeg's last bytes at the end of every playlist
+        // track (PlaylistAudioReader → SubprocessAudioReader's final pipe
+        // drain) would tear our voice down mid-playlist: the inter-song gap
+        // would briefly show no voices, ApplyAudioPolicy would unmute the
+        // game's BGM, and HandleIndoorMode would re-add a fresh voice
+        // (restarting the playlist from track 1). The next Read picks up
+        // the source's silence-bridge / next-track path normally.
+        Array.Clear(buffer, offset + n, count - n);
+        return count;
     }
 
     /// <summary>
