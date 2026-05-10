@@ -36,6 +36,20 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     // so the stderr drain can correctly attribute unexpected exits.
     private bool killedByUs;
     private bool eofLogged; // suppress repeated EOF logs from the same dead reader
+    // Single-fire guard for NaturalExited. Set true after the first natural
+    // exit fires so a follow-up seek-respawn that also exits doesn't re-fire.
+    private bool naturalExitFired;
+
+    /// <summary>
+    /// Fires once when ffmpeg exits without our Dispose having killed it
+    /// (natural EOF or unexpected crash). Lets <see cref="PlaylistAudioReader"/>
+    /// pre-trigger the next item's spawn in parallel with the OS pipe + WaveOut
+    /// buffer draining the dying ffmpeg's remaining audio, instead of waiting
+    /// for Read to see 0 — which only happens ~400-500ms later. Does not fire
+    /// for kills (Dispose, SeekToSeconds), so seek-respawn doesn't masquerade
+    /// as end-of-track.
+    /// </summary>
+    public event Action? NaturalExited;
 
     // Stored so SeekToSeconds can respawn ffmpeg with -ss against the same
     // already-resolved URL (no second yt-dlp roundtrip). HLS / progressive
@@ -100,6 +114,11 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
 
         var proc = SpawnFfmpeg(resolvedMediaUrl, binaries, startSeconds: 0);
         var reader = new SubprocessAudioReader(proc, resolvedMediaUrl, binaries);
+        proc.Exited += reader.OnFfmpegExited;
+        // Race: ffmpeg can exit between Process.Start and our handler attach.
+        // Process.Exited is one-shot from the runtime's POV, so a handler
+        // attached after exit never fires — synthesize the call manually.
+        if (proc.HasExited) reader.OnFfmpegExited(proc, EventArgs.Empty);
         AttachStderrDrain(proc, reader, ct);
         return reader;
     }
@@ -155,8 +174,12 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("f32le");
         psi.ArgumentList.Add("pipe:1");
 
-        return Process.Start(psi)
+        var proc = Process.Start(psi)
             ?? throw new InvalidOperationException("Failed to start ffmpeg");
+        // Required for Process.Exited to fire — set once at spawn so callers
+        // (FromResolvedUrl, ApplyPendingSeekIfAny) just attach the handler.
+        proc.EnableRaisingEvents = true;
+        return proc;
     }
 
     /// <summary>
@@ -346,6 +369,12 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             stdout = proc.StandardOutput.BaseStream;
             killedByUs = false;
             eofLogged = false;
+            // Hook the natural-exit handler on the respawned process. The old
+            // ffmpeg's handler stays attached but is harmless — it'll fire
+            // once and OnFfmpegExited's identity check (sender vs. ffmpeg
+            // field, which now points at proc) drops it.
+            proc.Exited += OnFfmpegExited;
+            if (proc.HasExited) OnFfmpegExited(proc, EventArgs.Empty);
             // Re-anchor position: subsequent Reads count up from the seek
             // target so the UI's progress bar reflects the actual playhead.
             Interlocked.Exchange(ref samplesPlayed,
@@ -374,6 +403,23 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         }
         catch { /* already gone */ }
         try { ffmpeg.Dispose(); } catch { /* ignore */ }
+    }
+
+    /// <summary>
+    /// Process.Exited handler. Fires <see cref="NaturalExited"/> exactly once
+    /// per reader, only when the *current* ffmpeg exits without us having
+    /// killed it (Dispose / SeekToSeconds set <c>killedByUs</c>). Identity
+    /// check on <paramref name="sender"/> drops late callbacks from old
+    /// processes that were replaced by SeekToSeconds.
+    /// </summary>
+    private void OnFfmpegExited(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, ffmpeg)) return;
+        if (killedByUs || disposed) return;
+        if (naturalExitFired) return;
+        naturalExitFired = true;
+        try { NaturalExited?.Invoke(); }
+        catch (Exception ex) { Plugin.Log.Warning($"NaturalExited handler threw: {ex.Message}"); }
     }
 
     /// <summary>

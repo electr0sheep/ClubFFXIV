@@ -44,6 +44,10 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 
     private SubprocessAudioReader? currentInner;
     private Task<SubprocessAudioReader?>? advanceTask;
+    // Guards advanceTask writes from racing the audio thread (Read) against
+    // the Process.Exited threadpool callback (OnInnerNaturalExited). Held only
+    // long enough to test-and-set; never wraps user code.
+    private readonly object advanceLock = new();
     private bool exhausted;
     private bool exhaustedNaturally;
     private bool killedByUs;
@@ -162,7 +166,12 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         }
 
         var firstInner = SubprocessAudioReader.FromResolvedUrl(firstResolvedUrl, binaries, ct);
-        return new PlaylistAudioReader(ytdlp, binaries, url, firstInner);
+        var pl = new PlaylistAudioReader(ytdlp, binaries, url, firstInner);
+        // Hook the natural-exit signal so the next item's spawn starts in
+        // parallel with this one's pipe + WaveOut buffer draining (~400-500ms
+        // head-start that we'd otherwise miss between songs).
+        firstInner.NaturalExited += pl.OnInnerNaturalExited;
+        return pl;
     }
 
     public int Read(float[] buffer, int offset, int count)
@@ -175,9 +184,12 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             var n = currentInner.Read(buffer, offset, count);
             if (n > 0) return n;
             // Inner EOF — kick off an async advance to the next URL.
+            // (Often a no-op now: NaturalExited fires when ffmpeg actually
+            // exits, ~400-500ms before Read sees 0, so advance is usually
+            // already running by the time we get here.)
             currentInner.Dispose();
             currentInner = null;
-            advanceTask = Task.Run(AdvanceAsync);
+            StartAdvanceIfNeeded();
         }
 
         // Awaiting next inner.
@@ -227,7 +239,9 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             // kicks in if no item ever populated a label.
             var resolvedUrl = YtDlpDisplayTitle.ParseAndCache(line, userUrl);
             if (resolvedUrl == null) return null;
-            return SubprocessAudioReader.FromResolvedUrl(resolvedUrl, binaries, cts.Token);
+            var inner = SubprocessAudioReader.FromResolvedUrl(resolvedUrl, binaries, cts.Token);
+            inner.NaturalExited += OnInnerNaturalExited;
+            return inner;
         }
         catch (OperationCanceledException)
         {
@@ -237,6 +251,32 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         {
             Plugin.Log.Warning($"[playlist] advance failed: {ex.Message}");
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Subscribed to each inner's <see cref="SubprocessAudioReader.NaturalExited"/>.
+    /// Fires on a threadpool thread (Process.Exited callback) ~400-500ms before
+    /// the audio thread's Read sees 0, because the OS pipe + WaveOut device
+    /// buffer still hold playable audio. Pre-starts the next item's spawn so
+    /// its ffmpeg cold-start (HTTP connect, first segment, first decoded
+    /// samples) overlaps the drain instead of running sequentially after it.
+    /// </summary>
+    private void OnInnerNaturalExited() => StartAdvanceIfNeeded();
+
+    /// <summary>
+    /// Idempotent start for <see cref="advanceTask"/>. Called from both the
+    /// audio thread (Read's EOF path) and the Process.Exited callback; the
+    /// lock makes the test-and-set race-free so the second caller becomes a
+    /// no-op rather than overwriting an in-flight advance.
+    /// </summary>
+    private void StartAdvanceIfNeeded()
+    {
+        lock (advanceLock)
+        {
+            if (advanceTask != null) return;
+            if (disposed || exhausted) return;
+            advanceTask = Task.Run(AdvanceAsync);
         }
     }
 
