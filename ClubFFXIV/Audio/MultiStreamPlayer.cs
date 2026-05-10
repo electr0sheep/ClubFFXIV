@@ -419,6 +419,11 @@ internal sealed class MultiStreamPlayer : IDisposable
             }
             // Don't carry per-voice mute state across remove/re-add: when the
             // voice next pops up via proximity, treat it as a fresh sound.
+            // Per-voice pause state lives on the StreamVoice itself, which
+            // gets disposed below — so pause is also implicitly reset on
+            // re-entry, which matches the "fresh sound" intent. (We can't
+            // preserve a paused playhead anyway — yt-dlp restarts from the
+            // top of the playlist.)
             mutedKeys.Remove(canonicalKey);
         }
         try { toCancel?.Cancel(); } catch { /* ignore */ }

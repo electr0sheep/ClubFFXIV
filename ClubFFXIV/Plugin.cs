@@ -91,6 +91,14 @@ public sealed class Plugin : IDalamudPlugin
     private readonly Dictionary<string, Vector3> activeMultiDoorPos = new();
     private Vector3? activeSingleDoorPos;
 
+    // Multi-stream voices that just naturally ended while LoopFinishedVideos
+    // was off. Suppresses HandleOutdoorModeMulti from re-adding them on the
+    // next 500ms tick — the proximity loop only sees "candidate in range, no
+    // voice exists" and races past the Loop gate in
+    // OnMultiStreamVoiceNaturallyEnded. Cleared when the user walks out of
+    // the candidate's range, changes territory, or stops/replays the stream.
+    private readonly HashSet<string> recentlyEndedMultiKeys = new();
+
     // Focus-mute policy state. Both values are cached so we never read them
     // on the hot path: soundsPlayWhenInactive is fed by IGameConfig.SystemChanged
     // and persisted in Config so alt-tab muting works at startup before
@@ -585,15 +593,6 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.MasterVolume = volume;
         if (multiStreamPlayer != null) multiStreamPlayer.MasterVolume = volume;
     }
-    /// <summary>
-    /// True if EITHER the single-stream player or the multi-stream mixer is
-    /// currently producing audio. The Now Playing header reads this — multi
-    /// alone counts as "playing", which the previous single-stream-only check
-    /// missed.
-    /// </summary>
-    public bool IsStreamPlaying =>
-        streamPlayer.IsPlaying || multiStreamPlayer?.HasAnyActivity == true;
-    public string? CurrentStreamUrl => streamPlayer.CurrentUrl;
 
     /// <summary>
     /// One row in the Now Playing header. Abstracts over single-stream and
@@ -809,7 +808,16 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnMultiStreamVoiceNaturallyEnded(string canonicalKey, string url)
     {
-        if (!Config.LoopFinishedVideos) return;
+        if (!Config.LoopFinishedVideos)
+        {
+            // Suppress the next outdoor-proximity tick from re-adding this
+            // voice. Without this entry, HandleOutdoorModeMulti would see
+            // "candidate in range, no voice" and call AddVoiceAsync again
+            // on the very next tick — bypassing the Loop=OFF intent.
+            // Cleared when the user walks out of range / changes territory.
+            recentlyEndedMultiKeys.Add(canonicalKey);
+            return;
+        }
         if (Permissions.Check(url) == UrlDecision.Block)
         {
             Log.Info($"Voice finished but URL is blocked, not looping: {url}");
@@ -826,6 +834,10 @@ public sealed class Plugin : IDalamudPlugin
     {
         multiStreamPlayer?.StopAll();
         activeMultiDoorPos.Clear();
+        // Stop / Play / multi-stream-toggle-off all funnel through here. Drop
+        // Loop=OFF suppressions: an explicit teardown is the user signalling
+        // "start fresh", so the next outdoor tick should attempt these again.
+        recentlyEndedMultiKeys.Clear();
     }
 
     /// <summary>
@@ -1378,6 +1390,10 @@ public sealed class Plugin : IDalamudPlugin
         // Reset the "user dismissed this" set so re-entering a ward / plot
         // gets a fresh chance to prompt for any password-protected clubs.
         skippedPasswordedPlots.Clear();
+        // Same idea for Loop=OFF suppressions — the candidate set is about to
+        // change wholesale, so stale entries from the previous ward shouldn't
+        // suppress fresh play attempts in the new one.
+        recentlyEndedMultiKeys.Clear();
     }
 
     /// <summary>
@@ -1462,7 +1478,10 @@ public sealed class Plugin : IDalamudPlugin
         // Outdoor proximity is meant to layer *over* the world's own BGM, not replace it.
         // Mute while a load is pending too — otherwise the game's BGM blares for the
         // 1–3s the stream takes to connect after entering a house.
-        var streamWillPlay = streamPlayer.IsPlaying || pendingStartUrl != null;
+        // IsActive (not IsPlaying) — a paused manual/indoor stream still "owns"
+        // the audio role. Without this, hitting Pause unmutes the game's BGM
+        // and you hear it blare over your paused row.
+        var streamWillPlay = streamPlayer.IsActive || pendingStartUrl != null;
         if (!streamWillPlay && MultiStreamActive && multiStreamPlayer?.HasAnyActivity == true)
             streamWillPlay = true;
         var streamIsPrimary = streamWillPlay
@@ -1529,8 +1548,10 @@ public sealed class Plugin : IDalamudPlugin
 
     private void DriveAudio()
     {
-        // Manual playback is sticky — never override with auto-play.
-        if (CurrentMode == PlaybackMode.Manual && (streamPlayer.IsPlaying || pendingStartUrl != null))
+        // Manual playback is sticky — never override with auto-play. IsActive
+        // (Playing OR Paused) so a paused manual stream doesn't fall through
+        // to outdoor proximity and start adding voices alongside it.
+        if (CurrentMode == PlaybackMode.Manual && (streamPlayer.IsActive || pendingStartUrl != null))
             return;
 
         // User explicitly stopped — don't auto-resume until they Play again or
@@ -1574,10 +1595,13 @@ public sealed class Plugin : IDalamudPlugin
                     multiStreamPlayer.RemoveVoice(activeKey);
             }
         }
-        else if (CurrentMode == PlaybackMode.Outdoor && streamPlayer.IsPlaying)
+        else if (CurrentMode == PlaybackMode.Outdoor)
         {
-            // Single-stream: only fires once on Outdoor→Indoor transition,
-            // since CurrentMode flips to Indoor below.
+            // Single-stream Outdoor→Indoor handoff: release the WaveOutEvent
+            // before EnterIndoor builds a new chain. Stop() is null-safe and
+            // idempotent, so we don't gate on IsPlaying — a paused or
+            // naturally-EOF'd output is still holding the device handle and
+            // needs disposing or a stale handle survives into the next stream.
             streamPlayer.Stop();
         }
 
@@ -1597,7 +1621,10 @@ public sealed class Plugin : IDalamudPlugin
         }
         else
         {
-            alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsPlaying;
+            // IsActive: a paused Indoor stream is still settled — we don't
+            // want to re-enter the saved-house / registry lookup just because
+            // the user hit Pause on the Now Playing row.
+            alreadySettled = CurrentMode == PlaybackMode.Indoor && streamPlayer.IsActive;
         }
 
         if (alreadySettled)
@@ -1839,8 +1866,10 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        // Seamless: same URL was already streaming outdoors.
-        if (streamPlayer.IsPlaying && streamPlayer.CurrentUrl == url)
+        // Seamless: same URL was already streaming outdoors. IsActive (not
+        // IsPlaying) so a paused stream of the same URL also reuses in place
+        // — no reconnect, no rebuffer, no lost pause position.
+        if (streamPlayer.IsActive && streamPlayer.CurrentUrl == url)
         {
             streamPlayer.BypassSpatial();
             CurrentMode = PlaybackMode.Indoor;
@@ -1875,7 +1904,11 @@ public sealed class Plugin : IDalamudPlugin
     private void EnterIndoorMulti(string url, ClubContext context)
     {
         // Single-voice player is unused while multi-stream owns the output.
-        if (streamPlayer.IsPlaying) streamPlayer.Stop();
+        // Unconditional Stop() releases the WaveOutEvent even if the
+        // streamPlayer is in a half-dead state (paused, naturally-EOF'd, or
+        // errored mid-stream) — gating on IsPlaying would leave a stale
+        // device handle alive alongside the multi-stream output.
+        streamPlayer.Stop();
 
         var canonical = CurrentPlotKey?.Canonical;
         if (canonical == null) return;
@@ -2054,8 +2087,12 @@ public sealed class Plugin : IDalamudPlugin
         streamPlayer.SetSpatial(r.NormalizedNearness, cutoff, r.Balance * Config.SpatialPanStrength);
         activeSingleDoorPos = r.Candidate.DoorPosition;
 
+        // IsActive (not IsPlaying) so a paused stream of the same URL doesn't
+        // get clobbered by a fresh PlayAsync — pausing then walking past the
+        // same club used to lose your pause position because !IsPlaying tripped
+        // the restart branch.
         var needNewStream = streamPlayer.CurrentUrl != r.Candidate.StreamUrl
-            || (CurrentMode != PlaybackMode.Outdoor && !streamPlayer.IsPlaying);
+            || (CurrentMode != PlaybackMode.Outdoor && !streamPlayer.IsActive);
 
         if (needNewStream && pendingStartUrl != r.Candidate.StreamUrl)
         {
@@ -2067,11 +2104,14 @@ public sealed class Plugin : IDalamudPlugin
             Log.Info(
                 $"Outdoor restart trigger: " +
                 $"currentUrlMatches={streamPlayer.CurrentUrl == r.Candidate.StreamUrl} " +
-                $"mode={CurrentMode} isPlaying={streamPlayer.IsPlaying}");
+                $"mode={CurrentMode} isActive={streamPlayer.IsActive}");
             _ = StartStreamAsync(r.Candidate.StreamUrl, PlaybackMode.Outdoor, r.Candidate.DisplayName);
         }
-        else if (CurrentMode != PlaybackMode.Outdoor && streamPlayer.IsPlaying)
+        else if (CurrentMode != PlaybackMode.Outdoor && streamPlayer.IsActive)
         {
+            // IsActive: a paused stream that matches the in-range candidate
+            // still represents an outdoor session — flip CurrentMode so the
+            // BGM / proximity invariants downstream don't read the stale mode.
             CurrentMode = PlaybackMode.Outdoor;
         }
     }
@@ -2111,16 +2151,35 @@ public sealed class Plugin : IDalamudPlugin
                 CurrentMode = PlaybackMode.Off;
             }
             activeMultiDoorPos.Clear();
+            // Out of range of every candidate ⇒ any Loop=OFF suppressions are
+            // for clubs we've walked away from. Drop them so re-entering range
+            // gets a fresh play attempt.
+            recentlyEndedMultiKeys.Clear();
             return;
+        }
+
+        // Per-key walk-out cleanup: if a previously-ended key isn't in range
+        // anymore, drop its suppression so re-entering range can play fresh.
+        // Use uncapped allInRange (not the capped desired set) so a club
+        // evicted by MaxConcurrentStreams keeps its suppression — we haven't
+        // actually walked away from it.
+        if (recentlyEndedMultiKeys.Count > 0)
+        {
+            var inRangeKeys = new HashSet<string>();
+            foreach (var r in allInRange) inRangeKeys.Add(r.Candidate.CanonicalKey);
+            recentlyEndedMultiKeys.RemoveWhere(k => !inRangeKeys.Contains(k));
         }
 
         // Lazy-init: only build the WaveOutEvent on first actually-in-range tick.
         player ??= EnsureMultiStreamPlayer();
 
-        // The single-voice player may still be playing from a prior Indoor or
-        // Manual session; outdoor multi-stream mode owns the audio output, so
-        // stop the single player before voicing anything new.
-        if (streamPlayer.IsPlaying) streamPlayer.Stop();
+        // The single-voice player may still be allocated from a prior Indoor
+        // or Manual session — possibly playing, paused, or in the half-dead
+        // state after a natural EOF / stream error where IsPlaying is false
+        // but the WaveOutEvent still holds the device. Outdoor multi-stream
+        // mode owns the audio output, so unconditionally release it. Stop()
+        // is null-safe and idempotent.
+        streamPlayer.Stop();
 
         // Build desired set under the cap. yt-dlp = 2 voice-units (each spawns
         // yt-dlp + ffmpeg subprocesses), direct HTTP = 1.
@@ -2165,6 +2224,9 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
             }
             if (player.IsStarting(key)) continue;
+            // Voice ended naturally with Loop=OFF and the user hasn't walked
+            // out of range yet — respect the toggle and skip the re-add.
+            if (recentlyEndedMultiKeys.Contains(key)) continue;
 
             var ctx = new ClubContext(r.Candidate.DisplayName, r.Candidate.Description);
             if (!TryAutoPlayPermission(url, ctx)) continue;
