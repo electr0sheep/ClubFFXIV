@@ -20,17 +20,16 @@ public sealed class SetupWizardWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
 
+    // Bare-apex entries; UrlPermissions matches suffixes, so "youtube.com"
+    // covers "www.youtube.com", "m.youtube.com", and the apex itself.
+    // Likewise "somafm.com" covers all of SomaFM's iceN / edge subdomains.
     private static readonly (string Domain, string Description)[] CommonDomains =
     {
-        ("twitch.tv",          "Twitch live streams"),
-        ("youtube.com",        "YouTube videos & live streams"),
-        ("youtu.be",           "YouTube share URLs"),
-        ("ice1.somafm.com",    "SomaFM internet radio"),
-        ("ice2.somafm.com",    "SomaFM (alternate)"),
-        ("ice3.somafm.com",    "SomaFM (alternate)"),
-        ("ice4.somafm.com",    "SomaFM (alternate)"),
-        ("soundcloud.com",     "SoundCloud tracks & streams"),
-        ("api-v2.soundcloud.com", "SoundCloud API streams"),
+        ("twitch.tv",      "Twitch live streams (all subdomains)"),
+        ("youtube.com",    "YouTube videos & live streams (all subdomains)"),
+        ("youtu.be",       "YouTube share URLs"),
+        ("soundcloud.com", "SoundCloud tracks & streams (all subdomains)"),
+        ("somafm.com",     "SomaFM internet radio (all stream servers)"),
     };
 
     private readonly Dictionary<string, bool> selections = new();

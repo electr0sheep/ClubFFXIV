@@ -275,8 +275,9 @@ public sealed class ConfigWindow : Window, IDisposable
         UiHelpers.SectionHeader("Permissions");
 
         ImGui.TextWrapped(
-            "Streams from unfamiliar domains are blocked until you approve them. " +
-            "Manage the allow / block lists here.");
+            "Streams from unfamiliar domains prompt for approval before playing. " +
+            "Manage the allow / block lists here. Domain entries match subdomains " +
+            "too — e.g., \"youtube.com\" covers \"www.youtube.com\" and \"m.youtube.com\".");
         ImGui.Spacing();
 
         DrawList("Allowed domains", plugin.Config.AllowedDomains, ref newAllowDomainInput, "allow-d");

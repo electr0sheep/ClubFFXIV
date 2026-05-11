@@ -41,11 +41,40 @@ public sealed class UrlPermissions
         var host = ExtractHost(url);
         if (host != null)
         {
-            if (config.AllowedDomains.Contains(host)) return UrlDecision.Allow;
-            if (config.BlockedDomains.Contains(host)) return UrlDecision.Block;
+            if (MatchesAnyDomain(config.AllowedDomains, host)) return UrlDecision.Allow;
+            if (MatchesAnyDomain(config.BlockedDomains, host)) return UrlDecision.Block;
         }
 
         return UrlDecision.Ask;
+    }
+
+    /// <summary>
+    /// Suffix-aware domain match: an entry "youtube.com" matches a host of
+    /// "youtube.com" exactly OR any subdomain ("www.youtube.com",
+    /// "m.youtube.com"). Treats users adding a domain to the allow / block
+    /// list the way they intuitively read it — Uri.Host is host-exact, but
+    /// the UI label and the wizard's pre-approval list use the bare apex
+    /// form ("youtube.com") and most stream URLs land on "www.youtube.com".
+    /// Leading dots on the entry are stripped so ".youtube.com" works the
+    /// same as "youtube.com" (defensive: a power user typing into the
+    /// Permissions tab may include one).
+    /// </summary>
+    public static bool DomainMatches(string entry, string host)
+    {
+        var normalized = entry.TrimStart('.');
+        if (string.IsNullOrEmpty(normalized)) return false;
+        if (host.Length == normalized.Length)
+            return string.Equals(host, normalized, StringComparison.OrdinalIgnoreCase);
+        return host.Length > normalized.Length
+            && host[host.Length - normalized.Length - 1] == '.'
+            && host.EndsWith(normalized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesAnyDomain(System.Collections.Generic.HashSet<string> domains, string host)
+    {
+        foreach (var entry in domains)
+            if (DomainMatches(entry, host)) return true;
+        return false;
     }
 
     public void AllowUrl(string url)
