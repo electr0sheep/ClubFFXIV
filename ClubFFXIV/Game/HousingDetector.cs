@@ -36,6 +36,16 @@ public sealed class HousingDetector
             var room = hm->GetCurrentRoom();
             var division = hm->GetCurrentDivision();
 
+            // Threshold-crossing transient: the game flips IndoorTerritory to
+            // non-null ~500ms before populating ward/plot, returning -1 placeholders.
+            // Returning a PlotKey with -1 would make HandleIndoorMode prune every
+            // outdoor voice as non-matching, including the one for the plot the
+            // user is actually about to enter — and the next-tick re-add restarts
+            // playback from scratch. Hold the previous indoor plot (or null if
+            // none) until real values land; the audio driver treats null as "no
+            // location change" and leaves voices alone.
+            if (ward < 0 || plot < 0) return lastIndoorPlot;
+
             var resolved = new PlotKey(worldId, territory, ward, plot, room, division);
             lastIndoorPlot = resolved;
             return resolved;
