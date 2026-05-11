@@ -1,7 +1,7 @@
 author: electr0sheep
 name: Club FFXIV
-punchline: Time to rock
-description: "Tune into in-game housing radio stations. Plays a custom Icecast/Shoutcast stream while in housing, mutes the game's BGM. Phase 1: manual stream URL."
+punchline: Spatial-audio housing clubs — tune in or DJ
+description: "Turns FFXIV housing into spatial-audio venues. Hear muffled music drift through the door as you approach a calibrated plot; walk inside, full audio, BGM ducks out. Plays Twitch / YouTube / SoundCloud / Icecast / Shoutcast streams. DJs publish their house to a registry so visitors auto-tune; optional EFF-diceware passphrase gating, local-only overrides, and a public directory of listed clubs."
 repo_url: "https://github.com/electr0sheep/ClubFFXIV"
 tags: [
   audio
