@@ -943,12 +943,6 @@ public sealed class ConfigWindow : Window, IDisposable
         var key = row.Key;
         var entry = row.Primary;
 
-        // Two distinct edit paths matching the Current Location flow:
-        //   • Pen   — local override form (any user, any plot)
-        //   • Globe — registry edit form (we hold the DJ key for this plot,
-        //             i.e. row.IsPublished). Globe instead of a second Pen
-        //             so a row that shows both buttons is visually
-        //             unambiguous; the registry copy is the "globe-y" one.
         if (row.HasSavedCopy && row.Saved != null)
         {
             if (UiHelpers.IconSmallButton(FontAwesomeIcon.Pen, "edit-local", "Edit local override"))
@@ -958,7 +952,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (row.IsPublished && row.Published != null)
         {
             if (!plugin.RegistryEnabled) ImGui.BeginDisabled();
-            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Globe, "edit-club", "Edit club listing"))
+            if (UiHelpers.IconSmallButton(FontAwesomeIcon.Pen, "edit-club", "Edit club listing"))
                 plugin.ClubFormWindow.OpenRegistryEdit(key, row.Published);
             if (!plugin.RegistryEnabled) ImGui.EndDisabled();
             ImGui.SameLine();
