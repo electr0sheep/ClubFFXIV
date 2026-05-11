@@ -101,6 +101,21 @@ public sealed class HousingDetector
     }
 
     /// <summary>
+    /// True when the player is anywhere in a housing district — indoor, outdoor,
+    /// or mid-threshold-crossing (when IndoorTerritory has flipped non-null but
+    /// the ward/plot fields haven't populated yet, so <see cref="ResolveCurrent"/>
+    /// returns null and <see cref="ResolveOutdoor"/> returns null too). DriveAudio
+    /// uses this to distinguish the transient (keep voices alive) from a real
+    /// "left housing" event (teleport, logout — tear voices down).
+    /// </summary>
+    public unsafe bool IsInHousingDistrict()
+    {
+        var hm = HousingManager.Instance();
+        if (hm == null) return false;
+        return hm->IndoorTerritory != null || hm->OutdoorTerritory != null;
+    }
+
+    /// <summary>
     /// Outdoor ward context if the player is roaming a ward, else null.
     /// </summary>
     public unsafe WardLocation? ResolveOutdoor()

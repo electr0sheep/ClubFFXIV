@@ -1573,8 +1573,23 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
+        // Both CurrentPlotKey and CurrentWard are null — but this happens in
+        // two very different scenarios:
+        //   1. User genuinely left housing (teleported, logged out). Tear down.
+        //   2. Threshold-crossing transient: IndoorTerritory just flipped
+        //      non-null so IsInOutdoorWard returns false → CurrentWard=null;
+        //      ward/plot haven't populated yet so ResolveCurrent returns null
+        //      → CurrentPlotKey=null. Tearing down here would silently destroy
+        //      the outdoor voice the user is about to seamlessly continue from
+        //      inside. Detect the transient by checking HousingManager directly:
+        //      if either Indoor- or OutdoorTerritory is non-null, the user is
+        //      still in a housing district and the null PlotKey/Ward is
+        //      transient — hold voices and wait for the next tick.
+        if (HousingDetector.IsInHousingDistrict()) return;
+
         if (CurrentMode is PlaybackMode.Indoor or PlaybackMode.Outdoor)
         {
+            Log.Info($"[IND-DIAG] DriveAudio TEAR-DOWN-LEFT-HOUSING prevMode={CurrentMode}");
             streamPlayer.Stop();
             TearDownMultiStream();
             CurrentMode = PlaybackMode.Off;
