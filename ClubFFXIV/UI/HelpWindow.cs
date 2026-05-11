@@ -14,7 +14,7 @@ public sealed class HelpWindow : Window, IDisposable
     public HelpWindow()
         : base("ClubFFXIV — Getting Started##ClubFFXIVHelp", ImGuiWindowFlags.NoCollapse)
     {
-        Size = new Vector2(560, 640);
+        Size = new Vector2(580, 680);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
 
@@ -47,35 +47,73 @@ public sealed class HelpWindow : Window, IDisposable
     {
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "ClubFFXIV plays internet radio streams while you're in housing — " +
-            "auto-tunes when you enter a club, fades in muffled when you approach " +
-            "from outside.");
+            "ClubFFXIV plays internet radio streams while you're in housing. " +
+            "Paste any URL to play it manually, or let auto-discovery tune you " +
+            "into nearby clubs as you wander a ward.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("How playback works");
+        ImGui.BulletText("Manual play — title-bar  +  → paste URL → Play");
+        ImGui.BulletText("Indoor auto — walk into a registered house, its stream auto-tunes");
+        ImGui.BulletText("Outdoor auto — approach a calibrated plot, muffled audio swells with distance");
+        ImGui.Spacing();
+        ImGui.TextDisabled(
+            "The default registry is preconfigured, so auto-discovery just works. " +
+            "No URL to enter — you only need to set a Registry URL in /pclub config → " +
+            "Registry if you're running a private one.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Supported URL types");
         ImGui.BulletText("Twitch channel — twitch.tv/YourFavoriteDJ");
-        ImGui.BulletText("YouTube Live / video — youtube.com/watch?v=...");
-        ImGui.BulletText("Icecast / Shoutcast / direct MP3 stream");
-        ImGui.BulletText("SoundCloud track or stream");
+        ImGui.BulletText("YouTube — videos, live streams, and playlists");
+        ImGui.BulletText("Icecast / Shoutcast / direct MP3 or OGG stream");
+        ImGui.BulletText("SoundCloud, Mixcloud, Twitcasting, Niconico");
         ImGui.Spacing();
         ImGui.TextDisabled(
-            "(First Twitch/YouTube use auto-downloads ~80 MB of helper binaries " +
-            "— ffmpeg + yt-dlp. One-time, then it's instant.)");
+            "First time you play a Twitch / YouTube / SoundCloud URL, the plugin " +
+            "needs to install yt-dlp + ffmpeg + Deno (~123 MB). The Setup Wizard " +
+            "prompts you to do this — nothing downloads silently. Direct Icecast / " +
+            "MP3 streams skip the install entirely.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
-        SectionHeader("Got a stream URL from a friend?");
-        ImGui.BulletText("Paste it into the \"Stream URL\" field in /pclub config");
-        ImGui.BulletText("Click Play");
+        SectionHeader("The Now Playing player");
+        ImGui.BulletText("Mute / unmute — click the speaker icon on a row");
+        ImGui.BulletText("Pause / skip — non-live rows show play/pause and skip-next");
+        ImGui.BulletText("Seek — drag the seek bar on a non-live row (YouTube videos, etc.)");
+        ImGui.BulletText("Blacklist — the Ban icon blocks a URL from ever playing again");
+        ImGui.BulletText("Loop / Random — toggle icons next to Stop, for playlists");
+        ImGui.BulletText("Volume — single slider applies to every active stream");
+        ImGui.Spacing();
+        ImGui.Separator();
         ImGui.Spacing();
 
-        SectionHeader("Want auto-discovery in housing?");
-        ImGui.BulletText("Set a Registry URL in the Registry tab");
-        ImGui.BulletText("Walk into a registered house — music auto-plays");
-        ImGui.BulletText("Walk near a registered plot outdoors — muffled music swells as you approach");
+        SectionHeader("Browse what's already published");
+        ImGui.TextWrapped(
+            "/pclub directory opens the Public Directory — every club whose DJ opted " +
+            "into the browse list. Sort and filter by name, location, description, or " +
+            "URL; click a URL to copy it to your clipboard.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("What you might see the first time");
+        ImGui.BulletText("URL approval prompt — first time a host comes up (e.g., a new Icecast server),");
+        ImGui.Indent();
+        ImGui.TextDisabled("you choose Allow this URL, Skip, or Block. Allowing trusts only that exact URL;");
+        ImGui.TextDisabled("\"Allow all from {host}\" is a separate, deliberately friction-y action.");
+        ImGui.Unindent();
+        ImGui.BulletText("Passphrase prompt — some clubs are password-protected. Ask the DJ for the");
+        ImGui.Indent();
+        ImGui.TextDisabled("passphrase, enter it once; the plugin caches it so you won't be prompted again.");
+        ImGui.Unindent();
+        ImGui.Spacing();
+        ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Try it now — known-good streams:");
@@ -84,8 +122,8 @@ public sealed class HelpWindow : Window, IDisposable
         CopyableUrl("SomaFM Drone Zone",     "https://ice1.somafm.com/dronezone-128-mp3");
         CopyableUrl("SomaFM Indie Pop Rocks", "https://ice1.somafm.com/indiepop-128-mp3");
         ImGui.Spacing();
-        ImGui.TextDisabled("(Click 'Copy' next to a URL, then paste into the Stream URL field.)");
-        ImGui.TextDisabled("(YouTube Live triggers a one-time ~80MB download of ffmpeg + yt-dlp.)");
+        ImGui.TextDisabled("(Click 'Copy' next to a URL, then paste into the Add Stream popup.)");
+        ImGui.TextDisabled("(The SomaFM URLs are direct Icecast — no helper-binary install required.)");
     }
 
     private void DrawDj()
@@ -108,19 +146,19 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
         ImGui.BulletText("Stream as you normally do — OBS, Streamlabs, whatever");
         ImGui.BulletText("Share your channel URL: e.g. twitch.tv/yourchannel");
-        ImGui.BulletText("Listeners paste it into Stream URL → Play (or your house auto-tunes if published)");
+        ImGui.BulletText("Listeners paste it into the Add Stream popup → Play (or your house auto-tunes if published)");
         ImGui.Spacing();
         ImGui.TextDisabled(
             "Latency is ~5–10 seconds (Twitch HLS), so all listeners are roughly synced " +
-            "with each other but ~10 s behind your live decks.");
+            "with each other but ~10s behind your live decks.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Alternative: run your own Icecast (full control)");
         ImGui.TextWrapped(
-            "If you want lower latency or don't want to use Twitch/YouTube, " +
-            "you can run your own Icecast server. More setup work but no platform dependency.");
+            "If you want lower latency or don't want to depend on Twitch / YouTube, " +
+            "you can run your own Icecast server. More setup, but no platform lock-in.");
         ImGui.Spacing();
 
         SectionHeader("You need three things:");
@@ -156,7 +194,7 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
 
         SectionHeader("Easiest path (managed, paid)");
-        ImGui.TextWrapped("Use Mixxx as your source, a managed cloud service for hosting. ~$15-25/month, no setup work.");
+        ImGui.TextWrapped("Use Mixxx as your source, a managed cloud service for hosting. ~$15–25/month, no setup work.");
         ImGui.Spacing();
         ImGui.BulletText("Install Mixxx — free DJ software:");
         ImGui.SameLine();
@@ -184,12 +222,31 @@ public sealed class HelpWindow : Window, IDisposable
         ImGui.Spacing();
 
         SectionHeader("Once you have a stream URL");
-        ImGui.BulletText("Stand inside your house");
-        ImGui.BulletText("Open /pclub config → paste URL into Stream URL field");
-        ImGui.BulletText("Click \"Save URL for this house (local)\" to auto-play it for yourself");
-        ImGui.BulletText("Click \"Publish to registry\" to let other plugin users discover it");
-        ImGui.BulletText("Walk outside to your front door, click \"Calibrate door\"");
-        ImGui.BulletText("Friends within ~40m of your door will hear muffled music as they approach");
+        ImGui.TextWrapped(
+            "Stand inside your house, then open /pclub config → My Clubs. The Current " +
+            "Location section there has two distinct paths:");
+        ImGui.Spacing();
+
+        SectionHeader("Path 1 — Create local override (private, you-only)");
+        ImGui.BulletText("Binds the URL to this plot for your client only");
+        ImGui.BulletText("Auto-plays when you walk in; no one else sees or hears it");
+        ImGui.BulletText("Useful for personal house playlists or for testing a URL before publishing");
+        ImGui.Spacing();
+
+        SectionHeader("Path 2 — Publish new club (shared, registry-backed)");
+        ImGui.BulletText("Name, description, URL — listed in the Public Directory unless you uncheck Show in public directory");
+        ImGui.BulletText("Optional: Password-protect this club — auto-generates a 6-word EFF diceware passphrase");
+        ImGui.Indent();
+        ImGui.TextDisabled("Share it with friends in Discord, etc. Listeners enter it once, the plugin caches it.");
+        ImGui.TextDisabled("The registry only stores an Argon2id hash + salt — never the plaintext.");
+        ImGui.Unindent();
+        ImGui.BulletText("Then walk outside to your front door, find your house in the My Houses table, click the crosshair icon to calibrate");
+        ImGui.BulletText("Friends within ~40 yalms of your door will hear muffled music as they approach");
+        ImGui.Spacing();
+        ImGui.TextDisabled(
+            "Note: Publish is disabled if the plugin detects you don't own the plot. " +
+            "The check is local (FFXIVClientStructs) — it's a guardrail against accidental " +
+            "publishing in a friend's house, not a serious anti-abuse measure.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
@@ -210,56 +267,114 @@ public sealed class HelpWindow : Window, IDisposable
     {
         ImGui.Spacing();
         ImGui.TextWrapped(
-            "Quick answers to the most common questions. Still stuck? " +
-            "The Listener and DJ tabs go deeper.");
+            "Quick answers to common questions. Still stuck? The Listener and DJ tabs go deeper.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("What's a local override?");
+        ImGui.TextWrapped(
+            "A URL bound to a plot for your client only. When you walk into that plot, " +
+            "the override plays — even if the registry has a different URL for the same " +
+            "plot, even if the plot isn't published at all. It's invisible to everyone " +
+            "but you. Good for personal house playlists you don't want to share, or for " +
+            "testing a stream before publishing it.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("What's the difference between a local override and an unlisted club?");
+        ImGui.TextWrapped(
+            "A local override is private to your client and never touches the registry. " +
+            "An unlisted club (Show in public directory unchecked) is still published — " +
+            "anyone whose ward you're in or who knows your plot key will still discover " +
+            "it. Both have their place: local overrides for true privacy, unlisted clubs " +
+            "for \"my friends know how to find this but it's not on the public browse list.\"");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("Why is Publish disabled in this house?");
+        ImGui.TextWrapped(
+            "The plugin checks the game's local state to confirm you actually own the " +
+            "plot before letting you publish. The check is best-effort (a forked client " +
+            "could bypass it), so it's a guardrail against accidentally claiming a friend's " +
+            "house — not a serious anti-abuse measure. If you do own the plot and the check " +
+            "is wrong, the badge in Current Location will tell you what the plugin sees.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("What does password-protect actually do?");
+        ImGui.TextWrapped(
+            "When you publish a club with a passphrase, the plugin generates 6 words from " +
+            "the EFF long diceware list (~155 bits of entropy), hashes the result with " +
+            "Argon2id, and sends only the hash + salt to the registry. Listeners who know " +
+            "the passphrase derive the same key, prove they have it, and the registry " +
+            "returns the real stream URL. Anyone without the passphrase gets silence. The " +
+            "plaintext never leaves your machine.");
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        SectionHeader("The plugin asked me to approve a URL. What is this?");
+        ImGui.TextWrapped(
+            "URL permissioning: when a stream from an unfamiliar host appears (manual " +
+            "paste, auto-discovery, etc.), the plugin asks before playing it. \"Allow this " +
+            "URL\" trusts only that exact URL; \"Allow all URLs from {host}\" is broader and " +
+            "warned about separately. Anyone can publish to the registry — club names and " +
+            "descriptions aren't verified identity, so the prompt is what stops a malicious " +
+            "DJ from auto-playing arbitrary URLs in your ear.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Does this work with Spotify or Apple Music?");
         ImGui.TextWrapped(
-            "No. Both services use DRM-encrypted streams that only their official apps can play, " +
-            "and there's no legal way around that. If your playlist also exists on YouTube or " +
-            "YouTube Music, paste that URL instead — free Spotify-to-YouTube converters can " +
-            "rebuild a playlist in a couple of clicks.");
+            "No. Both services use DRM-encrypted streams that only their official apps can " +
+            "play, and there's no legal way around that. If your playlist also exists on " +
+            "YouTube or YouTube Music, paste that URL instead — free Spotify-to-YouTube " +
+            "converters can rebuild a playlist in a couple of clicks.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("I want my YouTube Music playlist to play in my house. How?");
-        ImGui.BulletText("Open /pclub config → Now Playing, paste the playlist URL, click Play to test");
-        ImGui.BulletText("Settings tab → enable \"Random playlist order\" if you want shuffle");
-        ImGui.BulletText("Settings tab → enable \"Loop videos when they finish\" so it never runs out");
-        ImGui.BulletText("My Clubs tab → \"Create local override\" to bind it to this house — auto-plays when you walk in");
+        ImGui.BulletText("Open /pclub → title-bar +, paste the playlist URL, click Play to test");
+        ImGui.BulletText("Music player toolbar → enable Random order (the dice icon) if you want shuffle");
+        ImGui.BulletText("Music player toolbar → enable Loop (the repeat icon) so it never runs out");
+        ImGui.BulletText("/pclub config → My Clubs → Create local override → bind the URL to this plot");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("YouTube says \"Sign in to confirm you're not a bot.\" Now what?");
         ImGui.TextWrapped(
-            "Open the Advanced tab and set \"Cookies from browser\" to firefox. You must already " +
-            "be logged into YouTube in Firefox — yt-dlp reads your session cookies from there. " +
-            "Chromium-based browsers (Chrome, Edge, Brave, Opera, Vivaldi) encrypt cookies in a " +
-            "way yt-dlp can't read without extra setup, so Firefox is the easy answer.");
+            "Open /pclub config → Advanced → External binaries and set Cookies from " +
+            "browser to firefox. You must already be logged into YouTube in Firefox — " +
+            "yt-dlp reads your session cookies from there. Chromium-based browsers " +
+            "(Chrome, Edge, Brave, Opera, Vivaldi) encrypt cookies in a way yt-dlp can't " +
+            "read without extra setup, so Firefox is the easy answer.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Can I play a local MP3 from my computer?");
         ImGui.TextWrapped(
-            "Not directly — the plugin only plays URLs. If you want your own files to be the " +
-            "soundtrack for friends visiting, the realistic path is to host them on your own " +
-            "Icecast server (free with Cloudflare Tunnel — see the I want to DJ tab).");
+            "Not directly — the plugin only plays URLs. If you want your own files to be " +
+            "the soundtrack for friends visiting, host them on your own Icecast server " +
+            "(free with Cloudflare Tunnel — see the I want to DJ tab).");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("Music keeps playing when I alt-tab. How do I mute it?");
         ImGui.TextWrapped(
-            "The plugin follows FFXIV's own \"Play sounds when window is not active\" toggles — " +
-            "no separate setting on our end. In-game: System Configuration → Sound Settings, " +
-            "uncheck both \"Play sound effects when window is not active\" and \"Play BGM when " +
-            "window is not active.\" The plugin will mute the moment you alt-tab.");
+            "The plugin follows FFXIV's own \"Play sounds when window is not active\" " +
+            "toggles — no separate setting on our end. In-game: System Configuration → " +
+            "Sound Settings, uncheck both \"Play sound effects when window is not active\" " +
+            "and \"Play BGM when window is not active.\" The plugin will mute the moment " +
+            "you alt-tab.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
@@ -267,16 +382,19 @@ public sealed class HelpWindow : Window, IDisposable
         SectionHeader("Why is the first stream so slow to start?");
         ImGui.TextWrapped(
             "First time you play a Twitch / YouTube / SoundCloud URL, the plugin downloads " +
-            "~80 MB of helper binaries (ffmpeg + yt-dlp). One-time per install — every later " +
-            "stream is instant. Direct Icecast / Shoutcast streams skip the download entirely.");
+            "~123 MB of helper binaries (yt-dlp + ffmpeg + Deno). One-time per install — " +
+            "every later stream is instant. Direct Icecast / Shoutcast streams skip the " +
+            "download entirely. Deno is required because yt-dlp uses it to solve YouTube's " +
+            "signature / n-challenge JavaScript.");
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         SectionHeader("How do I share my stream with a friend?");
-        ImGui.BulletText("Send them the URL — they paste into /pclub config and click Play");
-        ImGui.BulletText("DJing from a house? \"Publish new club\" in My Clubs lets any plugin user discover it");
+        ImGui.BulletText("Send them the URL — they paste it into /pclub → title-bar + and click Play");
+        ImGui.BulletText("DJing from a house? Publish new club in My Clubs lets any plugin user discover it");
         ImGui.BulletText("Want it private? Set a passphrase on publish — listeners enter it once, then it's cached");
+        ImGui.BulletText("Want it discoverable only by friends? Uncheck Show in public directory — still findable per-plot and by ward proximity, just not in the browse list");
     }
 
     // Help-window-local section header — distinct from UiHelpers.SectionHeader
