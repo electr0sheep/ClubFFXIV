@@ -2013,6 +2013,18 @@ public sealed class Plugin : IDalamudPlugin
     {
         if (CurrentMode != PlaybackMode.Outdoor) return;
 
+        // Threshold-crossing guard: when the game has just flipped IndoorTerritory
+        // non-null, the player is already in the indoor instance's coordinate
+        // system but CurrentMode is still Outdoor (DriveAudio is in the transient
+        // window before HandleIndoorMode flips it). activeMultiDoorPos still
+        // holds the outdoor door's world position — Vector3.Distance between
+        // indoor-player and outdoor-door yields a huge number, nearness clamps
+        // to 0, and the voice's volume briefly snaps to silence. Skip the
+        // refresh when we're not actually in an outdoor ward; the voice keeps
+        // its last outdoor pose (which was at/near the door, full volume +
+        // open cutoff) until EnterIndoorMulti takes over.
+        if (!HousingDetector.IsInOutdoorWard()) return;
+
         var hasMulti = MultiStreamActive && multiStreamPlayer != null && activeMultiDoorPos.Count > 0;
         var hasSingle = !MultiStreamActive && activeSingleDoorPos.HasValue;
         if (!hasMulti && !hasSingle) return;
