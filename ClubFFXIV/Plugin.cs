@@ -2129,7 +2129,12 @@ public sealed class Plugin : IDalamudPlugin
         // the audible band so the buffer is primed when the player crosses it.
         if (result == null || !result.Value.Streaming)
         {
-            if (CurrentMode == PlaybackMode.Outdoor)
+            // Tear down whenever we have an active auto-play session — Indoor
+            // too, not just Outdoor. After teleporting from inside a club to a
+            // housing ward where no clubs are in range, DriveAudio routes here
+            // with CurrentMode still Indoor; gating on Outdoor alone would let
+            // the indoor stream keep playing forever with no log trail.
+            if (CurrentMode is PlaybackMode.Outdoor or PlaybackMode.Indoor)
             {
                 streamPlayer.Stop();
                 CurrentMode = PlaybackMode.Off;
@@ -2206,7 +2211,12 @@ public sealed class Plugin : IDalamudPlugin
         var player = multiStreamPlayer;
         if (allInRange.Count == 0)
         {
-            if (CurrentMode == PlaybackMode.Outdoor)
+            // Tear down whenever we have an active auto-play session — Indoor
+            // too, not just Outdoor. After teleporting from inside a club to a
+            // housing ward where no clubs are in range, DriveAudio routes here
+            // with CurrentMode still Indoor; gating on Outdoor alone would let
+            // the indoor voice keep mixing forever with no log trail.
+            if (CurrentMode is PlaybackMode.Outdoor or PlaybackMode.Indoor)
             {
                 if (player != null) TearDownMultiStream();
                 CurrentMode = PlaybackMode.Off;
