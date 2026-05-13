@@ -181,6 +181,20 @@ public sealed class ConfigWindow : Window, IDisposable
             "  • Closest club + distance in yalms\n" +
             "  • L/R balance and front/back fade bars\n" +
             "Off (default) = player shows only Now Playing + transport controls.");
+
+        var openMini = plugin.Config.OpenMiniPlayerOnManualStart;
+        if (ImGui.Checkbox("Open mini player when starting a manual stream", ref openMini))
+        {
+            plugin.Config.OpenMiniPlayerOnManualStart = openMini;
+            plugin.Config.Save();
+        }
+        UiHelpers.HelpMarker(
+            "When you start a stream by hand (Play button, /pclub play, or chat),\n" +
+            "automatically open the compact mini player window.\n" +
+            "  • Only fires for manual starts — Indoor/Outdoor auto-play and\n" +
+            "    loop iterations don't trigger it.\n" +
+            "  • The mini stays hidden in non-Manual modes regardless of this\n" +
+            "    setting — see the mini player itself for details.");
     }
 
     private void DrawAdvancedTab()

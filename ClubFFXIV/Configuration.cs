@@ -205,6 +205,17 @@ public class Configuration : IPluginConfiguration
     public bool ShowPlaybackModeAndProximity { get; set; } = false;
 
     /// <summary>
+    /// When a manual stream successfully starts, also open the mini player
+    /// window. Lets a listener who treats the mini as their primary surface
+    /// get it on-screen automatically without an extra "/pclub mini" or
+    /// title-bar swap. Only fires for explicit user-initiated starts
+    /// (announce=true); loop iterations and auto-play (Indoor/Outdoor) are
+    /// excluded so the mini doesn't repeatedly pop open. The mode-visibility
+    /// gate still applies — the mini only renders while CurrentMode==Manual.
+    /// </summary>
+    public bool OpenMiniPlayerOnManualStart { get; set; } = false;
+
+    /// <summary>
     /// Cached copy of FFXIV's "Play sounds when window is not active" policy
     /// (the AND of IsSoundAlways and IsSoundBgmAlways). Updated whenever
     /// IGameConfig.SystemChanged fires for either option, and persisted so

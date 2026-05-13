@@ -551,7 +551,16 @@ public sealed class Plugin : IDalamudPlugin
             // would spam notifications every time you walk past a club. Loop
             // iterations pass announce=false for the same reason.
             if (targetMode == PlaybackMode.Manual && announce)
+            {
                 Notify("ClubFFXIV", $"Playing: {displayName}", NotificationType.Info);
+                // Same gate as the toast — auto-open the mini only for explicit
+                // manual starts, not for loop iterations or auto-play. IsOpen
+                // is a plain bool on the Dalamud Window; the WindowSystem reads
+                // it on the framework thread next frame, so a cross-thread set
+                // from this async continuation is fine.
+                if (Config.OpenMiniPlayerOnManualStart)
+                    miniPlayerWindow.IsOpen = true;
+            }
         }
         catch (OperationCanceledException)
         {
