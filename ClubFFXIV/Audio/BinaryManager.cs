@@ -101,6 +101,48 @@ public sealed class BinaryManager
     }
 
     /// <summary>
+    /// Builds the inner yt-dlp invocation that downloads the compressed audio
+    /// to stdout. Used by <see cref="SubprocessAudioReader"/> as the network
+    /// layer in front of ffmpeg — yt-dlp does chunked HTTP Range fetches
+    /// (<c>--http-chunk-size</c>) which is the community-documented workaround
+    /// for googlevideo throttling. The HN thread on bypassing YouTube throttling
+    /// calls out that piping a bare URL to ffmpeg/mpv defeats this; running the
+    /// bytes through yt-dlp's HttpFD restores it.
+    ///
+    /// The inner downloader receives an already-resolved googlevideo URL from
+    /// the outer <see cref="BuildYtDlpStartInfo"/>'s <c>--print</c> resolve, so
+    /// no extractor work happens here — yt-dlp's GenericIE passes the URL
+    /// through and HttpFD handles the byte stream.
+    /// </summary>
+    public ProcessStartInfo BuildYtDlpDownloadStartInfo(string mediaUrl)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = YtDlpPath,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("-");
+        // The actual fix: 10 MiB Range-bounded chunks. yt-dlp FAQ notes
+        // googlevideo throttles requests asking for > 10 MiB at once, so this
+        // size is the documented sweet spot.
+        psi.ArgumentList.Add("--http-chunk-size"); psi.ArgumentList.Add("10M");
+        // Belt-and-suspenders: if effective rate ever drops below 100 KB/s yt-dlp
+        // tears the connection down and re-establishes. Limited utility here
+        // since we're handing a pre-resolved URL (re-extraction has nothing to
+        // do), but the connection rebuild itself often dodges the throttle.
+        psi.ArgumentList.Add("--throttled-rate"); psi.ArgumentList.Add("100K");
+        psi.ArgumentList.Add("--no-warnings");
+        psi.ArgumentList.Add("--no-progress");
+        psi.ArgumentList.Add("--no-part");
+        psi.ArgumentList.Add("--no-playlist");
+        psi.ArgumentList.Add(mediaUrl);
+        return psi;
+    }
+
+    /// <summary>
     /// Ensures all three binaries exist on disk, downloading whichever is missing.
     /// Reports progress via the optional callback ("Downloading yt-dlp...").
     /// </summary>

@@ -116,6 +116,30 @@ internal static class PlaylistCountCache
 }
 
 /// <summary>
+/// Per-URL audio bitrate in kilobits-per-second (e.g. 128 for typical YouTube
+/// AAC). Populated from yt-dlp's <c>%(abr)s</c> field during URL resolution
+/// and read by <see cref="SubprocessAudioReader"/> to estimate the byte
+/// offset of a given seek timestamp — used to decide whether a seek target
+/// lies inside the on-disk download cache or requires a fresh network fetch.
+/// Defaults to 0 (unknown) when yt-dlp didn't surface a bitrate; callers
+/// fall back to a conservative constant in that case.
+/// </summary>
+internal static class BitrateKbpsCache
+{
+    private static readonly ConcurrentDictionary<string, double> map = new();
+
+    public static void Set(string url, double kbps)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+        if (!(kbps > 0) || double.IsNaN(kbps) || double.IsInfinity(kbps)) return;
+        map[url] = kbps;
+    }
+
+    public static double Get(string url) =>
+        url != null && map.TryGetValue(url, out var v) ? v : 0;
+}
+
+/// <summary>
 /// Per-URL artwork cache, populated by <see cref="YtDlpDisplayTitle"/> from
 /// yt-dlp's <c>%(thumbnail)s</c> field. Icecast / direct-HTTP streams don't
 /// expose artwork, so most non-yt-dlp URLs simply have no entry — callers
@@ -175,7 +199,8 @@ internal static class YtDlpDisplayTitle
         "TRACK:%(track|)sTITLE:%(title|)s" +
         "UPLOADER:%(uploader,channel|)sEXT:%(extractor_key|)s" +
         "THUMB:%(thumbnail|)sLIVE:%(live_status|)s" +
-        "DUR:%(duration|)sPCNT:%(playlist_count|)s";
+        "DUR:%(duration|)sPCNT:%(playlist_count|)s" +
+        "ABR:%(abr|)s";
 
     /// <summary>
     /// Parses a yt-dlp line, and if a display label is derivable, stores it
@@ -200,17 +225,23 @@ internal static class YtDlpDisplayTitle
         if (parsed.IsLive.HasValue) LiveStatusCache.Set(userUrlForCache, parsed.IsLive.Value);
         if (parsed.DurationSeconds > 0) DurationCache.Set(userUrlForCache, parsed.DurationSeconds);
         if (parsed.PlaylistCount > 0) PlaylistCountCache.Set(userUrlForCache, parsed.PlaylistCount);
+        // Bitrate keys off the resolved (googlevideo) URL so the audio reader
+        // — which only sees the resolved URL, not the user URL — can look up
+        // its own seek-cache byte estimate without round-tripping back through
+        // the user URL. Outer yt-dlp's --print is the only place we see abr.
+        if (parsed.BitrateKbps > 0) BitrateKbpsCache.Set(parsed.Url, parsed.BitrateKbps);
         return parsed.Url;
     }
 
     public readonly record struct ParsedLine(
         string Url, string? Label, string? Thumbnail, bool CropSquare,
-        bool? IsLive, double DurationSeconds, int PlaylistCount);
+        bool? IsLive, double DurationSeconds, int PlaylistCount,
+        double BitrateKbps);
 
     public static ParsedLine Parse(string line)
     {
         var parts = line.Split(Sep);
-        if (parts.Length == 0) return new ParsedLine("", null, null, false, null, 0, 0);
+        if (parts.Length == 0) return new ParsedLine("", null, null, false, null, 0, 0, 0);
         var url = parts[0].Trim();
 
         var fields = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -269,9 +300,22 @@ internal static class YtDlpDisplayTitle
             playlistCount = pc;
         }
 
+        // Average bitrate (kbps) from yt-dlp's selected format. Used by the
+        // subprocess reader to estimate where a seek timestamp lies in bytes
+        // on the local download cache. Missing/zero is fine — caller falls
+        // back to a conservative constant.
+        double bitrateKbps = 0;
+        var abrRaw = Get(fields, "ABR");
+        if (abrRaw.Length > 0
+            && double.TryParse(abrRaw, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var br))
+        {
+            bitrateKbps = br;
+        }
+
         return new ParsedLine(
             url, BuildLabel(fields), thumb.Length > 0 ? thumb : null, cropSquare,
-            isLive, durationSeconds, playlistCount);
+            isLive, durationSeconds, playlistCount, bitrateKbps);
     }
 
     private static string? BuildLabel(Dictionary<string, string> f)
