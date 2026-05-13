@@ -40,6 +40,14 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     // exit fires so a follow-up seek-respawn that also exits doesn't re-fire.
     private bool naturalExitFired;
 
+    // 1Hz progress watchdog. Logs `[ffmpeg] STALL` when samplesPlayed hasn't
+    // advanced for ≥3s while a Read is in flight — the signature of ffmpeg's
+    // stdout pipe blocked on a wedged HTTP socket (no `-rw_timeout` is set, so
+    // a stuck network read just sits in recv() forever).
+    private int readsInFlight;
+    private readonly Task watchdogTask;
+    private readonly CancellationTokenSource watchdogCts = new();
+
     /// <summary>
     /// Fires once when ffmpeg exits without our Dispose having killed it
     /// (natural EOF or unexpected crash). Lets <see cref="PlaylistAudioReader"/>
@@ -74,6 +82,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         this.stdout = ffmpeg.StandardOutput.BaseStream;
         this.resolvedMediaUrl = resolvedMediaUrl;
         this.binaries = binaries;
+        this.watchdogTask = Task.Run(() => WatchdogLoop(watchdogCts.Token));
     }
 
     /// <summary>
@@ -179,6 +188,9 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         // Required for Process.Exited to fire — set once at spawn so callers
         // (FromResolvedUrl, ApplyPendingSeekIfAny) just attach the handler.
         proc.EnableRaisingEvents = true;
+        Plugin.Log.Info(
+            $"[ffmpeg] spawned pid={proc.Id} startSec={startSeconds:F1} " +
+            $"url={TruncateUrl(resolvedMediaUrl)}");
         return proc;
     }
 
@@ -202,7 +214,12 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     public int Read(float[] buffer, int offset, int count)
     {
         if (disposed) return 0;
-
+        // Tracked so the watchdog can tell "blocked Read" (in-flight > 0,
+        // samples not advancing) from "WaveOut isn't asking" (paused / stopped,
+        // in-flight = 0). Without this we'd false-flag every pause as a stall.
+        Interlocked.Increment(ref readsInFlight);
+        try
+        {
         // Up to two attempts: the second one only happens if the first
         // returned 0 *and* a seek was queued (typically because Seek killed
         // ffmpeg out from under us). Without this retry, NAudio would
@@ -278,7 +295,96 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
             // pending seek via ApplyPendingSeekIfAny at loop top.
         }
         return 0;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref readsInFlight);
+        }
     }
+
+    /// <summary>
+    /// 1Hz watchdog. Suppresses cold-start "stalls" (no first sample yet) and
+    /// pauses (no Read in flight). When samplesPlayed hasn't moved for ≥3s
+    /// with a Read in flight, logs `[ffmpeg] STALL` with state; re-logs every
+    /// 10s while stalled. Emits `[ffmpeg] STALL RESOLVED` when samples flow
+    /// again. Useful for distinguishing "ffmpeg hung on wedged HTTP socket"
+    /// from "ffmpeg exited and we missed the EOF" from "playback is paused".
+    /// </summary>
+    private async Task WatchdogLoop(CancellationToken ct)
+    {
+        long lastSamples = 0;
+        var lastProgressAt = DateTime.UtcNow;
+        bool firstSampleSeen = false;
+        bool stalled = false;
+        DateTime nextStallLog = DateTime.MinValue;
+
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(1000, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            if (disposed) return;
+
+            var now = DateTime.UtcNow;
+            var current = Interlocked.Read(ref samplesPlayed);
+
+            if (current != lastSamples)
+            {
+                if (stalled)
+                {
+                    var stallDuration = (now - lastProgressAt).TotalSeconds;
+                    Plugin.Log.Warning(
+                        $"[ffmpeg] STALL RESOLVED pid={SafePid()} " +
+                        $"ageSec={stallDuration:F1} samplesPlayed={current}");
+                    stalled = false;
+                }
+                lastSamples = current;
+                lastProgressAt = now;
+                firstSampleSeen = true;
+                continue;
+            }
+
+            // Cold start: don't false-flag the period between Read first being
+            // called and the first sample arriving from a fresh ffmpeg.
+            if (!firstSampleSeen) continue;
+
+            var idle = (now - lastProgressAt).TotalSeconds;
+            if (idle < 3) continue;
+
+            // No Read in flight → WaveOut isn't pumping (paused or stopped).
+            // Not a stall worth reporting.
+            if (Interlocked.CompareExchange(ref readsInFlight, 0, 0) == 0) continue;
+
+            if (!stalled || now >= nextStallLog)
+            {
+                var currentFfmpeg = ffmpeg;
+                bool ffmpegAlive;
+                string exitInfo = "n/a";
+                try
+                {
+                    ffmpegAlive = !currentFfmpeg.HasExited;
+                    if (!ffmpegAlive) exitInfo = currentFfmpeg.ExitCode.ToString();
+                }
+                catch { ffmpegAlive = false; }
+
+                Plugin.Log.Warning(
+                    $"[ffmpeg] STALL pid={SafePid()} ffmpegAlive={ffmpegAlive} " +
+                    $"exitCode={exitInfo} samplesPlayed={current} ageSec={idle:F1} " +
+                    $"url={TruncateUrl(resolvedMediaUrl)}");
+                stalled = true;
+                nextStallLog = now.AddSeconds(10);
+            }
+        }
+    }
+
+    private int SafePid()
+    {
+        try { return ffmpeg.Id; } catch { return -1; }
+    }
+
+    private static string TruncateUrl(string url) =>
+        string.IsNullOrEmpty(url) ? "(empty)"
+        : url.Length <= 120 ? url
+        : url.Substring(0, 120) + "…";
 
     /// <summary>
     /// Elapsed audio time in seconds since playback started or the last seek.
@@ -380,6 +486,9 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
     {
         if (disposed) return;
         disposed = true;
+        try { watchdogCts.Cancel(); } catch { /* ignore */ }
+        try { watchdogTask.Wait(TimeSpan.FromMilliseconds(500)); } catch { /* ignore */ }
+        try { watchdogCts.Dispose(); } catch { /* ignore */ }
         try
         {
             if (!ffmpeg.HasExited)

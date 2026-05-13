@@ -173,6 +173,7 @@ public sealed class StreamPlayer : IDisposable
         {
             if (autoMuted == value) return;
             autoMuted = value;
+            Plugin.Log.Info($"[player] AutoMuted={value} url={currentUrl ?? "(none)"}");
             ApplyVolume();
         }
     }
@@ -188,6 +189,7 @@ public sealed class StreamPlayer : IDisposable
         {
             if (userMuted == value) return;
             userMuted = value;
+            Plugin.Log.Info($"[player] UserMuted={value} url={currentUrl ?? "(none)"}");
             ApplyVolume();
         }
     }
@@ -326,6 +328,9 @@ public sealed class StreamPlayer : IDisposable
     /// </summary>
     public void Pause()
     {
+        Plugin.Log.Info(
+            $"[player] Pause requested. state={output?.PlaybackState.ToString() ?? "(no-output)"} " +
+            $"url={currentUrl ?? "(none)"}");
         try { output?.Pause(); } catch { /* device gone */ }
     }
 
@@ -336,6 +341,9 @@ public sealed class StreamPlayer : IDisposable
     /// </summary>
     public void Resume()
     {
+        Plugin.Log.Info(
+            $"[player] Resume requested. state={output?.PlaybackState.ToString() ?? "(no-output)"} " +
+            $"url={currentUrl ?? "(none)"}");
         if (output?.PlaybackState == PlaybackState.Paused)
         {
             try { output.Play(); } catch { /* device gone */ }
@@ -368,11 +376,20 @@ public sealed class StreamPlayer : IDisposable
     /// </summary>
     public void SkipToNext()
     {
+        Plugin.Log.Info(
+            $"[player] SkipToNext requested. skippable={source is ISkippableSource} " +
+            $"posSec={PositionSeconds:F1} url={currentUrl ?? "(none)"}");
         if (source is ISkippableSource s) s.SkipToNext();
     }
 
     public void Stop()
     {
+        if (output != null || source != null)
+        {
+            Plugin.Log.Info(
+                $"[player] Stop. state={output?.PlaybackState.ToString() ?? "(no-output)"} " +
+                $"posSec={PositionSeconds:F1} url={currentUrl ?? "(none)"}");
+        }
         try { output?.Stop(); } catch { /* swallow during teardown */ }
         output?.Dispose();
         sourceDisposable?.Dispose();

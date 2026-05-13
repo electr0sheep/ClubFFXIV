@@ -52,6 +52,10 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     private bool exhaustedNaturally;
     private bool killedByUs;
     private bool disposed;
+    // One-shot guard so we don't log "returning silence" on every audio thread
+    // Read during an inter-item gap (hundreds of times per second). Reset
+    // when a new inner is installed.
+    private bool silenceGapLogged;
 
     private PlaylistAudioReader(
         Process ytdlp, BinaryManager binaries, string userUrl,
@@ -146,6 +150,7 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             // (Often a no-op now: NaturalExited fires when ffmpeg actually
             // exits, ~400-500ms before Read sees 0, so advance is usually
             // already running by the time we get here.)
+            Plugin.Log.Info("[playlist] inner EOF on audio thread — kicking advance");
             currentInner.Dispose();
             currentInner = null;
             StartAdvanceIfNeeded();
@@ -163,6 +168,8 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 
                 if (next != null)
                 {
+                    Plugin.Log.Info("[playlist] next inner installed; resuming reads");
+                    silenceGapLogged = false;
                     currentInner = next;
                     return Read(buffer, offset, count);
                 }
@@ -170,6 +177,8 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
                 // No next song — playlist ended. Distinguish "user killed
                 // us" from "yt-dlp exhausted naturally" so the natural-end
                 // event fires only when appropriate.
+                Plugin.Log.Info(
+                    $"[playlist] exhausted (killedByUs={killedByUs}); returning EOF");
                 exhausted = true;
                 if (!killedByUs) exhaustedNaturally = true;
                 return 0;
@@ -177,6 +186,11 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 
             // Still resolving — return silence to bridge the inter-song gap.
             // NAudio keeps the WaveOut alive instead of treating this as EOF.
+            if (!silenceGapLogged)
+            {
+                silenceGapLogged = true;
+                Plugin.Log.Info("[playlist] returning silence — awaiting next inner");
+            }
             Array.Clear(buffer, offset, count);
             return count;
         }
@@ -186,10 +200,15 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
 
     private async Task<SubprocessAudioReader?> AdvanceAsync()
     {
+        Plugin.Log.Info("[playlist] advance: awaiting next URL from yt-dlp");
         try
         {
             var line = await ytdlpStdout.ReadLineAsync(cts.Token);
-            if (string.IsNullOrEmpty(line)) return null; // exhausted
+            if (string.IsNullOrEmpty(line))
+            {
+                Plugin.Log.Info("[playlist] advance: yt-dlp stdout closed (playlist exhausted)");
+                return null;
+            }
             // Refreshes the Now Playing label for the playlist's user URL
             // before the next ffmpeg starts, so the header flips to the
             // new track at the same time playback does (modulo a small
@@ -197,13 +216,19 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
             // the previous one in place — fine, the URL fallback only
             // kicks in if no item ever populated a label.
             var resolvedUrl = YtDlpDisplayTitle.ParseAndCache(line, userUrl);
-            if (resolvedUrl == null) return null;
+            if (resolvedUrl == null)
+            {
+                Plugin.Log.Warning("[playlist] advance: yt-dlp emitted unparseable line, ending");
+                return null;
+            }
+            Plugin.Log.Info("[playlist] advance: spawning next inner ffmpeg");
             var inner = SubprocessAudioReader.FromResolvedUrl(resolvedUrl, binaries, cts.Token);
             inner.NaturalExited += OnInnerNaturalExited;
             return inner;
         }
         catch (OperationCanceledException)
         {
+            Plugin.Log.Info("[playlist] advance: cancelled");
             return null;
         }
         catch (Exception ex)
@@ -272,6 +297,9 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     /// </summary>
     public void SkipToNext()
     {
+        Plugin.Log.Info(
+            $"[playlist] SkipToNext called. hasInner={currentInner != null} " +
+            $"advancePending={advanceTask != null} exhausted={exhausted}");
         currentInner?.Dispose();
     }
 
