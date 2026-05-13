@@ -51,11 +51,13 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     public HouseOwnership CurrentOwnership { get; private set; } = HouseOwnership.Unknown;
 
-    // Two top-level windows: the music player is the primary listener
-    // surface (Now Playing rows + URL input); ConfigWindow is the
-    // settings-only window reachable via the music player's title-bar
-    // gear or via "/pclub config".
+    // Three top-level listener surfaces: the music player is the primary
+    // (Now Playing rows + URL input + body controls); MiniPlayerWindow is
+    // the same Now Playing strip without body chrome, for ambient
+    // listening; ConfigWindow is settings-only, reachable via the music
+    // player's title-bar gear or via "/pclub config".
     private readonly MusicPlayerWindow musicPlayerWindow;
+    private readonly MiniPlayerWindow miniPlayerWindow;
     private readonly ConfigWindow configWindow;
     private readonly HelpWindow helpWindow = new();
     private readonly UrlPermissionWindow permissionWindow;
@@ -212,6 +214,7 @@ public sealed class Plugin : IDalamudPlugin
         TryLoadDjIdentity();
 
         musicPlayerWindow = new MusicPlayerWindow(this);
+        miniPlayerWindow = new MiniPlayerWindow(this);
         configWindow = new ConfigWindow(this);
         permissionWindow = new UrlPermissionWindow(Permissions);
         passphrasePromptWindow = new ClubPassphrasePromptWindow();
@@ -221,6 +224,7 @@ public sealed class Plugin : IDalamudPlugin
         if (!Config.SetupWizardComplete) setupWizard.IsOpen = true;
 
         WindowSystem.AddWindow(musicPlayerWindow);
+        WindowSystem.AddWindow(miniPlayerWindow);
         WindowSystem.AddWindow(configWindow);
         WindowSystem.AddWindow(helpWindow);
         WindowSystem.AddWindow(permissionWindow);
@@ -231,7 +235,7 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(CommandName, new CommandInfo(OnCommand)
         {
-            HelpMessage = "/pclub (open music player) | play <url> | stop | calibrate <key> | config | directory",
+            HelpMessage = "/pclub (open music player) | mini | play <url> | stop | calibrate <key> | config | directory",
         });
 
         // Seed from the persisted last-known value so alt-tab muting is
@@ -273,6 +277,7 @@ public sealed class Plugin : IDalamudPlugin
         CommandManager.RemoveHandler(CommandName);
         WindowSystem.RemoveAllWindows();
         musicPlayerWindow.Dispose();
+        miniPlayerWindow.Dispose();
         configWindow.Dispose();
         helpWindow.Dispose();
         permissionWindow.Dispose();
@@ -2600,6 +2605,10 @@ public sealed class Plugin : IDalamudPlugin
                 OpenConfig();
                 break;
 
+            case "mini":
+                ToggleMiniPlayer();
+                break;
+
             case "directory":
             case "browse":
                 ToggleDirectory();
@@ -2608,7 +2617,7 @@ public sealed class Plugin : IDalamudPlugin
             default:
                 Notify(
                     "ClubFFXIV",
-                    "Usage: /pclub (music player) | play <url> | stop | calibrate <key> | config | directory",
+                    "Usage: /pclub (music player) | mini | play <url> | stop | calibrate <key> | config | directory",
                     NotificationType.Info);
                 break;
         }
@@ -2625,6 +2634,31 @@ public sealed class Plugin : IDalamudPlugin
     /// across the UI boundary.
     /// </summary>
     public void ToggleConfig() => configWindow.Toggle();
+
+    /// <summary>Toggle the mini player — bound to <c>/pclub mini</c>.</summary>
+    public void ToggleMiniPlayer() => miniPlayerWindow.Toggle();
+
+    /// <summary>
+    /// Close the full music player and open the mini. Both windows render
+    /// the same Now Playing entries against the same Plugin actions, so
+    /// this is just a presentation swap. Bound to the music player's
+    /// title-bar "compress" button.
+    /// </summary>
+    public void SwapToMiniPlayer()
+    {
+        musicPlayerWindow.IsOpen = false;
+        miniPlayerWindow.IsOpen = true;
+    }
+
+    /// <summary>
+    /// Mirror of <see cref="SwapToMiniPlayer"/>: close the mini and open
+    /// the full player. Bound to the mini's title-bar "expand" button.
+    /// </summary>
+    public void SwapToMusicPlayer()
+    {
+        miniPlayerWindow.IsOpen = false;
+        musicPlayerWindow.IsOpen = true;
+    }
 
     private readonly record struct CachedWardListing(DateTime FetchedAt, WardListing Listing);
 }

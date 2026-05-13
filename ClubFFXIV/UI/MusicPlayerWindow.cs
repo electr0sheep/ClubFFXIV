@@ -50,8 +50,9 @@ public sealed class MusicPlayerWindow : Window, IDisposable
 
         // Title-bar buttons render right-to-left next to the close button, in
         // the order they're added. Order from leftmost to rightmost (as the
-        // user sees them): [+] [?] [⚙] [×]. The plus opens an "add stream"
-        // popup so the URL field doesn't permanently sit in the player body.
+        // user sees them): [+] [?] [⚙] [⤓] [×]. The plus opens an "add stream"
+        // popup so the URL field doesn't permanently sit in the player body;
+        // the compress glyph swaps over to MiniPlayerWindow.
         TitleBarButtons.Add(new TitleBarButton
         {
             Icon = FontAwesomeIcon.Plus,
@@ -89,6 +90,17 @@ public sealed class MusicPlayerWindow : Window, IDisposable
             {
                 ImGui.BeginTooltip();
                 ImGui.TextUnformatted("Settings");
+                ImGui.EndTooltip();
+            },
+        });
+        TitleBarButtons.Add(new TitleBarButton
+        {
+            Icon = FontAwesomeIcon.Compress,
+            Click = _ => plugin.SwapToMiniPlayer(),
+            ShowTooltip = () =>
+            {
+                ImGui.BeginTooltip();
+                ImGui.TextUnformatted("Switch to mini player");
                 ImGui.EndTooltip();
             },
         });
