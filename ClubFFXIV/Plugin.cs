@@ -1406,6 +1406,13 @@ public sealed class Plugin : IDalamudPlugin
     /// </summary>
     private void OnSystemConfigChanged(object? sender, ConfigChangeEvent e)
     {
+        // IsSndBgm: re-snapshot the user's BGM preference if they toggled it
+        // while we're muting, so Unmute restores to their current intent.
+        if (e.Option is SystemConfigOption.IsSndBgm)
+        {
+            bgmMuter.OnExternalChange();
+            return;
+        }
         if (e.Option is not SystemConfigOption.IsSoundAlways && e.Option is not SystemConfigOption.IsSoundBgmAlways)
             return;
         TryRefreshSoundsPlayWhenInactiveFromGameConfig();
