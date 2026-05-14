@@ -52,6 +52,16 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
     private bool exhaustedNaturally;
     private bool killedByUs;
     private bool disposed;
+    // True when the most recent inner reader exited via download failure
+    // (yt-dlp gave up, ffmpeg saw premature EOF) rather than reaching the
+    // real end of the source. We *must* track this separately from
+    // killedByUs because the failure path looks like a natural end from
+    // ffmpeg's POV (exit code 0, no kill from us) — and without this flag,
+    // the playlist would be marked exhaustedNaturally and the host's loop
+    // logic would interpret it as "song ended, play again," silently
+    // restarting a song that actually failed mid-stream. Reset to false on
+    // a successful advance to a new inner.
+    private bool lastInnerFailed;
     // One-shot guard so we don't log "returning silence" on every audio thread
     // Read during an inter-item gap (hundreds of times per second). Reset
     // when a new inner is installed.
@@ -146,13 +156,18 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
         {
             var n = currentInner.Read(buffer, offset, count);
             if (n > 0) return n;
-            // Inner EOF — kick off an async advance to the next URL.
-            // (Often a no-op now: NaturalExited fires when ffmpeg actually
-            // exits, ~400-500ms before Read sees 0, so advance is usually
-            // already running by the time we get here.)
-            Plugin.Log.Info("[playlist] inner EOF on audio thread — kicking advance");
+            // Inner EOF — check whether the inner actually finished cleanly
+            // before kicking the advance. A "clean exit" means the source
+            // reached real EOF (track ended); anything else (yt-dlp gave up
+            // mid-download, network error, decoder crash) is a failure that
+            // we must NOT translate into a natural playlist-exhaustion later,
+            // or the host loops a song that didn't really end.
+            var innerClean = currentInner.DidExitCleanly();
+            Plugin.Log.Info(
+                $"[playlist] inner EOF on audio thread — cleanExit={innerClean} kicking advance");
             currentInner.Dispose();
             currentInner = null;
+            if (!innerClean) lastInnerFailed = true;
             StartAdvanceIfNeeded();
         }
 
@@ -171,16 +186,24 @@ internal sealed class PlaylistAudioReader : ISampleProvider, IDisposable, IClean
                     Plugin.Log.Info("[playlist] next inner installed; resuming reads");
                     silenceGapLogged = false;
                     currentInner = next;
+                    // Successful advance — the previous inner's failure (if any)
+                    // is now irrelevant; if this new inner later fails, the
+                    // flag will be re-set when *it* ends. Without this reset
+                    // an early-item failure would poison the whole playlist
+                    // even though later items played fine.
+                    lastInnerFailed = false;
                     return Read(buffer, offset, count);
                 }
 
                 // No next song — playlist ended. Distinguish "user killed
-                // us" from "yt-dlp exhausted naturally" so the natural-end
-                // event fires only when appropriate.
+                // us" from "yt-dlp exhausted naturally" from "the last inner
+                // failed mid-stream" so the natural-end event fires only on
+                // a true track-finished signal.
                 Plugin.Log.Info(
-                    $"[playlist] exhausted (killedByUs={killedByUs}); returning EOF");
+                    $"[playlist] exhausted (killedByUs={killedByUs} " +
+                    $"lastInnerFailed={lastInnerFailed}); returning EOF");
                 exhausted = true;
-                if (!killedByUs) exhaustedNaturally = true;
+                if (!killedByUs && !lastInnerFailed) exhaustedNaturally = true;
                 return 0;
             }
 

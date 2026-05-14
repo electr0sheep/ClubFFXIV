@@ -125,13 +125,19 @@ public sealed class BinaryManager
             CreateNoWindow = true,
         };
         psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("-");
-        // The actual fix: 10 MiB Range-bounded chunks. yt-dlp FAQ notes
-        // googlevideo throttles requests asking for > 10 MiB at once, so this
-        // size is the documented sweet spot. Each chunk is a Range request
-        // against the same URL — yt-dlp concatenates them into a single
-        // continuous byte stream on stdout, which ffmpeg consumes as a normal
-        // WebM/audio file.
-        psi.ArgumentList.Add("--http-chunk-size"); psi.ArgumentList.Add("10M");
+        // Chunk size: 5 MiB. yt-dlp's FAQ says googlevideo throttles requests
+        // asking for > 10 MiB, so 10M is the *upper* bound — but in practice
+        // observed behaviour is that the server caps a single connection at
+        // ~8 MiB before forcibly closing it, regardless of how much you asked
+        // for. Field log: a 240 MB 3.5-hour video repeatedly failed with
+        // "8404928 bytes read, 1934328 more expected" type errors when
+        // chunked at 10M — yt-dlp burned its 10-retry budget on one chunk
+        // and gave up. 5M sits comfortably under that observed cap, so each
+        // chunk completes in one shot with no retries. Per-chunk overhead
+        // (TCP + TLS over a warm connection) is ~100 ms, so doubling the
+        // chunk count from 24 → 48 over a 240 MB file costs about 2 seconds
+        // total — invisible against a multi-hour playback.
+        psi.ArgumentList.Add("--http-chunk-size"); psi.ArgumentList.Add("5M");
         // NOT --throttled-rate. The docs say "the video data is re-extracted"
         // — which means yt-dlp restarts the download from byte 0 against a
         // freshly-extracted URL, concatenating a brand new WebM stream onto
