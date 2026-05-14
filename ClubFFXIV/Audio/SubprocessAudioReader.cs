@@ -438,6 +438,7 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
                         $"[tee] download complete. " +
                         $"bytes={Interlocked.Read(ref tempFileLength)} " +
                         $"tempFile={Path.GetFileName(tempFilePath)}");
+                    OnDownloadJustCompleted();
                 }
                 else
                 {
@@ -721,6 +722,45 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         {
             Plugin.Log.Warning($"Subprocess audio seek failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Called from the tee pump the moment <c>downloadComplete</c> flips
+    /// true. If playback is currently driven by the network (UrlSeek), the
+    /// sealed cache is unconditionally a better source — local file, no
+    /// network, no risk of googlevideo throttling a deep Range fetch — so
+    /// enqueue a seek to the current playhead and kill the wedged URL
+    /// ffmpeg. The audio thread's next Read attempt will see the pending
+    /// seek and route through ApplyPendingSeekIfAny, which now picks
+    /// FileSeek (because downloadComplete is true).
+    ///
+    /// No-op for Live mode (tee pump just closed liveFfmpegStdin, ffmpeg-live
+    /// will drain its decoder and exit naturally — that's the correct
+    /// end-of-track path) or FileSeek (already on the optimal source).
+    ///
+    /// Runs on the tee pump's thread, so we don't touch the playback ffmpeg
+    /// fields directly — just set pendingSeekSeconds and kill the proc,
+    /// matching the same protocol SeekToSeconds uses from the UI thread.
+    /// </summary>
+    private void OnDownloadJustCompleted()
+    {
+        if (disposed) return;
+        if (mode != PlaybackMode.UrlSeek) return;
+
+        var pos = PositionSeconds;
+        Plugin.Log.Info(
+            $"[pipeline] download complete while in UrlSeek — " +
+            $"swapping to FileSeek at pos={pos:F1}s");
+        lock (swapLock) { pendingSeekSeconds = pos; }
+        try
+        {
+            if (!ffmpegProc.HasExited)
+            {
+                killedByUs = true;
+                ffmpegProc.Kill(entireProcessTree: true);
+            }
+        }
+        catch { }
     }
 
     /// <summary>
