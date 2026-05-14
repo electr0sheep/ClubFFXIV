@@ -556,19 +556,23 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         }
     }
 
-    // === Watchdog ===========================================================
+    // === Watchdog (diagnostic) ==============================================
 
     /// <summary>
-    /// 1Hz watchdog. Logs <c>[ffmpeg] STALL</c> when samplesPlayed hasn't
-    /// moved for ≥3s with a Read in flight. After <c>StallRespawnSec</c>
-    /// of continuous stall (default 10s), kills ffmpeg and queues a seek to
-    /// the current playhead — ApplyPendingSeekIfAny picks the best mode
-    /// (FileSeek if the cache has caught up, else UrlSeek). This is the
-    /// belt-and-suspenders for any stall yt-dlp's downloader couldn't
-    /// recover from on its own.
+    /// 1Hz watchdog. Diagnostic-only — logs <c>[ffmpeg] STALL</c> when
+    /// samplesPlayed hasn't moved for ≥3s with a Read in flight, and
+    /// <c>[ffmpeg] STALL RESOLVED</c> when samples flow again.
+    ///
+    /// Deliberately does NOT take any recovery action. The byte stream is
+    /// yt-dlp's responsibility — its HttpFD does chunked Range fetches with
+    /// per-chunk retry, which is the community-tested mechanism for surviving
+    /// googlevideo's throttling. An earlier version of this watchdog also
+    /// killed ffmpeg and respawned the pipeline; that overlapped with
+    /// yt-dlp's own recovery and introduced races between the kill-and-
+    /// respawn loop and other state transitions (seek, item advance). If
+    /// yt-dlp ever fails to recover, the STALL log is the signal that lets
+    /// us tell — but we don't try to "fix" yt-dlp from inside the reader.
     /// </summary>
-    private const double StallRespawnSec = 10.0;
-
     private async Task WatchdogLoop(CancellationToken ct)
     {
         long lastSamples = 0;
@@ -576,7 +580,6 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
         bool firstSampleSeen = false;
         bool stalled = false;
         DateTime nextStallLog = DateTime.MinValue;
-        bool respawnTriggeredForThisStall = false;
 
         while (!ct.IsCancellationRequested)
         {
@@ -596,7 +599,6 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
                         $"[ffmpeg] STALL RESOLVED mode={mode} " +
                         $"ageSec={stallDuration:F1} samplesPlayed={current}");
                     stalled = false;
-                    respawnTriggeredForThisStall = false;
                 }
                 lastSamples = current;
                 lastProgressAt = now;
@@ -629,29 +631,6 @@ public sealed class SubprocessAudioReader : ISampleProvider, IDisposable, IClean
                     $"url={TruncateUrl(resolvedMediaUrl)}");
                 stalled = true;
                 nextStallLog = now.AddSeconds(10);
-            }
-
-            // Respawn once per stall episode. Subsequent stalls (after a
-            // successful recovery) get their own respawn budget.
-            if (idle >= StallRespawnSec && !respawnTriggeredForThisStall)
-            {
-                respawnTriggeredForThisStall = true;
-                var pos = PositionSeconds;
-                Plugin.Log.Warning(
-                    $"[ffmpeg] STALL respawn — queuing seek to current playhead " +
-                    $"pos={pos:F1}s mode={mode}");
-                lock (swapLock) { pendingSeekSeconds = pos; }
-                // Kill the wedged ffmpeg so the audio thread's blocked Read
-                // returns 0 and reaches ApplyPendingSeekIfAny.
-                try
-                {
-                    if (!ffmpegProc.HasExited)
-                    {
-                        killedByUs = true;
-                        ffmpegProc.Kill(entireProcessTree: true);
-                    }
-                }
-                catch { }
             }
         }
     }

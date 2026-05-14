@@ -127,13 +127,20 @@ public sealed class BinaryManager
         psi.ArgumentList.Add("-o"); psi.ArgumentList.Add("-");
         // The actual fix: 10 MiB Range-bounded chunks. yt-dlp FAQ notes
         // googlevideo throttles requests asking for > 10 MiB at once, so this
-        // size is the documented sweet spot.
+        // size is the documented sweet spot. Each chunk is a Range request
+        // against the same URL — yt-dlp concatenates them into a single
+        // continuous byte stream on stdout, which ffmpeg consumes as a normal
+        // WebM/audio file.
         psi.ArgumentList.Add("--http-chunk-size"); psi.ArgumentList.Add("10M");
-        // Belt-and-suspenders: if effective rate ever drops below 100 KB/s yt-dlp
-        // tears the connection down and re-establishes. Limited utility here
-        // since we're handing a pre-resolved URL (re-extraction has nothing to
-        // do), but the connection rebuild itself often dodges the throttle.
-        psi.ArgumentList.Add("--throttled-rate"); psi.ArgumentList.Add("100K");
+        // NOT --throttled-rate. The docs say "the video data is re-extracted"
+        // — which means yt-dlp restarts the download from byte 0 against a
+        // freshly-extracted URL, concatenating a brand new WebM stream onto
+        // ffmpeg's already-mid-decode input. The result is corrupt container
+        // structure ("Element exceeds containing master element"), DTS resets,
+        // and ffmpeg "seek to earliest point available" — which the user
+        // experiences as the song looping back to the start. Stall detection
+        // is the watchdog's job in the reader; yt-dlp should just deliver
+        // bytes monotonically without re-extracting mid-stream.
         psi.ArgumentList.Add("--no-warnings");
         psi.ArgumentList.Add("--no-progress");
         psi.ArgumentList.Add("--no-part");
