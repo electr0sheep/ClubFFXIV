@@ -559,7 +559,10 @@ public sealed class Plugin : IDalamudPlugin
                 // it on the framework thread next frame, so a cross-thread set
                 // from this async continuation is fine.
                 if (Config.OpenMiniPlayerOnManualStart)
+                {
+                    musicPlayerWindow.IsOpen = false;
                     miniPlayerWindow.IsOpen = true;
+                }
             }
         }
         catch (OperationCanceledException)
